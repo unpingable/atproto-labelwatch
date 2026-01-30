@@ -1,0 +1,11 @@
+db_path = "labelwatch.db"
+service_url = "https://bsky.social"
+labeler_dids = ["did:plc:example1", "did:plc:example2"]
+
+window_minutes = 15
+baseline_hours = 24
+spike_k = 10.0
+min_current_count = 50
+flip_flop_window_hours = 24
+max_events_per_scan = 200000
+max_evidence = 50

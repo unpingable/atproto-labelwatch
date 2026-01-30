@@ -1,0 +1,10 @@
+version: "3.9"
+
+services:
+  labelwatch:
+    build: .
+    command: ["run", "--config", "/config/config.toml", "--db", "/data/labelwatch.db", "--ingest-interval", "120", "--scan-interval", "300", "--report-out", "/data/report"]
+    volumes:
+      - ./data:/data
+      - ./config:/config:ro
+    restart: unless-stopped

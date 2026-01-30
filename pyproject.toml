@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "labelwatch"
+version = "0.1.0"
+description = "Monitor ATProto labeler behavior and emit integrity-risk receipts."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Labelwatch"}]
+
+[project.scripts]
+labelwatch = "labelwatch.cli:main"
+
+[project.optional-dependencies]
+export = []
+
+test = ["pytest>=7"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
