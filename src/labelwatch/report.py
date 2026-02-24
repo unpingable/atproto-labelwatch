@@ -86,54 +86,94 @@ def _visibility_badge(vis_class: Optional[str]) -> str:
 
 
 STYLE = """
-body { font-family: Georgia, "Times New Roman", serif; margin: 2rem; color: #111; }
-header { margin-bottom: 2rem; }
+:root {
+  --bg: #fff; --fg: #111; --fg-muted: #666; --border: #ddd;
+  --link: #0b5394; --link-hover-bg: #f0f7fb;
+  --card-bg: #fff; --card-border: #ddd;
+  --anomaly-bg: #fff8f0;
+  --methods-bg: #f8f9fa; --methods-border: #e9ecef;
+  --ref-bg: #f0f7fb; --ref-border: #b8d4e3;
+  --warmup-bg: #fff3cd; --warmup-border: #ffc107;
+  --rollup-bg: #f8f9fa; --rollup-border: #e9ecef;
+  --sparkline-stroke: #0b5394;
+  --badge-stable-bg: #d4edda; --badge-stable-fg: #155724;
+  --badge-burst-bg: #fff3cd; --badge-burst-fg: #856404;
+  --badge-churn-bg: #f8d7da; --badge-churn-fg: #721c24;
+  --badge-fixated-bg: #ffe0cc; --badge-fixated-fg: #7a3300;
+  --badge-flipflop-bg: #e2d5f1; --badge-flipflop-fg: #3d1f6e;
+  --badge-lowconf-bg: #e2e3e5; --badge-lowconf-fg: #6c757d;
+  --pre-bg: #f5f5f5;
+}
+[data-theme="dark"] {
+  --bg: #1a1a2e; --fg: #e0e0e0; --fg-muted: #999; --border: #333;
+  --link: #6db3f2; --link-hover-bg: #252545;
+  --card-bg: #16213e; --card-border: #333;
+  --anomaly-bg: #2a2218;
+  --methods-bg: #16213e; --methods-border: #333;
+  --ref-bg: #0f2a3e; --ref-border: #1a5276;
+  --warmup-bg: #332b00; --warmup-border: #665500;
+  --rollup-bg: #16213e; --rollup-border: #333;
+  --sparkline-stroke: #6db3f2;
+  --badge-stable-bg: #1e3a2a; --badge-stable-fg: #8fd6a8;
+  --badge-burst-bg: #3a3520; --badge-burst-fg: #e6c866;
+  --badge-churn-bg: #3a2020; --badge-churn-fg: #e68888;
+  --badge-fixated-bg: #3a2a1a; --badge-fixated-fg: #e6a866;
+  --badge-flipflop-bg: #2a2040; --badge-flipflop-fg: #c0a8e6;
+  --badge-lowconf-bg: #2a2a2a; --badge-lowconf-fg: #aaa;
+  --pre-bg: #16213e;
+}
+body { font-family: Georgia, "Times New Roman", serif; margin: 2rem; color: var(--fg); background: var(--bg); }
+header { margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: flex-start; }
+header > div { flex: 1; }
 h1, h2, h3 { font-family: "Gill Sans", "Trebuchet MS", sans-serif; }
 table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-th, td { border-bottom: 1px solid #ddd; padding: 0.5rem; text-align: left; }
-.small { color: #666; font-size: 0.9rem; }
+th, td { border-bottom: 1px solid var(--border); padding: 0.5rem; text-align: left; }
+.small { color: var(--fg-muted); font-size: 0.9rem; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
-.card { border: 1px solid #ddd; padding: 1rem; border-radius: 6px; }
-a { color: #0b5394; text-decoration: none; }
+.card { border: 1px solid var(--card-border); padding: 1rem; border-radius: 6px; background: var(--card-bg); }
+a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 code { font-family: "Courier New", monospace; }
+pre { background: var(--pre-bg); padding: 0.5rem; border-radius: 4px; overflow-x: auto; }
 .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 3px; font-size: 0.8rem; font-weight: bold; margin-right: 0.3rem; }
-.badge-stable { background: #d4edda; color: #155724; }
-.badge-burst { background: #fff3cd; color: #856404; }
-.badge-churn { background: #f8d7da; color: #721c24; }
-.badge-fixated { background: #ffe0cc; color: #7a3300; }
-.badge-flipflop { background: #e2d5f1; color: #3d1f6e; }
+.badge-stable { background: var(--badge-stable-bg); color: var(--badge-stable-fg); }
+.badge-burst { background: var(--badge-burst-bg); color: var(--badge-burst-fg); }
+.badge-churn { background: var(--badge-churn-bg); color: var(--badge-churn-fg); }
+.badge-fixated { background: var(--badge-fixated-bg); color: var(--badge-fixated-fg); }
+.badge-flipflop { background: var(--badge-flipflop-bg); color: var(--badge-flipflop-fg); }
 .health-bar { display: flex; gap: 1.5rem; align-items: center; margin: 0.5rem 0; }
 .health-metric { text-align: center; }
 .health-metric .value { font-size: 1.4rem; font-weight: bold; }
-.health-metric .label { font-size: 0.75rem; color: #666; }
+.health-metric .label { font-size: 0.75rem; color: var(--fg-muted); }
 .sparkline { vertical-align: middle; }
-.anomaly-row { background: #fff8f0; }
-.methods { background: #f8f9fa; border: 1px solid #e9ecef; padding: 1rem; border-radius: 6px; margin-top: 2rem; font-size: 0.85rem; }
-.reference-lane { border: 2px solid #b8d4e3; background: #f0f7fb; padding: 1rem; border-radius: 6px; margin-bottom: 1.5rem; }
-.reference-lane h2 { margin-top: 0; color: #0b5394; }
-.badge-low-conf { background: #e2e3e5; color: #6c757d; font-weight: normal; }
+.anomaly-row { background: var(--anomaly-bg); }
+.methods { background: var(--methods-bg); border: 1px solid var(--methods-border); padding: 1rem; border-radius: 6px; margin-top: 2rem; font-size: 0.85rem; }
+.reference-lane { border: 2px solid var(--ref-border); background: var(--ref-bg); padding: 1rem; border-radius: 6px; margin-bottom: 1.5rem; }
+.reference-lane h2 { margin-top: 0; color: var(--link); }
+.badge-low-conf { background: var(--badge-lowconf-bg); color: var(--badge-lowconf-fg); font-weight: normal; }
 .endpoint-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 0.3rem; vertical-align: middle; }
 .endpoint-ok { background: #28a745; }
 .endpoint-warn { background: #ffc107; }
 .endpoint-down { background: #dc3545; }
 .class-group { margin-bottom: 2rem; }
-.class-group h3 { color: #444; border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
-.tab-bar { display: flex; gap: 0; border-bottom: 2px solid #ddd; margin-bottom: 1rem; }
-.tab-bar button { background: none; border: none; padding: 0.5rem 1rem; cursor: pointer; font-size: 0.95rem; border-bottom: 2px solid transparent; margin-bottom: -2px; }
-.tab-bar button.active { border-bottom-color: #0b5394; color: #0b5394; font-weight: bold; }
-.tab-bar button:hover { background: #f0f7fb; }
-.warmup-banner { background: #fff3cd; border: 1px solid #ffc107; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
+.class-group h3 { color: var(--fg-muted); border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+.tab-bar { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 1rem; }
+.tab-bar button { background: none; border: none; padding: 0.5rem 1rem; cursor: pointer; font-size: 0.95rem; color: var(--fg); border-bottom: 2px solid transparent; margin-bottom: -2px; }
+.tab-bar button.active { border-bottom-color: var(--link); color: var(--link); font-weight: bold; }
+.tab-bar button:hover { background: var(--link-hover-bg); }
+.warmup-banner { background: var(--warmup-bg); border: 1px solid var(--warmup-border); padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
 .census-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 1rem 0; }
-.census-card { border: 1px solid #ddd; padding: 0.75rem; border-radius: 6px; text-align: center; }
+.census-card { border: 1px solid var(--card-border); padding: 0.75rem; border-radius: 6px; text-align: center; background: var(--card-bg); }
 .census-card .value { font-size: 1.6rem; font-weight: bold; }
-.census-card .label { font-size: 0.75rem; color: #666; }
+.census-card .label { font-size: 0.75rem; color: var(--fg-muted); }
 .evidence-section { margin-top: 1rem; }
-.evidence-section summary { cursor: pointer; font-weight: bold; color: #0b5394; }
+.evidence-section summary { cursor: pointer; font-weight: bold; color: var(--link); }
 .evidence-item { margin: 0.3rem 0; font-size: 0.85rem; }
-.rollup { background: #f8f9fa; border: 1px solid #e9ecef; padding: 0.5rem; border-radius: 4px; margin: 0.5rem 0; }
+.rollup { background: var(--rollup-bg); border: 1px solid var(--rollup-border); padding: 0.5rem; border-radius: 4px; margin: 0.5rem 0; }
 .rollup summary { cursor: pointer; font-size: 0.9rem; }
 .hidden { display: none; }
+.theme-toggle { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--fg-muted); }
+.theme-toggle:hover { background: var(--link-hover-bg); }
 """
 
 TRIAGE_JS = """
@@ -215,6 +255,41 @@ def _write_json(path: str, payload: Any) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
+THEME_JS = """
+<script>
+(function() {
+  var stored = localStorage.getItem('lw-theme');
+  if (stored) {
+    document.documentElement.setAttribute('data-theme', stored);
+  } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+})();
+</script>
+"""
+
+THEME_TOGGLE_JS = """
+<script>
+(function() {
+  var btn = document.getElementById('theme-toggle');
+  if (!btn) return;
+  function update() {
+    var current = document.documentElement.getAttribute('data-theme');
+    btn.textContent = current === 'dark' ? 'Light mode' : 'Dark mode';
+  }
+  btn.addEventListener('click', function() {
+    var current = document.documentElement.getAttribute('data-theme');
+    var next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('lw-theme', next);
+    update();
+  });
+  update();
+})();
+</script>
+"""
+
+
 def _layout(title: str, body: str) -> str:
     return f"""<!doctype html>
 <html lang="en">
@@ -224,13 +299,18 @@ def _layout(title: str, body: str) -> str:
 <meta http-equiv="Cache-Control" content="no-cache, must-revalidate" />
 <title>{escape(title)}</title>
 <style>{STYLE}</style>
+{THEME_JS}
 </head>
 <body>
 <header>
+<div>
 <h1>{escape(title)}</h1>
 <p class="small">Generated by labelwatch</p>
+</div>
+<button id="theme-toggle" class="theme-toggle">Dark mode</button>
 </header>
 {body}
+{THEME_TOGGLE_JS}
 </body>
 </html>"""
 
@@ -255,7 +335,7 @@ def _sparkline_svg(values: List[int], width: int = 120, height: int = 24) -> str
     polyline = " ".join(points)
     return (
         f'<svg class="sparkline" width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
-        f'<polyline points="{polyline}" fill="none" stroke="#0b5394" stroke-width="1.5" />'
+        f'<polyline points="{polyline}" fill="none" stroke="var(--sparkline-stroke, #0b5394)" stroke-width="1.5" />'
         f'</svg>'
     )
 
