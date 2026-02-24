@@ -27,6 +27,19 @@ th, td { border-bottom: 1px solid #ddd; padding: 0.5rem; text-align: left; }
 a { color: #0b5394; text-decoration: none; }
 a:hover { text-decoration: underline; }
 code { font-family: "Courier New", monospace; }
+.badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 3px; font-size: 0.8rem; font-weight: bold; margin-right: 0.3rem; }
+.badge-stable { background: #d4edda; color: #155724; }
+.badge-burst { background: #fff3cd; color: #856404; }
+.badge-churn { background: #f8d7da; color: #721c24; }
+.badge-fixated { background: #ffe0cc; color: #7a3300; }
+.badge-flipflop { background: #e2d5f1; color: #3d1f6e; }
+.health-bar { display: flex; gap: 1.5rem; align-items: center; margin: 0.5rem 0; }
+.health-metric { text-align: center; }
+.health-metric .value { font-size: 1.4rem; font-weight: bold; }
+.health-metric .label { font-size: 0.75rem; color: #666; }
+.sparkline { vertical-align: middle; }
+.anomaly-row { background: #fff8f0; }
+.methods { background: #f8f9fa; border: 1px solid #e9ecef; padding: 1rem; border-radius: 6px; margin-top: 2rem; font-size: 0.85rem; }
 """
 
 
@@ -65,6 +78,118 @@ def _table(headers: List[str], rows: List[List[str]]) -> str:
     head = "".join(f"<th>{escape(h)}</th>" for h in headers)
     body = "".join("<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in rows)
     return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
+def _sparkline_svg(values: List[int], width: int = 120, height: int = 24) -> str:
+    """Render an inline SVG sparkline from a list of values."""
+    if not values or max(values) == 0:
+        return f'<svg class="sparkline" width="{width}" height="{height}"></svg>'
+    n = len(values)
+    peak = max(values)
+    pad = 1
+    points = []
+    for i, v in enumerate(values):
+        x = pad + (i / max(n - 1, 1)) * (width - 2 * pad)
+        y = height - pad - (v / peak) * (height - 2 * pad)
+        points.append(f"{x:.1f},{y:.1f}")
+    polyline = " ".join(points)
+    return (
+        f'<svg class="sparkline" width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
+        f'<polyline points="{polyline}" fill="none" stroke="#0b5394" stroke-width="1.5" />'
+        f'</svg>'
+    )
+
+
+def _hourly_counts(conn, labeler_did: str, start: str, end: str, buckets: int = 168) -> List[int]:
+    """Return hourly event counts for a labeler over a time range."""
+    rows = conn.execute(
+        "SELECT ts FROM label_events WHERE labeler_did=? AND ts>=? AND ts<? ORDER BY ts",
+        (labeler_did, start, end),
+    ).fetchall()
+    if not rows:
+        return [0] * buckets
+    start_dt = parse_ts(start)
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=timezone.utc)
+    counts = [0] * buckets
+    for r in rows:
+        dt = _parse_ts_safe(r["ts"])
+        if dt is None:
+            continue
+        offset_hours = int((dt - start_dt).total_seconds() / 3600)
+        idx = max(0, min(buckets - 1, offset_hours))
+        counts[idx] += 1
+    return counts
+
+
+def _labeler_badges(conn, labeler_did: str, start: str, end: str) -> List[tuple[str, str]]:
+    """Return (label, css_class) badge tuples for a labeler based on alerts."""
+    alert_rows = conn.execute(
+        "SELECT rule_id FROM alerts WHERE labeler_did=? AND ts>=? AND ts<=?",
+        (labeler_did, start, end),
+    ).fetchall()
+    rules_fired = {r["rule_id"] for r in alert_rows}
+    badges = []
+    if "label_rate_spike" in rules_fired:
+        badges.append(("Burst-prone", "badge-burst"))
+    if "churn_index" in rules_fired:
+        badges.append(("High churn", "badge-churn"))
+    if "target_concentration" in rules_fired:
+        badges.append(("Target-fixated", "badge-fixated"))
+    if "flip_flop" in rules_fired:
+        badges.append(("Reversal-heavy", "badge-flipflop"))
+    if not badges:
+        badges.append(("Stable", "badge-stable"))
+    return badges
+
+
+def _badges_html(badges: List[tuple[str, str]]) -> str:
+    return " ".join(f'<span class="badge {cls}">{escape(label)}</span>' for label, cls in badges)
+
+
+def _labeler_health_card(conn, labeler_did: str, start_7d: str, now_ts: str, sparkline_counts: List[int]) -> str:
+    """Render a health card with key metrics and sparkline for a labeler."""
+    events_7d = conn.execute(
+        "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=? AND ts>=? AND ts<=?",
+        (labeler_did, start_7d, now_ts),
+    ).fetchone()["c"]
+    unique_targets = conn.execute(
+        "SELECT COUNT(DISTINCT uri) AS c FROM label_events WHERE labeler_did=? AND ts>=? AND ts<=?",
+        (labeler_did, start_7d, now_ts),
+    ).fetchone()["c"]
+    alert_count = conn.execute(
+        "SELECT COUNT(*) AS c FROM alerts WHERE labeler_did=? AND ts>=? AND ts<=?",
+        (labeler_did, start_7d, now_ts),
+    ).fetchone()["c"]
+    target_spread = f"{unique_targets}/{events_7d}" if events_7d else "0/0"
+    sparkline = _sparkline_svg(sparkline_counts)
+    badges = _labeler_badges(conn, labeler_did, start_7d, now_ts)
+
+    return f"""
+<div class="card">
+  <div class="health-bar">
+    <div class="health-metric"><div class="value">{events_7d}</div><div class="label">Events (7d)</div></div>
+    <div class="health-metric"><div class="value">{target_spread}</div><div class="label">Targets/Events</div></div>
+    <div class="health-metric"><div class="value">{alert_count}</div><div class="label">Anomalies</div></div>
+    <div class="health-metric">{sparkline}<div class="label">Activity (7d)</div></div>
+  </div>
+  <div>{_badges_html(badges)}</div>
+</div>
+"""
+
+
+METHODS_HTML = """
+<div class="methods">
+<h3>Methods and caveats</h3>
+<ul>
+<li>Behavioral telemetry only. No intent claims, no content judgments, no verdicts.</li>
+<li>Rules detect geometric patterns (rate anomalies, target distribution, churn). Thresholds are configurable.</li>
+<li>Every alert includes a receipted hash over rule_id, config, inputs, and evidence for reproducibility.</li>
+<li>Sparklines show hourly event counts over 7 days. Badges summarize which rules fired in the period.</li>
+<li>Observation surface: label events from com.atproto.label.queryLabels. Does not observe content, profiles, or social graph.</li>
+</ul>
+</div>
+"""
 
 
 def _alerts_by_rule(conn, start: str, end: str) -> Dict[str, int]:
@@ -314,20 +439,44 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     ]
     build_table = "<h2>Build signature</h2>" + _table(["field", "value"], build_rows)
 
+    labeler_table_rows = []
+    for r in labelers:
+        did = r["labeler_did"]
+        badges = _labeler_badges(conn, did, start_7d, now_ts)
+        counts = _hourly_counts(conn, did, start_7d, now_ts)
+        spark = _sparkline_svg(counts)
+        labeler_table_rows.append([
+            f"<a href=\"labeler/{quote(did, safe='')}.html\">{escape(did)}</a>",
+            escape(str(r["first_seen"])),
+            escape(str(r["last_seen"])),
+            spark,
+            _badges_html(badges),
+        ])
     labeler_links = "<h2>Labelers</h2>" + _table(
-        ["labeler_did", "first_seen", "last_seen"],
-        [[f"<a href=\"labeler/{quote(r['labeler_did'], safe='')}.html\">{escape(r['labeler_did'])}</a>", escape(str(r["first_seen"])), escape(str(r["last_seen"]))] for r in labelers],
+        ["labeler_did", "first_seen", "last_seen", "activity", "behavior"],
+        labeler_table_rows,
     )
 
-    alert_links = "<h2>Recent alerts</h2>" + _table(
-        ["id", "rule_id", "labeler", "ts"],
-        [[f"<a href=\"alert/{r['id']}.html\">{r['id']}</a>", escape(r["rule_id"]), escape(r["labeler_did"]), escape(r["ts"]) ] for r in alerts[:50]],
-    )
+    anomaly_rules = {"label_rate_spike", "flip_flop", "target_concentration", "churn_index"}
+    alert_table_rows = []
+    for r in alerts[:50]:
+        is_anomaly = r["rule_id"] in anomaly_rules
+        row_class = ' class="anomaly-row"' if is_anomaly else ""
+        alert_table_rows.append(
+            f"<tr{row_class}>"
+            f"<td><a href=\"alert/{r['id']}.html\">{r['id']}</a></td>"
+            f"<td>{escape(r['rule_id'])}</td>"
+            f"<td>{escape(r['labeler_did'])}</td>"
+            f"<td>{escape(r['ts'])}</td>"
+            f"</tr>"
+        )
+    alert_head = "<tr><th>id</th><th>rule_id</th><th>labeler</th><th>ts</th></tr>"
+    alert_links = f"<h2>Recent alerts</h2><table><thead>{alert_head}</thead><tbody>{''.join(alert_table_rows)}</tbody></table>"
 
     naive_banner = ""
     if naive_count > 0:
         naive_banner = f"<p class=\"small\">Note: {naive_count} timestamps lacked timezone info and were assumed UTC.</p>"
-    overview_html = _layout("Labelwatch overview", overview_cards + naive_banner + build_table + overview_tables + labeler_links + alert_links)
+    overview_html = _layout("Labelwatch overview", overview_cards + naive_banner + build_table + overview_tables + labeler_links + alert_links + METHODS_HTML)
     _write(os.path.join(tmp_dir, "index.html"), overview_html)
 
     for row in labelers:
@@ -352,7 +501,10 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         }
         _write_json(os.path.join(tmp_dir, "labeler", f"{did_path}.json"), payload)
 
-        card = f"""
+        sparkline_counts = _hourly_counts(conn, did, start_7d, now_ts)
+        health_card = _labeler_health_card(conn, did, start_7d, now_ts, sparkline_counts)
+
+        info_card = f"""
 <div class=\"grid\">
   <div class=\"card\"><h3>Labeler</h3><div><code>{escape(did)}</code></div></div>
   <div class=\"card\"><h3>First seen</h3><div>{escape(str(row['first_seen']))}</div></div>
@@ -368,11 +520,20 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
                 ["uri", "count"],
                 [[escape(t["uri"]), str(t["count"])] for t in top_targets],
             )
-        alerts_table = "<h2>Alerts timeline</h2>" + _table(
-            ["id", "rule_id", "ts"],
-            [[f"<a href=\"../alert/{r['id']}.html\">{r['id']}</a>", escape(r["rule_id"]), escape(r["ts"]) ] for r in alerts_rows],
-        )
-        html = _layout(f"Labeler {did}", f"<p><a href=\"../index.html\">Overview</a></p>" + card + targets_table + alerts_table)
+        alert_detail_rows = []
+        for r in alerts_rows:
+            is_anomaly = r["rule_id"] in anomaly_rules
+            row_class = ' class="anomaly-row"' if is_anomaly else ""
+            alert_detail_rows.append(
+                f"<tr{row_class}>"
+                f"<td><a href=\"../alert/{r['id']}.html\">{r['id']}</a></td>"
+                f"<td>{escape(r['rule_id'])}</td>"
+                f"<td>{escape(r['ts'])}</td>"
+                f"</tr>"
+            )
+        alert_head = "<tr><th>id</th><th>rule_id</th><th>ts</th></tr>"
+        alerts_table = f"<h2>Alerts timeline</h2><table><thead>{alert_head}</thead><tbody>{''.join(alert_detail_rows)}</tbody></table>"
+        html = _layout(f"Labeler {did}", f"<p><a href=\"../index.html\">Overview</a></p>" + health_card + info_card + targets_table + alerts_table + METHODS_HTML)
         _write(os.path.join(tmp_dir, "labeler", f"{did_path}.html"), html)
 
     for row in alerts:
