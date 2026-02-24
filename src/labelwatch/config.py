@@ -6,7 +6,10 @@ from typing import List, Optional
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover
-    tomllib = None
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:
+        tomllib = None
 
 
 @dataclass

@@ -37,7 +37,11 @@ def normalize_label(raw: Dict) -> LabelEvent:
     cid = raw.get("cid")
     neg = 1 if raw.get("neg") else 0
     exp = raw.get("exp")
-    sig = raw.get("sig")
+    sig_raw = raw.get("sig")
+    if isinstance(sig_raw, dict):
+        sig = sig_raw.get("$bytes")
+    else:
+        sig = sig_raw
     ts = raw.get("ts") or format_ts(now_utc())
     canonical = {
         "labeler_did": labeler_did,
@@ -65,8 +69,11 @@ def normalize_label(raw: Dict) -> LabelEvent:
     )
 
 
-def fetch_labels(service_url: str, sources: List[str], cursor: Optional[str] = None, limit: int = 100) -> Dict:
+def fetch_labels(service_url: str, sources: List[str], cursor: Optional[str] = None, limit: int = 100,
+                  uri_patterns: Optional[List[str]] = None) -> Dict:
     params = [("limit", str(limit))]
+    for pat in (uri_patterns or ["*"]):
+        params.append(("uriPatterns", pat))
     for src in sources:
         params.append(("sources", src))
     if cursor:
