@@ -401,6 +401,9 @@ def run_discovery(conn, config: Config, did_workers: int = 10,
         )
     conn.commit()
 
+    db.set_meta(conn, "last_discovery_ts", format_ts(now_utc()))
+    conn.commit()
+
     elapsed = time.monotonic() - t0
     summary["elapsed_seconds"] = round(elapsed, 1)
     log.info("Discovery complete in %.1fs: %s", elapsed, summary)

@@ -290,14 +290,15 @@ THEME_TOGGLE_JS = """
 """
 
 
-def _layout(title: str, body: str) -> str:
+def _layout(title: str, body: str, canonical: str = "") -> str:
+    canonical_tag = f'\n<link rel="canonical" href="{escape(canonical)}" />' if canonical else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta http-equiv="Cache-Control" content="no-cache, must-revalidate" />
-<title>{escape(title)}</title>
+<title>{escape(title)}</title>{canonical_tag}
 <style>{STYLE}</style>
 {THEME_JS}
 </head>
@@ -726,6 +727,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     nonref_labelers = [r for r in labelers if not r["is_reference"]]
 
     overview = {
+        "api_version": "v0",
         "generated_at": now_ts,
         "last_ingest": last_ingest,
         "last_scan": last_scan,
@@ -841,8 +843,8 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
 
     tab_bar = f"""
 <div class="tab-bar">
-  <button class="active" data-view="active">Active <span class="tab-count"></span></button>
-  <button data-view="alerts">Alerts <span class="tab-count"></span></button>
+  <button data-view="active">Active <span class="tab-count"></span></button>
+  <button class="active" data-view="alerts">Alerts <span class="tab-count"></span></button>
   <button data-view="new">New <span class="tab-count"></span></button>
   <button data-view="opaque">Opaque <span class="tab-count"></span></button>
   <button data-view="all">All <span class="tab-count"></span></button>
@@ -981,10 +983,19 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         class_label = row["labeler_class"] or "third_party"
         ref_tag = ' <span class="badge badge-stable">Reference</span>' if row["is_reference"] else ""
 
-        # Bluesky profile link
+        # External links
         profile_link = ""
+        ext_links = []
         if handle:
-            profile_link = f'<div class="card"><h3>Profile</h3><div><a href="https://bsky.app/profile/{escape(handle)}" target="_blank">View on Bluesky</a></div></div>'
+            ext_links.append(f'<a href="https://bsky.app/profile/{escape(handle)}" target="_blank">Open on Bluesky</a>')
+        if did.startswith("did:plc:"):
+            plc_id = did.split(":", 2)[2]
+            ext_links.append(f'<a href="https://plc.directory/{escape(did)}" target="_blank">PLC directory</a>')
+        elif did.startswith("did:web:"):
+            ext_links.append(f'<a href="https://{escape(did[8:])}/.well-known/did.json" target="_blank">DID document</a>')
+        if ext_links:
+            links_html = " &middot; ".join(ext_links)
+            profile_link = f'<div class="card"><h3>Links</h3><div>{links_html}</div></div>'
 
         # Warmup/sparse indicators
         scan_count = row["scan_count"] or 0
@@ -1054,6 +1065,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             f"<p><a href=\"../index.html\">Overview</a> | <a href=\"../census.html\">Census</a></p>"
             + warmup_indicator + health_card + info_card + evidence_section
             + targets_table + probe_section + alerts_table + METHODS_HTML,
+            canonical=f"labeler/{slug}.html",
         )
         _write(os.path.join(tmp_dir, "labeler", f"{slug}.html"), html)
 

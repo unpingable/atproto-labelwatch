@@ -408,7 +408,7 @@ def test_generate_report_per_labeler_profile_link():
         generate_report(conn, out, now=now)
         page = open(os.path.join(out, "labeler", "did-plc-profile.html")).read()
         assert "bsky.app/profile/alice.bsky.social" in page
-        assert "View on Bluesky" in page
+        assert "Open on Bluesky" in page
 
 
 def test_generate_report_per_labeler_warmup_indicator():
