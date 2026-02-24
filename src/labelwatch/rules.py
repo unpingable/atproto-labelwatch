@@ -10,6 +10,8 @@ from .utils import format_ts
 
 RULE_RATE_SPIKE = "label_rate_spike"
 RULE_FLIP_FLOP = "flip_flop"
+RULE_TARGET_CONCENTRATION = "target_concentration"
+RULE_CHURN = "churn_index"
 
 
 def _window_bounds(now: datetime, minutes: int) -> tuple[str, str]:
@@ -148,8 +150,106 @@ def flip_flop(conn, config: Config, now: datetime) -> List[Dict]:
     return alerts
 
 
+def target_concentration(conn, config: Config, now: datetime) -> List[Dict]:
+    """HHI on target URI distribution. High HHI = fixated on few targets."""
+    alerts = []
+    now = now.astimezone(timezone.utc)
+    start = format_ts(now - timedelta(hours=config.concentration_window_hours))
+    end = format_ts(now)
+
+    labelers = conn.execute("SELECT labeler_did FROM labelers").fetchall()
+    for row in labelers:
+        labeler_did = row["labeler_did"]
+        rows = conn.execute(
+            "SELECT uri, COUNT(*) AS c FROM label_events WHERE labeler_did=? AND ts>=? AND ts<? GROUP BY uri",
+            (labeler_did, start, end),
+        ).fetchall()
+        if not rows:
+            continue
+        total = sum(r["c"] for r in rows)
+        if total < config.concentration_min_labels:
+            continue
+        hhi = sum((r["c"] / total) ** 2 for r in rows)
+        if hhi < config.concentration_threshold:
+            continue
+
+        top_targets = sorted(rows, key=lambda r: r["c"], reverse=True)
+        evidence_rows = conn.execute(
+            "SELECT event_hash FROM label_events WHERE labeler_did=? AND ts>=? AND ts<? LIMIT ?",
+            (labeler_did, start, end, config.max_evidence),
+        ).fetchall()
+        inputs = {
+            "hhi": round(hhi, 6),
+            "total_labels": total,
+            "unique_targets": len(rows),
+            "top_target_count": top_targets[0]["c"] if top_targets else 0,
+            "window_hours": config.concentration_window_hours,
+        }
+        alerts.append({
+            "rule_id": RULE_TARGET_CONCENTRATION,
+            "labeler_did": labeler_did,
+            "ts": format_ts(now),
+            "inputs": inputs,
+            "evidence_hashes": [r["event_hash"] for r in evidence_rows],
+        })
+    return alerts
+
+
+def churn_index(conn, config: Config, now: datetime) -> List[Dict]:
+    """Jaccard distance of target sets across two adjacent half-windows."""
+    alerts = []
+    now = now.astimezone(timezone.utc)
+    window = timedelta(hours=config.churn_window_hours)
+    mid = now - window / 2
+    start = now - window
+
+    labelers = conn.execute("SELECT labeler_did FROM labelers").fetchall()
+    for row in labelers:
+        labeler_did = row["labeler_did"]
+        first_half = conn.execute(
+            "SELECT DISTINCT uri FROM label_events WHERE labeler_did=? AND ts>=? AND ts<?",
+            (labeler_did, format_ts(start), format_ts(mid)),
+        ).fetchall()
+        second_half = conn.execute(
+            "SELECT DISTINCT uri FROM label_events WHERE labeler_did=? AND ts>=? AND ts<?",
+            (labeler_did, format_ts(mid), format_ts(now)),
+        ).fetchall()
+        set_a = {r["uri"] for r in first_half}
+        set_b = {r["uri"] for r in second_half}
+        union = set_a | set_b
+        if len(union) < config.churn_min_targets:
+            continue
+        intersection = set_a & set_b
+        jaccard_distance = 1.0 - (len(intersection) / len(union))
+        if jaccard_distance < config.churn_threshold:
+            continue
+
+        evidence_rows = conn.execute(
+            "SELECT event_hash FROM label_events WHERE labeler_did=? AND ts>=? AND ts<? LIMIT ?",
+            (labeler_did, format_ts(start), format_ts(now), config.max_evidence),
+        ).fetchall()
+        inputs = {
+            "jaccard_distance": round(jaccard_distance, 6),
+            "first_half_targets": len(set_a),
+            "second_half_targets": len(set_b),
+            "intersection": len(intersection),
+            "union": len(union),
+            "window_hours": config.churn_window_hours,
+        }
+        alerts.append({
+            "rule_id": RULE_CHURN,
+            "labeler_did": labeler_did,
+            "ts": format_ts(now),
+            "inputs": inputs,
+            "evidence_hashes": [r["event_hash"] for r in evidence_rows],
+        })
+    return alerts
+
+
 def run_rules(conn, config: Config, now: datetime) -> List[Dict]:
     alerts = []
     alerts.extend(label_rate_spike(conn, config, now))
     alerts.extend(flip_flop(conn, config, now))
+    alerts.extend(target_concentration(conn, config, now))
+    alerts.extend(churn_index(conn, config, now))
     return alerts
