@@ -13,7 +13,7 @@ def test_receipt_shape():
     db.init_db(conn)
     ingest.ingest_from_fixture(conn, FIXTURE)
 
-    cfg = Config(spike_k=5.0, min_current_count=10)
+    cfg = Config(spike_k=5.0, min_current_count=10, warmup_enabled=False)
     now = datetime(2024, 1, 2, 0, 0, 0, tzinfo=timezone.utc)
     scan.run_scan(conn, cfg, now=now)
 

@@ -35,6 +35,7 @@ def test_high_churn_triggers():
         churn_window_hours=24,
         churn_threshold=0.8,
         churn_min_targets=10,
+        warmup_enabled=False,
     )
     now = datetime(2024, 1, 1, 23, 59, 0, tzinfo=timezone.utc)
     scan.run_scan(conn, cfg, now=now)
@@ -57,6 +58,7 @@ def test_stable_targets_no_churn():
         churn_window_hours=24,
         churn_threshold=0.8,
         churn_min_targets=10,
+        warmup_enabled=False,
     )
     now = datetime(2024, 1, 1, 23, 59, 0, tzinfo=timezone.utc)
     scan.run_scan(conn, cfg, now=now)
@@ -77,6 +79,7 @@ def test_below_min_targets_no_churn():
         churn_window_hours=24,
         churn_threshold=0.5,
         churn_min_targets=10,
+        warmup_enabled=False,
     )
     now = datetime(2024, 1, 1, 23, 59, 0, tzinfo=timezone.utc)
     scan.run_scan(conn, cfg, now=now)

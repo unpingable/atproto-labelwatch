@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Iterable, Optional
+from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -30,9 +30,28 @@ CREATE TABLE IF NOT EXISTS label_events (
 CREATE TABLE IF NOT EXISTS labelers (
     labeler_did TEXT PRIMARY KEY,
     handle TEXT,
+    display_name TEXT,
     description TEXT,
+    service_endpoint TEXT,
+    labeler_class TEXT DEFAULT 'third_party',
+    is_reference INTEGER DEFAULT 0,
+    endpoint_status TEXT DEFAULT 'unknown',
+    last_probed TEXT,
     first_seen TEXT,
-    last_seen TEXT
+    last_seen TEXT,
+    visibility_class TEXT DEFAULT 'unresolved',
+    reachability_state TEXT DEFAULT 'unknown',
+    classification_confidence TEXT DEFAULT 'low',
+    classification_reason TEXT,
+    classification_version TEXT DEFAULT 'v1',
+    classified_at TEXT,
+    auditability TEXT DEFAULT 'low',
+    observed_as_src INTEGER DEFAULT 0,
+    has_labeler_service INTEGER DEFAULT 0,
+    has_label_key INTEGER DEFAULT 0,
+    declared_record INTEGER DEFAULT 0,
+    likely_test_dev INTEGER DEFAULT 0,
+    scan_count INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS alerts (
@@ -46,9 +65,32 @@ CREATE TABLE IF NOT EXISTS alerts (
     receipt_hash TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS labeler_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    labeler_did TEXT NOT NULL,
+    evidence_type TEXT NOT NULL,
+    evidence_value TEXT,
+    ts TEXT NOT NULL,
+    source TEXT
+);
+
+CREATE TABLE IF NOT EXISTS labeler_probe_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    labeler_did TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    http_status INTEGER,
+    normalized_status TEXT NOT NULL,
+    latency_ms INTEGER,
+    failure_type TEXT,
+    error TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_label_events_labeler_ts ON label_events(labeler_did, ts);
 CREATE INDEX IF NOT EXISTS idx_label_events_uri_ts ON label_events(uri, ts);
 CREATE INDEX IF NOT EXISTS idx_alerts_rule_ts ON alerts(rule_id, ts);
+CREATE INDEX IF NOT EXISTS idx_labeler_evidence_did ON labeler_evidence(labeler_did, evidence_type);
+CREATE INDEX IF NOT EXISTS idx_probe_history_did_ts ON labeler_probe_history(labeler_did, ts);
 """
 
 
@@ -122,6 +164,88 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
             conn.execute("ALTER TABLE labelers ADD COLUMN handle TEXT")
         set_schema_version(conn, 2)
         current = 2
+    if current == 2 and target >= 3:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
+        for col, typedef in [
+            ("display_name", "TEXT"),
+            ("service_endpoint", "TEXT"),
+            ("labeler_class", "TEXT DEFAULT 'third_party'"),
+            ("is_reference", "INTEGER DEFAULT 0"),
+            ("endpoint_status", "TEXT DEFAULT 'unknown'"),
+            ("last_probed", "TEXT"),
+        ]:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
+        set_schema_version(conn, 3)
+        current = 3
+    if current == 3 and target >= 4:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
+        for col, typedef in [
+            ("visibility_class", "TEXT DEFAULT 'unresolved'"),
+            ("reachability_state", "TEXT DEFAULT 'unknown'"),
+            ("classification_confidence", "TEXT DEFAULT 'low'"),
+            ("classification_reason", "TEXT"),
+            ("classification_version", "TEXT DEFAULT 'v1'"),
+            ("classified_at", "TEXT"),
+            ("auditability", "TEXT DEFAULT 'low'"),
+            ("observed_as_src", "INTEGER DEFAULT 0"),
+            ("has_labeler_service", "INTEGER DEFAULT 0"),
+            ("has_label_key", "INTEGER DEFAULT 0"),
+            ("declared_record", "INTEGER DEFAULT 0"),
+            ("likely_test_dev", "INTEGER DEFAULT 0"),
+            ("scan_count", "INTEGER DEFAULT 0"),
+        ]:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
+
+        # Create new tables
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS labeler_evidence (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                labeler_did TEXT NOT NULL,
+                evidence_type TEXT NOT NULL,
+                evidence_value TEXT,
+                ts TEXT NOT NULL,
+                source TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_labeler_evidence_did
+            ON labeler_evidence(labeler_did, evidence_type)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS labeler_probe_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                labeler_did TEXT NOT NULL,
+                ts TEXT NOT NULL,
+                endpoint TEXT NOT NULL,
+                http_status INTEGER,
+                normalized_status TEXT NOT NULL,
+                latency_ms INTEGER,
+                failure_type TEXT,
+                error TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_probe_history_did_ts
+            ON labeler_probe_history(labeler_did, ts)
+        """)
+
+        # Backfill: all existing labelers came from listReposByCollection
+        conn.execute("UPDATE labelers SET declared_record = 1")
+        conn.execute("""
+            UPDATE labelers SET has_labeler_service = 1
+            WHERE service_endpoint IS NOT NULL
+        """)
+        conn.execute("UPDATE labelers SET visibility_class = 'declared'")
+        conn.execute("""
+            UPDATE labelers SET reachability_state = endpoint_status
+            WHERE endpoint_status IS NOT NULL
+        """)
+        conn.execute("UPDATE labelers SET classification_reason = 'migrated_from_v3'")
+
+        set_schema_version(conn, 4)
+        current = 4
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
@@ -174,4 +298,56 @@ def insert_alert(conn: sqlite3.Connection, row: tuple) -> None:
         VALUES(?, ?, ?, ?, ?, ?, ?)
         """,
         row,
+    )
+
+
+def insert_evidence(conn: sqlite3.Connection, labeler_did: str, evidence_type: str,
+                    evidence_value: Optional[str], ts: str, source: Optional[str] = None) -> None:
+    conn.execute(
+        """
+        INSERT INTO labeler_evidence(labeler_did, evidence_type, evidence_value, ts, source)
+        VALUES(?, ?, ?, ?, ?)
+        """,
+        (labeler_did, evidence_type, evidence_value, ts, source),
+    )
+
+
+def insert_probe_history(conn: sqlite3.Connection, labeler_did: str, ts: str,
+                         endpoint: str, http_status: Optional[int],
+                         normalized_status: str, latency_ms: Optional[int],
+                         failure_type: Optional[str] = None,
+                         error: Optional[str] = None) -> None:
+    conn.execute(
+        """
+        INSERT INTO labeler_probe_history(
+            labeler_did, ts, endpoint, http_status, normalized_status,
+            latency_ms, failure_type, error
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (labeler_did, ts, endpoint, http_status, normalized_status,
+         latency_ms, failure_type, error),
+    )
+
+
+def get_evidence(conn: sqlite3.Connection, labeler_did: str) -> List[dict]:
+    rows = conn.execute(
+        "SELECT * FROM labeler_evidence WHERE labeler_did=? ORDER BY ts DESC",
+        (labeler_did,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_probe_history(conn: sqlite3.Connection, labeler_did: str,
+                      limit: int = 50) -> List[dict]:
+    rows = conn.execute(
+        "SELECT * FROM labeler_probe_history WHERE labeler_did=? ORDER BY ts DESC LIMIT ?",
+        (labeler_did, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def increment_scan_count(conn: sqlite3.Connection, labeler_did: str) -> None:
+    conn.execute(
+        "UPDATE labelers SET scan_count = scan_count + 1 WHERE labeler_did = ?",
+        (labeler_did,),
     )

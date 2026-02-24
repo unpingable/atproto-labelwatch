@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -9,6 +12,15 @@ from typing import Dict, Iterable, List, Optional
 from . import db
 from .config import Config
 from .utils import format_ts, hash_sha256, now_utc, stable_json
+
+log = logging.getLogger(__name__)
+
+_VALID_DID_RE = re.compile(r"^did:(plc|web):[a-zA-Z0-9._:%-]{1,256}$")
+
+
+def _is_valid_did(did: str) -> bool:
+    """Validate DID shape: must be did:plc: or did:web: with reasonable length."""
+    return bool(_VALID_DID_RE.match(did))
 
 
 @dataclass
@@ -90,10 +102,49 @@ def _cursor_key(config: Config) -> str:
     return config.service_url.rstrip("/")
 
 
+def _track_observed_src(conn, src_did: str, ts: str, evidence_seen: set) -> None:
+    """Track observed label src DID: create observed_only labeler or update sticky flag."""
+    if not src_did or not _is_valid_did(src_did):
+        return
+
+    existing = conn.execute(
+        "SELECT observed_as_src, visibility_class FROM labelers WHERE labeler_did=?", (src_did,)
+    ).fetchone()
+
+    if existing is None:
+        # Unknown DID — create as observed_only
+        conn.execute(
+            """
+            INSERT INTO labelers(labeler_did, first_seen, last_seen,
+                                 visibility_class, reachability_state, observed_as_src,
+                                 classification_reason)
+            VALUES(?, ?, ?, 'observed_only', 'unknown', 1, 'observed_label_src')
+            """,
+            (src_did, ts, ts),
+        )
+    else:
+        # Known DID — update sticky observed_as_src, and upgrade visibility if unresolved
+        updates = ["observed_as_src = 1"]
+        if existing["visibility_class"] == "unresolved":
+            updates.append("visibility_class = 'observed_only'")
+            updates.append("classification_reason = 'observed_label_src'")
+        conn.execute(
+            f"UPDATE labelers SET {', '.join(updates)} WHERE labeler_did = ?",
+            (src_did,),
+        )
+
+    # Insert evidence (dedupe within this ingest run)
+    ev_key = (src_did, "observed_label_src")
+    if ev_key not in evidence_seen:
+        db.insert_evidence(conn, src_did, "observed_label_src", "true", ts, "ingest")
+        evidence_seen.add(ev_key)
+
+
 def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int = 10) -> int:
     total = 0
     source = _cursor_key(config)
     cursor = db.get_cursor(conn, source)
+    evidence_seen: set = set()
     for _ in range(max_pages):
         payload = fetch_labels(config.service_url, config.labeler_dids, cursor=cursor, limit=limit)
         labels = payload.get("labels", [])
@@ -117,6 +168,9 @@ def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int =
                 )
             )
             db.upsert_labeler(conn, event.labeler_did, event.ts)
+            # Track observed src DID
+            src_did = event.src or event.labeler_did
+            _track_observed_src(conn, src_did, event.ts, evidence_seen)
         total += db.insert_label_events(conn, rows)
         cursor = payload.get("cursor")
         # Persist cursor only after events are committed
@@ -131,6 +185,7 @@ def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int =
 def ingest_from_iter(conn, items: Iterable[Dict]) -> int:
     rows = []
     total = 0
+    evidence_seen: set = set()
     for raw in items:
         event = normalize_label(raw)
         rows.append(
@@ -148,10 +203,84 @@ def ingest_from_iter(conn, items: Iterable[Dict]) -> int:
             )
         )
         db.upsert_labeler(conn, event.labeler_did, event.ts)
+        src_did = event.src or event.labeler_did
+        _track_observed_src(conn, src_did, event.ts, evidence_seen)
     if rows:
         total = db.insert_label_events(conn, rows)
         conn.commit()
     return total
+
+
+def ingest_multi(conn, config: Config, timeout: int | None = None,
+                  budget: int | None = None, max_pages: int | None = None) -> Dict[str, int]:
+    """Ingest from all accessible labeler endpoints.
+
+    Each labeler gets its own cursor keyed by DID. Failures are logged
+    and skipped. Respects a time budget to avoid blocking the main loop.
+
+    Returns {did: count_inserted, ...}.
+    """
+    if timeout is None:
+        timeout = config.multi_ingest_timeout
+    if budget is None:
+        budget = config.multi_ingest_budget
+    if max_pages is None:
+        max_pages = config.multi_ingest_max_pages
+
+    rows = conn.execute(
+        "SELECT labeler_did, service_endpoint FROM labelers WHERE endpoint_status='accessible'"
+    ).fetchall()
+
+    results: Dict[str, int] = {}
+    start_time = time.monotonic()
+
+    for row in rows:
+        if time.monotonic() - start_time > budget:
+            log.info("Multi-ingest budget exhausted after %ds", budget)
+            break
+
+        did = row["labeler_did"]
+        endpoint = row["service_endpoint"]
+        if not endpoint:
+            continue
+
+        cursor_key = did
+        cursor = db.get_cursor(conn, cursor_key)
+        total = 0
+        evidence_seen: set = set()
+
+        try:
+            for _ in range(max_pages):
+                payload = fetch_labels(endpoint, [did], cursor=cursor, limit=100)
+                labels = payload.get("labels", [])
+                if not labels:
+                    break
+                event_rows = []
+                for raw in labels:
+                    event = normalize_label(raw)
+                    event_rows.append((
+                        event.labeler_did, event.src, event.uri, event.cid,
+                        event.val, event.neg, event.exp, event.sig,
+                        event.ts, event.event_hash,
+                    ))
+                    db.upsert_labeler(conn, event.labeler_did, event.ts)
+                    src_did = event.src or event.labeler_did
+                    _track_observed_src(conn, src_did, event.ts, evidence_seen)
+                total += db.insert_label_events(conn, event_rows)
+                cursor = payload.get("cursor")
+                if cursor:
+                    db.set_cursor(conn, cursor_key, cursor)
+                conn.commit()
+                if not cursor:
+                    break
+        except Exception:
+            log.warning("Multi-ingest failed for %s at %s", did, endpoint, exc_info=True)
+
+        results[did] = total
+        if total > 0:
+            log.info("Multi-ingest %s: %d events", did, total)
+
+    return results
 
 
 def ingest_from_fixture(conn, path: str) -> int:

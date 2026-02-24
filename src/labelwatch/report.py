@@ -5,37 +5,84 @@ import os
 import shutil
 import uuid
 from importlib import metadata
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from html import escape
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
 
 from . import db
 from .receipts import config_hash as config_hash_fn
 from .utils import format_ts, get_git_commit, parse_ts
 
 
+def _did_slug(did: str) -> str:
+    """Convert DID to URL-safe slug: did:plc:abc123 → did-plc-abc123."""
+    return did.replace(":", "-")
+
+
 def _handle_cache(conn) -> Dict[str, Optional[str]]:
-    """Build a DID -> handle lookup from the labelers table."""
     rows = conn.execute("SELECT labeler_did, handle FROM labelers").fetchall()
     return {r["labeler_did"]: r["handle"] for r in rows}
 
 
-def _display_name(did: str, handles: Dict[str, Optional[str]]) -> str:
-    """Return 'handle (did)' if resolved, else just the DID."""
+def _display_name_cache(conn) -> Dict[str, Optional[str]]:
+    rows = conn.execute("SELECT labeler_did, display_name FROM labelers").fetchall()
+    return {r["labeler_did"]: r["display_name"] for r in rows}
+
+
+def _display_name(did: str, handles: Dict[str, Optional[str]], display_names: Optional[Dict[str, Optional[str]]] = None) -> str:
+    if display_names:
+        dn = display_names.get(did)
+        if dn:
+            return dn
     h = handles.get(did)
     if h:
         return f"{h}"
     return did
 
 
-def _labeler_link(did: str, handles: Dict[str, Optional[str]]) -> str:
-    """Return an HTML link to a labeler page, showing handle if available."""
-    did_path = quote(did, safe="")
+def _labeler_link(did: str, handles: Dict[str, Optional[str]], display_names: Optional[Dict[str, Optional[str]]] = None) -> str:
+    slug = _did_slug(did)
+    dn = display_names.get(did) if display_names else None
     h = handles.get(did)
-    if h:
-        return f'<a href="labeler/{did_path}.html">{escape(h)}</a> <span class="small">({escape(did)})</span>'
-    return f'<a href="labeler/{did_path}.html">{escape(did)}</a>'
+    label = dn or h
+    if label:
+        return f'<a href="labeler/{slug}.html">{escape(label)}</a> <span class="small">({escape(did)})</span>'
+    return f'<a href="labeler/{slug}.html">{escape(did)}</a>'
+
+
+def _endpoint_dot(status: Optional[str]) -> str:
+    if status == "accessible":
+        return '<span class="endpoint-dot endpoint-ok" title="Accessible"></span>'
+    elif status in ("auth_required", "unknown"):
+        return '<span class="endpoint-dot endpoint-warn" title="' + escape(status or "unknown") + '"></span>'
+    elif status == "down":
+        return '<span class="endpoint-dot endpoint-down" title="Down"></span>'
+    return '<span class="endpoint-dot endpoint-warn" title="Unknown"></span>'
+
+
+def _confidence_badge(inputs_json: Optional[str]) -> str:
+    if not inputs_json:
+        return ""
+    try:
+        inputs = json.loads(inputs_json)
+        conf = inputs.get("confidence", "")
+        if conf == "low":
+            return ' <span class="badge badge-low-conf">Low confidence</span>'
+    except (json.JSONDecodeError, AttributeError):
+        pass
+    return ""
+
+
+def _visibility_badge(vis_class: Optional[str]) -> str:
+    badges = {
+        "declared": ("Declared", "badge-stable"),
+        "protocol_public": ("Protocol", "badge-burst"),
+        "observed_only": ("Observed", "badge-fixated"),
+        "unresolved": ("Unresolved", "badge-low-conf"),
+    }
+    label, cls = badges.get(vis_class or "unresolved", ("Unknown", "badge-low-conf"))
+    return f'<span class="badge {cls}">{escape(label)}</span>'
 
 
 STYLE = """
@@ -63,6 +110,96 @@ code { font-family: "Courier New", monospace; }
 .sparkline { vertical-align: middle; }
 .anomaly-row { background: #fff8f0; }
 .methods { background: #f8f9fa; border: 1px solid #e9ecef; padding: 1rem; border-radius: 6px; margin-top: 2rem; font-size: 0.85rem; }
+.reference-lane { border: 2px solid #b8d4e3; background: #f0f7fb; padding: 1rem; border-radius: 6px; margin-bottom: 1.5rem; }
+.reference-lane h2 { margin-top: 0; color: #0b5394; }
+.badge-low-conf { background: #e2e3e5; color: #6c757d; font-weight: normal; }
+.endpoint-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 0.3rem; vertical-align: middle; }
+.endpoint-ok { background: #28a745; }
+.endpoint-warn { background: #ffc107; }
+.endpoint-down { background: #dc3545; }
+.class-group { margin-bottom: 2rem; }
+.class-group h3 { color: #444; border-bottom: 1px solid #ddd; padding-bottom: 0.3rem; }
+.tab-bar { display: flex; gap: 0; border-bottom: 2px solid #ddd; margin-bottom: 1rem; }
+.tab-bar button { background: none; border: none; padding: 0.5rem 1rem; cursor: pointer; font-size: 0.95rem; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+.tab-bar button.active { border-bottom-color: #0b5394; color: #0b5394; font-weight: bold; }
+.tab-bar button:hover { background: #f0f7fb; }
+.warmup-banner { background: #fff3cd; border: 1px solid #ffc107; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
+.census-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin: 1rem 0; }
+.census-card { border: 1px solid #ddd; padding: 0.75rem; border-radius: 6px; text-align: center; }
+.census-card .value { font-size: 1.6rem; font-weight: bold; }
+.census-card .label { font-size: 0.75rem; color: #666; }
+.evidence-section { margin-top: 1rem; }
+.evidence-section summary { cursor: pointer; font-weight: bold; color: #0b5394; }
+.evidence-item { margin: 0.3rem 0; font-size: 0.85rem; }
+.rollup { background: #f8f9fa; border: 1px solid #e9ecef; padding: 0.5rem; border-radius: 4px; margin: 0.5rem 0; }
+.rollup summary { cursor: pointer; font-size: 0.9rem; }
+.hidden { display: none; }
+"""
+
+TRIAGE_JS = """
+<script>
+(function() {
+  var tabs = document.querySelectorAll('.tab-bar button');
+  var rows = document.querySelectorAll('.labeler-row');
+  var testToggle = document.getElementById('toggle-test-dev');
+  var inactiveToggle = document.getElementById('toggle-inactive');
+
+  function applyFilters() {
+    var active = document.querySelector('.tab-bar button.active');
+    var view = active ? active.dataset.view : 'all';
+    var showTest = testToggle && testToggle.checked;
+    var showInactive = inactiveToggle && inactiveToggle.checked;
+    var shown = 0;
+    rows.forEach(function(row) {
+      var isTest = row.dataset.testDev === '1';
+      var isInactive = row.dataset.inactive === '1';
+      var matchView = true;
+
+      if (view === 'active') matchView = row.dataset.events7d !== '0';
+      else if (view === 'alerts') matchView = row.dataset.alertCount !== '0';
+      else if (view === 'new') matchView = row.dataset.isNew === '1';
+      else if (view === 'opaque') matchView = row.dataset.opaque === '1';
+
+      var visible = matchView;
+      if (!showTest && isTest) visible = false;
+      if (!showInactive && isInactive) visible = false;
+
+      row.style.display = visible ? '' : 'none';
+      if (visible) shown++;
+    });
+    // Update count badges
+    tabs.forEach(function(btn) {
+      var v = btn.dataset.view;
+      var count = 0;
+      rows.forEach(function(r) {
+        var isTest = r.dataset.testDev === '1';
+        var isInactive = r.dataset.inactive === '1';
+        if (!showTest && isTest) return;
+        if (!showInactive && isInactive) return;
+        if (v === 'all') count++;
+        else if (v === 'active' && r.dataset.events7d !== '0') count++;
+        else if (v === 'alerts' && r.dataset.alertCount !== '0') count++;
+        else if (v === 'new' && r.dataset.isNew === '1') count++;
+        else if (v === 'opaque' && r.dataset.opaque === '1') count++;
+      });
+      btn.querySelector('.tab-count').textContent = '(' + count + ')';
+    });
+  }
+
+  tabs.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      tabs.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      applyFilters();
+    });
+  });
+
+  if (testToggle) testToggle.addEventListener('change', applyFilters);
+  if (inactiveToggle) inactiveToggle.addEventListener('change', applyFilters);
+
+  applyFilters();
+})();
+</script>
 """
 
 
@@ -80,17 +217,18 @@ def _write_json(path: str, payload: Any) -> None:
 
 def _layout(title: str, body: str) -> str:
     return f"""<!doctype html>
-<html lang=\"en\">
+<html lang="en">
 <head>
-<meta charset=\"utf-8\" />
-<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta http-equiv="Cache-Control" content="no-cache, must-revalidate" />
 <title>{escape(title)}</title>
 <style>{STYLE}</style>
 </head>
 <body>
 <header>
 <h1>{escape(title)}</h1>
-<p class=\"small\">Generated by labelwatch</p>
+<p class="small">Generated by labelwatch</p>
 </header>
 {body}
 </body>
@@ -104,7 +242,6 @@ def _table(headers: List[str], rows: List[List[str]]) -> str:
 
 
 def _sparkline_svg(values: List[int], width: int = 120, height: int = 24) -> str:
-    """Render an inline SVG sparkline from a list of values."""
     if not values or max(values) == 0:
         return f'<svg class="sparkline" width="{width}" height="{height}"></svg>'
     n = len(values)
@@ -124,7 +261,6 @@ def _sparkline_svg(values: List[int], width: int = 120, height: int = 24) -> str
 
 
 def _hourly_counts(conn, labeler_did: str, start: str, end: str, buckets: int = 168) -> List[int]:
-    """Return hourly event counts for a labeler over a time range."""
     rows = conn.execute(
         "SELECT ts FROM label_events WHERE labeler_did=? AND ts>=? AND ts<? ORDER BY ts",
         (labeler_did, start, end),
@@ -146,7 +282,6 @@ def _hourly_counts(conn, labeler_did: str, start: str, end: str, buckets: int = 
 
 
 def _labeler_badges(conn, labeler_did: str, start: str, end: str) -> List[tuple[str, str]]:
-    """Return (label, css_class) badge tuples for a labeler based on alerts."""
     alert_rows = conn.execute(
         "SELECT rule_id FROM alerts WHERE labeler_did=? AND ts>=? AND ts<=?",
         (labeler_did, start, end),
@@ -171,7 +306,6 @@ def _badges_html(badges: List[tuple[str, str]]) -> str:
 
 
 def _labeler_health_card(conn, labeler_did: str, start_7d: str, now_ts: str, sparkline_counts: List[int]) -> str:
-    """Render a health card with key metrics and sparkline for a labeler."""
     events_7d = conn.execute(
         "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=? AND ts>=? AND ts<=?",
         (labeler_did, start_7d, now_ts),
@@ -201,15 +335,44 @@ def _labeler_health_card(conn, labeler_did: str, start_7d: str, now_ts: str, spa
 """
 
 
+def _evidence_expander(conn, labeler_did: str, row) -> str:
+    """Render a <details> expander showing classification evidence."""
+    reason = row["classification_reason"] or "No classification yet"
+    version = row["classification_version"] or "unknown"
+    classified_at = row["classified_at"] or "never"
+
+    evidence_rows = db.get_evidence(conn, labeler_did)
+    evidence_html = ""
+    for ev in evidence_rows[:20]:
+        evidence_html += f'<div class="evidence-item">{escape(ev["evidence_type"])}: {escape(str(ev["evidence_value"]))} <span class="small">({escape(ev["ts"])})</span></div>'
+    if not evidence_rows:
+        evidence_html = '<div class="evidence-item">No evidence records yet.</div>'
+
+    return f"""
+<div class="evidence-section">
+<details><summary>Why classified this way</summary>
+<div class="card" style="margin-top:0.5rem">
+  <div><strong>Reason:</strong> {escape(reason)}</div>
+  <div><strong>Classifier version:</strong> {escape(version)}</div>
+  <div><strong>Classified at:</strong> {escape(classified_at)}</div>
+  <h4>Evidence surfaces</h4>
+  {evidence_html}
+</div>
+</details>
+</div>
+"""
+
+
 METHODS_HTML = """
 <div class="methods">
 <h3>Methods and caveats</h3>
 <ul>
-<li>Behavioral telemetry only. No intent claims, no content judgments, no verdicts.</li>
+<li>Behavioral observation only. No content analysis, user profiling, or brute-force enumeration beyond declared/observed/protocol surfaces.</li>
 <li>Rules detect geometric patterns (rate anomalies, target distribution, churn). Thresholds are configurable.</li>
 <li>Every alert includes a receipted hash over rule_id, config, inputs, and evidence for reproducibility.</li>
 <li>Sparklines show hourly event counts over 7 days. Badges summarize which rules fired in the period.</li>
-<li>Observation surface: label events from com.atproto.label.queryLabels. Does not observe content, profiles, or social graph.</li>
+<li>Observation surface: label events from com.atproto.label.queryLabels and labeler declarations from com.atproto.sync.listReposByCollection. Does not observe content, profiles, or social graph.</li>
+<li>Classification is based on structured evidence from multiple surfaces (registry declaration, DID document, endpoint probing, observed label activity). Each labeler page includes a "Why classified this way" expander with full evidence.</li>
 </ul>
 </div>
 """
@@ -325,6 +488,91 @@ def _commit_out_dir(tmp_dir: str, out_dir: str) -> None:
     os.replace(tmp_dir, out_dir)
 
 
+def _census_counts(conn) -> Dict[str, Dict[str, int]]:
+    """Compute counts by visibility_class, reachability_state, confidence, auditability."""
+    result: Dict[str, Dict[str, int]] = {
+        "visibility_class": {},
+        "reachability_state": {},
+        "classification_confidence": {},
+        "auditability": {},
+    }
+    for field in result:
+        rows = conn.execute(
+            f"SELECT COALESCE({field}, 'unknown') AS val, COUNT(*) AS c FROM labelers GROUP BY val"
+        ).fetchall()
+        result[field] = {r["val"]: r["c"] for r in rows}
+    return result
+
+
+def _alert_rollups(alerts_list, handles, display_names) -> str:
+    """Group low-confidence alerts from same scan into collapsible rollups."""
+    # Group by (rule_id, ts) where confidence is low
+    rollup_groups: Dict[tuple, list] = defaultdict(list)
+    standalone = []
+    for r in alerts_list:
+        try:
+            inputs = json.loads(r["inputs_json"])
+            conf = inputs.get("confidence", "high")
+        except (json.JSONDecodeError, AttributeError):
+            conf = "high"
+        if conf == "low":
+            rollup_groups[(r["rule_id"], r["ts"])].append(r)
+        else:
+            standalone.append(r)
+
+    html_parts = []
+    # Render standalone alerts normally
+    for r in standalone[:50]:
+        labeler_cell = _display_name(r["labeler_did"], handles, display_names)
+        conf_badge = _confidence_badge(r["inputs_json"])
+        html_parts.append(
+            f"<tr>"
+            f"<td><a href=\"alert/{r['id']}.html\">{r['id']}</a></td>"
+            f"<td>{escape(r['rule_id'])}{conf_badge}</td>"
+            f"<td>{escape(labeler_cell)}</td>"
+            f"<td>{escape(r['ts'])}</td>"
+            f"</tr>"
+        )
+
+    # Render rollups
+    for (rule_id, ts), group in sorted(rollup_groups.items(), key=lambda x: x[0][1], reverse=True):
+        if len(group) <= 2:
+            # Small groups: render individually
+            for r in group:
+                labeler_cell = _display_name(r["labeler_did"], handles, display_names)
+                conf_badge = _confidence_badge(r["inputs_json"])
+                html_parts.append(
+                    f"<tr class=\"anomaly-row\">"
+                    f"<td><a href=\"alert/{r['id']}.html\">{r['id']}</a></td>"
+                    f"<td>{escape(r['rule_id'])}{conf_badge}</td>"
+                    f"<td>{escape(labeler_cell)}</td>"
+                    f"<td>{escape(r['ts'])}</td>"
+                    f"</tr>"
+                )
+        else:
+            # Rollup
+            detail_rows = ""
+            for r in group:
+                labeler_cell = _display_name(r["labeler_did"], handles, display_names)
+                detail_rows += (
+                    f"<tr class=\"anomaly-row\">"
+                    f"<td><a href=\"alert/{r['id']}.html\">{r['id']}</a></td>"
+                    f"<td>{escape(r['rule_id'])}</td>"
+                    f"<td>{escape(labeler_cell)}</td>"
+                    f"<td>{escape(r['ts'])}</td>"
+                    f"</tr>"
+                )
+            html_parts.append(
+                f"<tr><td colspan=\"4\">"
+                f"<details class=\"rollup\"><summary>{escape(rule_id)} "
+                f"<span class=\"badge badge-low-conf\">Low confidence</span>: {len(group)} labelers</summary>"
+                f"<table><tbody>{detail_rows}</tbody></table>"
+                f"</details></td></tr>"
+            )
+
+    return "".join(html_parts)
+
+
 def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     real_now = datetime.now(timezone.utc)
     if now is None:
@@ -340,6 +588,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
 
     last_ingest = _max_ts(conn, "label_events")
     last_scan = _max_ts(conn, "alerts")
+    last_discovery = db.get_meta(conn, "last_discovery_ts")
 
     max_label = _parse_ts_safe(last_ingest)
     max_alert = _parse_ts_safe(last_scan)
@@ -374,6 +623,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
 
     start_24h = format_ts(now - timedelta(hours=24))
     start_7d = format_ts(now - timedelta(days=7))
+    start_30d = format_ts(now - timedelta(days=30))
 
     alerts_24h = _alerts_by_rule(conn, start_24h, now_ts)
     alerts_7d = _alerts_by_rule(conn, start_7d, now_ts)
@@ -382,11 +632,24 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     labelers = conn.execute("SELECT * FROM labelers ORDER BY labeler_did").fetchall()
     alerts = conn.execute("SELECT * FROM alerts ORDER BY ts DESC").fetchall()
     handles = _handle_cache(conn)
+    display_names = _display_name_cache(conn)
+
+    # Census counts
+    census = _census_counts(conn)
+    test_dev_count = conn.execute("SELECT COUNT(*) AS c FROM labelers WHERE likely_test_dev=1").fetchone()["c"]
+    warmup_count = conn.execute(
+        "SELECT COUNT(*) AS c FROM labelers WHERE scan_count < 3"
+    ).fetchone()["c"]
+
+    # Partition labelers into reference and non-reference
+    ref_labelers = [r for r in labelers if r["is_reference"]]
+    nonref_labelers = [r for r in labelers if not r["is_reference"]]
 
     overview = {
         "generated_at": now_ts,
         "last_ingest": last_ingest,
         "last_scan": last_scan,
+        "last_discovery": last_discovery,
         "schema_version": db.SCHEMA_VERSION,
         "schema_version_source": schema_version_source,
         "alerts_by_rule_24h": alerts_24h,
@@ -400,48 +663,63 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         "timestamps_assumed_utc": timestamps_assumed_utc,
         "naive_timestamp_count": naive_count,
         "build_signature": build_signature,
+        "census": census,
+        "test_dev_count": test_dev_count,
     }
 
     tmp_dir = _prepare_out_dir(out_dir)
     _write_json(os.path.join(tmp_dir, "overview.json"), overview)
 
-    labeler_rows = []
+    labeler_rows_json = []
     for row in labelers:
         did = row["labeler_did"]
-        did_path = quote(did, safe="")
-        labeler_rows.append({
+        slug = _did_slug(did)
+        labeler_rows_json.append({
             "labeler_did": did,
             "handle": handles.get(did),
+            "display_name": display_names.get(did),
+            "labeler_class": row["labeler_class"],
+            "is_reference": bool(row["is_reference"]),
+            "endpoint_status": row["endpoint_status"],
+            "visibility_class": row["visibility_class"],
+            "reachability_state": row["reachability_state"],
+            "auditability": row["auditability"],
+            "classification_confidence": row["classification_confidence"],
             "first_seen": row["first_seen"],
             "last_seen": row["last_seen"],
-            "href": f"labeler/{did_path}.html",
+            "href": f"labeler/{slug}.html",
         })
-    _write_json(os.path.join(tmp_dir, "labelers.json"), labeler_rows)
+    _write_json(os.path.join(tmp_dir, "labelers.json"), labeler_rows_json)
 
-    alert_rows = []
+    alert_rows_json = []
     for row in alerts:
-        alert_rows.append({
+        alert_rows_json.append({
             "id": row["id"],
             "rule_id": row["rule_id"],
             "labeler_did": row["labeler_did"],
             "ts": row["ts"],
             "href": f"alert/{row['id']}.html",
         })
-    _write_json(os.path.join(tmp_dir, "alerts.json"), alert_rows)
+    _write_json(os.path.join(tmp_dir, "alerts.json"), alert_rows_json)
 
-    skew_note = ""
-    if skew_seconds > 0:
-        skew_note = f"<div class=\"card\"><h3>Clock skew</h3><div>{skew_seconds}s</div></div>"
-    overview_cards = f"""
-<div class=\"grid\">
-  <div class=\"card\"><h3>Generated</h3><div>{escape(now_ts)}</div></div>
-  <div class=\"card\"><h3>Last ingest</h3><div>{escape(str(last_ingest))}</div></div>
-  <div class=\"card\"><h3>Last scan</h3><div>{escape(str(last_scan))}</div></div>
-  <div class=\"card\"><h3>Labelers</h3><div>{len(labelers)}</div></div>
-  <div class=\"card\"><h3>Alerts</h3><div>{len(alerts)}</div></div>
-  {skew_note}
-</div>
+    # --- Staleness indicators ---
+    staleness_cards = f"""
+<div class="grid">
+  <div class="card"><h3>Generated</h3><div>{escape(now_ts)}</div></div>
+  <div class="card"><h3>Last ingest</h3><div>{escape(str(last_ingest or 'never'))}</div></div>
+  <div class="card"><h3>Last scan</h3><div>{escape(str(last_scan or 'never'))}</div></div>
+  <div class="card"><h3>Last discovery</h3><div>{escape(str(last_discovery or 'never'))}</div></div>
+  <div class="card"><h3>Labelers</h3><div>{len(labelers)}</div></div>
+  <div class="card"><h3>Alerts</h3><div>{len(alerts)}</div></div>
 """
+    if skew_seconds > 0:
+        staleness_cards += f'  <div class="card"><h3>Clock skew</h3><div>{skew_seconds}s</div></div>'
+    staleness_cards += "</div>"
+
+    # --- Warm-up banner ---
+    warmup_banner = ""
+    if warmup_count > 0:
+        warmup_banner = f'<div class="warmup-banner">Baselines forming: {warmup_count} labeler{"s" if warmup_count != 1 else ""} still in warm-up period.</div>'
 
     def dict_rows(d: Dict[str, int]) -> List[List[str]]:
         return [[escape(k), str(v)] for k, v in sorted(d.items(), key=lambda x: x[0])]
@@ -452,7 +730,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     if alerts_7d:
         overview_tables += "<h2>Alerts by rule (7d)</h2>" + _table(["rule_id", "count"], dict_rows(alerts_7d))
 
-    top_rows = [[_labeler_link(r["labeler_did"], handles), str(r["count"])] for r in top_labelers]
+    top_rows = [[_labeler_link(r["labeler_did"], handles, display_names), str(r["count"])] for r in top_labelers]
     if top_rows:
         overview_tables += "<h2>Top labelers by alerts (7d)</h2>" + _table(["labeler", "count"], top_rows)
 
@@ -464,50 +742,121 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     ]
     build_table = "<h2>Build signature</h2>" + _table(["field", "value"], build_rows)
 
-    labeler_table_rows = []
-    for r in labelers:
+    # Reference lane
+    reference_lane = ""
+    if ref_labelers:
+        ref_cards = ""
+        for r in ref_labelers:
+            did = r["labeler_did"]
+            counts = _hourly_counts(conn, did, start_7d, now_ts)
+            ref_card = _labeler_health_card(conn, did, start_7d, now_ts, counts)
+            ref_cards += f'<h3>{_labeler_link(did, handles, display_names)}</h3>{ref_card}'
+        reference_lane = f'<div class="reference-lane"><h2>Reference labelers</h2>{ref_cards}</div>'
+
+    # --- Triage view with tabs ---
+    # Pre-compute per-labeler data attributes
+    labeler_alert_counts = {}
+    for r in alerts:
+        labeler_alert_counts[r["labeler_did"]] = labeler_alert_counts.get(r["labeler_did"], 0) + 1
+
+    tab_bar = f"""
+<div class="tab-bar">
+  <button class="active" data-view="active">Active <span class="tab-count"></span></button>
+  <button data-view="alerts">Alerts <span class="tab-count"></span></button>
+  <button data-view="new">New <span class="tab-count"></span></button>
+  <button data-view="opaque">Opaque <span class="tab-count"></span></button>
+  <button data-view="all">All <span class="tab-count"></span></button>
+</div>
+<div style="margin:0.5rem 0;font-size:0.85rem;">
+  <label><input type="checkbox" id="toggle-test-dev"> Show test/dev ({test_dev_count})</label>
+  <label style="margin-left:1rem;"><input type="checkbox" id="toggle-inactive"> Show inactive &gt;30d</label>
+</div>
+"""
+
+    labeler_table_header = '<table><thead><tr><th>labeler</th><th>visibility</th><th>endpoint</th><th>first_seen</th><th>last_seen</th><th>activity</th><th>behavior</th></tr></thead><tbody>'
+    labeler_table_rows_html = ""
+
+    for r in nonref_labelers:
         did = r["labeler_did"]
         badges = _labeler_badges(conn, did, start_7d, now_ts)
         counts = _hourly_counts(conn, did, start_7d, now_ts)
         spark = _sparkline_svg(counts)
-        labeler_table_rows.append([
-            _labeler_link(did, handles),
-            escape(str(r["first_seen"])),
-            escape(str(r["last_seen"])),
-            spark,
-            _badges_html(badges),
-        ])
-    labeler_links = "<h2>Labelers</h2>" + _table(
-        ["labeler", "first_seen", "last_seen", "activity", "behavior"],
-        labeler_table_rows,
-    )
+        ep_status = r["endpoint_status"] if r["endpoint_status"] else "unknown"
+        vis_class = r["visibility_class"] or "unresolved"
+        reach = r["reachability_state"] or "unknown"
+        events_7d = sum(counts)
+        alert_count = labeler_alert_counts.get(did, 0)
+        is_test = r["likely_test_dev"] or 0
+        is_new = "1" if r["first_seen"] and r["first_seen"] >= start_7d else "0"
+        is_opaque = "1" if vis_class in ("observed_only", "unresolved") or reach in ("auth_required", "down") else "0"
+        last_seen_dt = _parse_ts_safe(r["last_seen"])
+        is_inactive = "1" if last_seen_dt and last_seen_dt < _parse_ts_safe(start_30d) else "0"
 
-    anomaly_rules = {"label_rate_spike", "flip_flop", "target_concentration", "churn_index"}
-    alert_table_rows = []
-    for r in alerts[:50]:
-        is_anomaly = r["rule_id"] in anomaly_rules
-        row_class = ' class="anomaly-row"' if is_anomaly else ""
-        labeler_cell = _display_name(r["labeler_did"], handles)
-        alert_table_rows.append(
-            f"<tr{row_class}>"
-            f"<td><a href=\"alert/{r['id']}.html\">{r['id']}</a></td>"
-            f"<td>{escape(r['rule_id'])}</td>"
-            f"<td>{escape(labeler_cell)}</td>"
-            f"<td>{escape(r['ts'])}</td>"
-            f"</tr>"
+        labeler_table_rows_html += (
+            f'<tr class="labeler-row" '
+            f'data-events7d="{events_7d}" data-alert-count="{alert_count}" '
+            f'data-test-dev="{is_test}" data-is-new="{is_new}" '
+            f'data-opaque="{is_opaque}" data-inactive="{is_inactive}">'
+            f'<td>{_labeler_link(did, handles, display_names)}</td>'
+            f'<td>{_visibility_badge(vis_class)}</td>'
+            f'<td>{_endpoint_dot(ep_status)}</td>'
+            f'<td>{escape(str(r["first_seen"]))}</td>'
+            f'<td>{escape(str(r["last_seen"]))}</td>'
+            f'<td>{spark}</td>'
+            f'<td>{_badges_html(badges)}</td>'
+            f'</tr>'
         )
+
+    labeler_section = f"<h2>Labelers</h2>{tab_bar}{labeler_table_header}{labeler_table_rows_html}</tbody></table>"
+
+    # --- Alert rollups ---
     alert_head = "<tr><th>id</th><th>rule_id</th><th>labeler</th><th>ts</th></tr>"
-    alert_links = f"<h2>Recent alerts</h2><table><thead>{alert_head}</thead><tbody>{''.join(alert_table_rows)}</tbody></table>"
+    rollup_html = _alert_rollups(list(alerts[:200]), handles, display_names)
+    alert_links = f"<h2>Recent alerts</h2><table><thead>{alert_head}</thead><tbody>{rollup_html}</tbody></table>"
 
     naive_banner = ""
     if naive_count > 0:
         naive_banner = f"<p class=\"small\">Note: {naive_count} timestamps lacked timezone info and were assumed UTC.</p>"
-    overview_html = _layout("Labelwatch overview", overview_cards + naive_banner + build_table + overview_tables + labeler_links + alert_links + METHODS_HTML)
+
+    overview_html = _layout(
+        "Labelwatch overview",
+        staleness_cards + naive_banner + warmup_banner + reference_lane +
+        build_table + overview_tables + labeler_section + alert_links + METHODS_HTML + TRIAGE_JS,
+    )
     _write(os.path.join(tmp_dir, "index.html"), overview_html)
+
+    # --- Census page ---
+    census_body = '<h2>Discovery Census</h2>'
+    census_body += '<div class="census-grid">'
+    census_body += f'<div class="census-card"><div class="value">{len(labelers)}</div><div class="label">Total labelers</div></div>'
+    census_body += f'<div class="census-card"><div class="value">{test_dev_count}</div><div class="label">Test/dev</div></div>'
+    census_body += f'<div class="census-card"><div class="value">{warmup_count}</div><div class="label">Warming up</div></div>'
+    census_body += '</div>'
+
+    for field_name, field_label in [
+        ("visibility_class", "Visibility Class"),
+        ("reachability_state", "Reachability State"),
+        ("classification_confidence", "Classification Confidence"),
+        ("auditability", "Auditability"),
+    ]:
+        counts = census.get(field_name, {})
+        census_body += f'<h3>{escape(field_label)}</h3>'
+        census_body += '<div class="census-grid">'
+        for val, cnt in sorted(counts.items()):
+            census_body += f'<div class="census-card"><div class="value">{cnt}</div><div class="label">{escape(val)}</div></div>'
+        census_body += '</div>'
+
+    census_body += f'<p class="small">Last census: {escape(now_ts)}</p>'
+    census_body += '<p><a href="index.html">Back to overview</a></p>'
+    census_html = _layout("Labelwatch Census", census_body)
+    _write(os.path.join(tmp_dir, "census.html"), census_html)
+
+    # --- Per-labeler pages ---
+    anomaly_rules = {"label_rate_spike", "flip_flop", "target_concentration", "churn_index"}
 
     for row in labelers:
         did = row["labeler_did"]
-        did_path = quote(did, safe="")
+        slug = _did_slug(did)
         alerts_rows = conn.execute(
             "SELECT * FROM alerts WHERE labeler_did=? ORDER BY ts DESC",
             (did,),
@@ -519,6 +868,15 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         payload = {
             "labeler_did": did,
             "handle": handles.get(did),
+            "display_name": display_names.get(did),
+            "labeler_class": row["labeler_class"],
+            "is_reference": bool(row["is_reference"]),
+            "endpoint_status": row["endpoint_status"],
+            "visibility_class": row["visibility_class"],
+            "reachability_state": row["reachability_state"],
+            "auditability": row["auditability"],
+            "classification_confidence": row["classification_confidence"],
+            "classification_reason": row["classification_reason"],
             "first_seen": row["first_seen"],
             "last_seen": row["last_seen"],
             "events_24h": events_24h,
@@ -526,29 +884,77 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             "alerts": [dict(r) for r in alerts_rows],
             "top_targets_7d": top_targets,
         }
-        _write_json(os.path.join(tmp_dir, "labeler", f"{did_path}.json"), payload)
+        _write_json(os.path.join(tmp_dir, "labeler", f"{slug}.json"), payload)
 
         sparkline_counts = _hourly_counts(conn, did, start_7d, now_ts)
         health_card = _labeler_health_card(conn, did, start_7d, now_ts, sparkline_counts)
 
         handle = handles.get(did)
-        labeler_title = f"{handle} ({did})" if handle else did
+        dn = display_names.get(did)
+        labeler_label = dn or handle
+        labeler_title = f"{labeler_label} ({did})" if labeler_label else did
+        ep_status = row["endpoint_status"] if row["endpoint_status"] else "unknown"
+        ep_dot = _endpoint_dot(ep_status)
+        vis_class = row["visibility_class"] or "unresolved"
+        reach_state = row["reachability_state"] or "unknown"
+        audit = row["auditability"] or "low"
+        class_label = row["labeler_class"] or "third_party"
+        ref_tag = ' <span class="badge badge-stable">Reference</span>' if row["is_reference"] else ""
+
+        # Bluesky profile link
+        profile_link = ""
+        if handle:
+            profile_link = f'<div class="card"><h3>Profile</h3><div><a href="https://bsky.app/profile/{escape(handle)}" target="_blank">View on Bluesky</a></div></div>'
+
+        # Warmup/sparse indicators
+        scan_count = row["scan_count"] or 0
+        warmup_indicator = ""
+        if scan_count < 3:
+            warmup_indicator = '<div class="warmup-banner">This labeler is still in warm-up period (insufficient scan history).</div>'
+        elif events_7d == 0 and events_24h == 0:
+            warmup_indicator = '<p class="small">Insufficient volume: no events observed in the last 7 days.</p>'
+
         info_card = f"""
-<div class=\"grid\">
-  <div class=\"card\"><h3>Labeler</h3><div>{('<strong>' + escape(handle) + '</strong><br/>' if handle else '')}<code>{escape(did)}</code></div></div>
-  <div class=\"card\"><h3>First seen</h3><div>{escape(str(row['first_seen']))}</div></div>
-  <div class=\"card\"><h3>Last seen</h3><div>{escape(str(row['last_seen']))}</div></div>
-  <div class=\"card\"><h3>Events (24h)</h3><div>{events_24h}</div></div>
-  <div class=\"card\"><h3>Events (7d)</h3><div>{events_7d}</div></div>
-  <div class=\"card\"><h3>Alerts</h3><div>{len(alerts_rows)}</div></div>
+<div class="grid">
+  <div class="card"><h3>Labeler</h3><div>{('<strong>' + escape(labeler_label) + '</strong><br/>' if labeler_label else '')}<code>{escape(did)}</code>{ref_tag}</div></div>
+  <div class="card"><h3>Classification</h3><div>{_visibility_badge(vis_class)} {escape(vis_class)}</div></div>
+  <div class="card"><h3>Reachability</h3><div>{ep_dot} {escape(reach_state)}</div></div>
+  <div class="card"><h3>Auditability</h3><div>{escape(audit)}</div></div>
+  <div class="card"><h3>Class</h3><div>{escape(class_label)}</div></div>
+  <div class="card"><h3>First seen</h3><div>{escape(str(row['first_seen']))}</div></div>
+  <div class="card"><h3>Last seen</h3><div>{escape(str(row['last_seen']))}</div></div>
+  <div class="card"><h3>Events (24h)</h3><div>{events_24h}</div></div>
+  <div class="card"><h3>Events (7d)</h3><div>{events_7d}</div></div>
+  <div class="card"><h3>Alerts</h3><div>{len(alerts_rows)}</div></div>
+  {profile_link}
 </div>
 """
+        evidence_section = _evidence_expander(conn, did, row)
+
         targets_table = ""
         if top_targets:
             targets_table = "<h2>Top targets (7d)</h2>" + _table(
                 ["uri", "count"],
                 [[escape(t["uri"]), str(t["count"])] for t in top_targets],
             )
+
+        # Probe history section
+        probe_history = db.get_probe_history(conn, did, limit=10)
+        probe_section = "<h2>Probe history</h2>"
+        if probe_history:
+            probe_rows = []
+            for p in probe_history:
+                probe_rows.append([
+                    escape(p["ts"]),
+                    escape(p["normalized_status"]),
+                    str(p["http_status"] or ""),
+                    str(p["latency_ms"] or "") + ("ms" if p["latency_ms"] else ""),
+                    escape(p["failure_type"] or ""),
+                ])
+            probe_section += _table(["ts", "status", "http", "latency", "failure"], probe_rows)
+        else:
+            probe_section += "<p class=\"small\">No probe history recorded yet.</p>"
+
         alert_detail_rows = []
         for r in alerts_rows:
             is_anomaly = r["rule_id"] in anomaly_rules
@@ -562,9 +968,16 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             )
         alert_head = "<tr><th>id</th><th>rule_id</th><th>ts</th></tr>"
         alerts_table = f"<h2>Alerts timeline</h2><table><thead>{alert_head}</thead><tbody>{''.join(alert_detail_rows)}</tbody></table>"
-        html = _layout(f"Labeler: {labeler_title}", f"<p><a href=\"../index.html\">Overview</a></p>" + health_card + info_card + targets_table + alerts_table + METHODS_HTML)
-        _write(os.path.join(tmp_dir, "labeler", f"{did_path}.html"), html)
 
+        html = _layout(
+            f"Labeler: {labeler_title}",
+            f"<p><a href=\"../index.html\">Overview</a> | <a href=\"../census.html\">Census</a></p>"
+            + warmup_indicator + health_card + info_card + evidence_section
+            + targets_table + probe_section + alerts_table + METHODS_HTML,
+        )
+        _write(os.path.join(tmp_dir, "labeler", f"{slug}.html"), html)
+
+    # --- Per-alert pages ---
     for row in alerts:
         evidence_hashes = json.loads(row["evidence_hashes_json"])
         events = _alert_events(conn, evidence_hashes)

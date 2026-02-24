@@ -14,6 +14,7 @@ def test_flip_flop_triggers():
 
     cfg = Config(
         flip_flop_window_hours=24,
+        warmup_enabled=False,
     )
     now = datetime(2024, 1, 2, 0, 0, 0, tzinfo=timezone.utc)
     scan.run_scan(conn, cfg, now=now)

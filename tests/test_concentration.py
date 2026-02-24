@@ -36,6 +36,7 @@ def test_concentrated_labeler_triggers():
         concentration_window_hours=24,
         concentration_threshold=0.1,
         concentration_min_labels=10,
+        warmup_enabled=False,
     )
     now = datetime(2024, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
     total = scan.run_scan(conn, cfg, now=now)
@@ -58,6 +59,7 @@ def test_distributed_labeler_does_not_trigger():
         concentration_window_hours=24,
         concentration_threshold=0.25,
         concentration_min_labels=10,
+        warmup_enabled=False,
     )
     now = datetime(2024, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
     scan.run_scan(conn, cfg, now=now)
@@ -78,6 +80,7 @@ def test_below_min_labels_does_not_trigger():
         concentration_window_hours=24,
         concentration_threshold=0.1,
         concentration_min_labels=20,
+        warmup_enabled=False,
     )
     now = datetime(2024, 1, 1, 1, 0, 0, tzinfo=timezone.utc)
     scan.run_scan(conn, cfg, now=now)

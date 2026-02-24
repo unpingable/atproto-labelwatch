@@ -6,11 +6,12 @@ from datetime import datetime, timedelta, timezone
 import sys
 from typing import Optional
 
-from . import db, ingest, scan
+from . import db, discover, ingest, scan
 from . import report as report_mod
 from . import runner
+from .classify import EvidenceDict, classify_labeler, CLASSIFIER_VERSION
 from .config import load_config
-from .utils import format_ts, parse_ts
+from .utils import format_ts, now_utc, parse_ts
 
 
 def _parse_duration(value: str) -> timedelta:
@@ -180,6 +181,131 @@ def cmd_run(args) -> None:
     )
 
 
+def cmd_discover(args) -> None:
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    conn = db.connect(cfg.db_path)
+    db.init_db(conn)
+    summary = discover.run_discovery(conn, cfg)
+    print(json.dumps(summary, indent=2))
+
+
+def cmd_labelers(args) -> None:
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    conn = db.connect(cfg.db_path)
+    db.init_db(conn)
+
+    query = (
+        "SELECT labeler_did, handle, display_name, labeler_class, is_reference, "
+        "endpoint_status, service_endpoint, first_seen, last_seen, "
+        "visibility_class, reachability_state, auditability, classification_confidence, "
+        "likely_test_dev "
+        "FROM labelers WHERE 1=1"
+    )
+    params: list = []
+
+    if args.visibility_class:
+        query += " AND visibility_class=?"
+        params.append(args.visibility_class)
+    if not args.include_test_dev:
+        query += " AND (likely_test_dev=0 OR likely_test_dev IS NULL)"
+
+    query += " ORDER BY is_reference DESC, labeler_class, labeler_did"
+    rows = conn.execute(query, params).fetchall()
+    output = [dict(r) for r in rows]
+    print(json.dumps(output, indent=2))
+
+
+def cmd_census(args) -> None:
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    conn = db.connect(cfg.db_path)
+    db.init_db(conn)
+
+    result = {}
+    for field in ("visibility_class", "reachability_state", "classification_confidence", "auditability"):
+        rows = conn.execute(
+            f"SELECT COALESCE({field}, 'unknown') AS val, COUNT(*) AS c FROM labelers GROUP BY val"
+        ).fetchall()
+        result[field] = {r["val"]: r["c"] for r in rows}
+
+    total = conn.execute("SELECT COUNT(*) AS c FROM labelers").fetchone()["c"]
+    test_dev = conn.execute("SELECT COUNT(*) AS c FROM labelers WHERE likely_test_dev=1").fetchone()["c"]
+    result["total"] = total
+    result["test_dev_count"] = test_dev
+
+    print(json.dumps(result, indent=2))
+
+
+def cmd_reclassify(args) -> None:
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    conn = db.connect(cfg.db_path)
+    db.init_db(conn)
+
+    rows = conn.execute("SELECT * FROM labelers").fetchall()
+    changes = []
+    ts = format_ts(now_utc())
+
+    for row in rows:
+        evidence = EvidenceDict(
+            declared_record_present=bool(row["declared_record"]),
+            did_doc_labeler_service_present=bool(row["has_labeler_service"]),
+            did_doc_label_key_present=bool(row["has_label_key"]),
+            observed_label_src=bool(row["observed_as_src"]),
+            probe_result=row["reachability_state"] if row["reachability_state"] != "unknown" else None,
+        )
+        cls = classify_labeler(evidence)
+
+        old = {
+            "visibility_class": row["visibility_class"],
+            "reachability_state": row["reachability_state"],
+            "auditability": row["auditability"],
+            "classification_confidence": row["classification_confidence"],
+        }
+        new = {
+            "visibility_class": cls.visibility_class,
+            "reachability_state": cls.reachability_state,
+            "auditability": cls.auditability,
+            "classification_confidence": cls.classification_confidence,
+        }
+
+        if old != new:
+            changes.append({
+                "labeler_did": row["labeler_did"],
+                "old": old,
+                "new": new,
+                "reason": cls.reason,
+            })
+
+            if not args.dry_run:
+                conn.execute(
+                    "UPDATE labelers SET visibility_class=?, reachability_state=?, "
+                    "auditability=?, classification_confidence=?, classification_reason=?, "
+                    "classification_version=?, classified_at=? WHERE labeler_did=?",
+                    (cls.visibility_class, cls.reachability_state, cls.auditability,
+                     cls.classification_confidence, cls.reason, cls.version, ts,
+                     row["labeler_did"]),
+                )
+
+    if not args.dry_run and changes:
+        conn.commit()
+
+    output = {
+        "dry_run": args.dry_run,
+        "total_labelers": len(rows),
+        "changed": len(changes),
+        "classifier_version": CLASSIFIER_VERSION,
+        "changes": changes,
+    }
+    print(json.dumps(output, indent=2))
+
+
 def main(argv: Optional[list] = None) -> None:
     parser = argparse.ArgumentParser(prog="labelwatch")
     parser.add_argument("--config", help="Path to config.toml")
@@ -212,6 +338,22 @@ def main(argv: Optional[list] = None) -> None:
     p_export = sub.add_parser("export", help="Export alerts")
     p_export.add_argument("--format", choices=["json"], default="json")
     p_export.set_defaults(func=cmd_export)
+
+    p_discover = sub.add_parser("discover", help="Run labeler discovery")
+    p_discover.set_defaults(func=cmd_discover)
+
+    p_labelers = sub.add_parser("labelers", help="List discovered labelers")
+    p_labelers.add_argument("--visibility-class", choices=["declared", "protocol_public", "observed_only", "unresolved"],
+                            help="Filter by visibility class")
+    p_labelers.add_argument("--include-test-dev", action="store_true", help="Include test/dev labelers")
+    p_labelers.set_defaults(func=cmd_labelers)
+
+    p_census = sub.add_parser("census", help="Show labeler classification census")
+    p_census.set_defaults(func=cmd_census)
+
+    p_reclass = sub.add_parser("reclassify", help="Recompute classifications from evidence")
+    p_reclass.add_argument("--dry-run", action="store_true", help="Show diff without writing")
+    p_reclass.set_defaults(func=cmd_reclassify)
 
     p_run = sub.add_parser("run", help="Run ingest/scan loop")
     p_run.add_argument("--ingest-interval", type=int, default=120, help="Seconds between ingest runs")

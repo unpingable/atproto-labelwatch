@@ -1,1 +1,1 @@
-__all__ = ["config", "db", "ingest", "scan", "rules", "receipts", "cli", "report", "runner"]
+__all__ = ["classify", "config", "db", "discover", "ingest", "scan", "rules", "receipts", "cli", "report", "runner"]

@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock
 import json
 
 from labelwatch import db
-from labelwatch.resolve import resolve_handle, resolve_handles_for_labelers
+from labelwatch.resolve import resolve_handle, resolve_handles_for_labelers, resolve_label_key
 
 
 def _make_db():
@@ -48,7 +48,7 @@ def test_migrate_v1_to_v2():
     db.init_db(conn)
     cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
     assert "handle" in cols
-    assert db.get_schema_version(conn) == 2
+    assert db.get_schema_version(conn) == db.SCHEMA_VERSION
 
 
 def _mock_plc_response(did, handle):
@@ -109,3 +109,33 @@ def test_resolve_skips_already_resolved():
 
     assert count == 0
     mock_open.assert_not_called()
+
+
+# --- resolve_label_key ---
+
+def test_resolve_label_key_present():
+    doc = {
+        "verificationMethod": [
+            {"id": "#atproto_label", "type": "Multikey", "publicKeyMultibase": "zDna..."},
+        ]
+    }
+    assert resolve_label_key(doc) is True
+
+
+def test_resolve_label_key_absent():
+    doc = {
+        "verificationMethod": [
+            {"id": "#atproto", "type": "Multikey", "publicKeyMultibase": "zDna..."},
+        ]
+    }
+    assert resolve_label_key(doc) is False
+
+
+def test_resolve_label_key_empty_doc():
+    assert resolve_label_key({}) is False
+    assert resolve_label_key({"verificationMethod": []}) is False
+
+
+def test_resolve_label_key_no_verification_methods():
+    doc = {"service": [{"id": "#atproto_labeler"}]}
+    assert resolve_label_key(doc) is False

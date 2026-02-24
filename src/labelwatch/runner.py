@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import db, ingest, report as report_mod, resolve, scan
+from . import db, discover, ingest, report as report_mod, resolve, scan
 from .config import Config
 from .utils import now_utc
+
+log = logging.getLogger(__name__)
 
 
 def _sleep_until(next_ingest: float, next_scan: float) -> None:
@@ -26,13 +29,32 @@ def run_loop(
 
     last_ingest = 0.0
     last_scan = 0.0
+    last_discovery = 0.0
+    discovery_interval = cfg.discovery_interval_hours * 3600
 
     while True:
         now_mono = time.monotonic()
+
+        # Discovery pass
+        if cfg.discovery_enabled and now_mono - last_discovery >= discovery_interval:
+            try:
+                discover.run_discovery(conn, cfg)
+            except Exception:
+                log.warning("Discovery failed", exc_info=True)
+            last_discovery = now_mono
+
         if ingest_interval > 0 and now_mono - last_ingest >= ingest_interval:
             if not cfg.labeler_dids:
                 raise SystemExit("labeler_dids must be configured for ingest")
             ingest.ingest_from_service(conn, cfg)
+
+            # Multi-source ingest from discovered labelers
+            if cfg.discovery_enabled:
+                try:
+                    ingest.ingest_multi(conn, cfg)
+                except Exception:
+                    log.warning("Multi-ingest failed", exc_info=True)
+
             resolve.resolve_handles_for_labelers(conn)
             last_ingest = now_mono
 

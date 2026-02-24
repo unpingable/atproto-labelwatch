@@ -13,11 +13,106 @@ RULE_FLIP_FLOP = "flip_flop"
 RULE_TARGET_CONCENTRATION = "target_concentration"
 RULE_CHURN = "churn_index"
 
+# Rate-based rules: suppressed when warmup state is "sparse"
+_RATE_BASED_RULES = {RULE_RATE_SPIKE, RULE_CHURN}
+
 
 def _window_bounds(now: datetime, minutes: int) -> tuple[str, str]:
     end = now
     start = now - timedelta(minutes=minutes)
     return format_ts(start), format_ts(end)
+
+
+def _is_reference_labeler(conn, labeler_did: str) -> bool:
+    """Check if a labeler is marked as reference in the DB."""
+    row = conn.execute(
+        "SELECT is_reference FROM labelers WHERE labeler_did=?", (labeler_did,)
+    ).fetchone()
+    return bool(row and row["is_reference"])
+
+
+def _labeler_age_hours(conn, labeler_did: str) -> float:
+    """Hours since labeler was first seen."""
+    row = conn.execute(
+        "SELECT first_seen FROM labelers WHERE labeler_did=?", (labeler_did,)
+    ).fetchone()
+    if not row or not row["first_seen"]:
+        return 0.0
+    from .utils import parse_ts
+    first = parse_ts(row["first_seen"])
+    if first.tzinfo is None:
+        first = first.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - first).total_seconds() / 3600
+    return max(0.0, age)
+
+
+def _total_events(conn, labeler_did: str) -> int:
+    """Total label events ever recorded for a labeler."""
+    return conn.execute(
+        "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=?", (labeler_did,)
+    ).fetchone()["c"]
+
+
+def _confidence_tag(conn, config: Config, labeler_did: str) -> str:
+    """Return 'high' or 'low' confidence based on event count and age."""
+    total = _total_events(conn, labeler_did)
+    age = _labeler_age_hours(conn, labeler_did)
+    if total >= config.confidence_min_events and age >= config.confidence_min_age_hours:
+        return "high"
+    return "low"
+
+
+def _warmup_state(conn, config: Config, labeler_did: str) -> str:
+    """Determine warmup state for a labeler.
+
+    Returns:
+        "ready" — mature enough for full alerting
+        "warming_up" — recent labeler, not enough history yet
+        "sparse" — age threshold met but event volume too low for rate-based rules
+    """
+    if not config.warmup_enabled:
+        return "ready"
+
+    row = conn.execute(
+        "SELECT first_seen, scan_count FROM labelers WHERE labeler_did=?",
+        (labeler_did,),
+    ).fetchone()
+    if not row or not row["first_seen"]:
+        return "warming_up"
+
+    from .utils import parse_ts
+    first = parse_ts(row["first_seen"])
+    if first.tzinfo is None:
+        first = first.replace(tzinfo=timezone.utc)
+    age_hours = max(0.0, (datetime.now(timezone.utc) - first).total_seconds() / 3600)
+    scan_count = row["scan_count"] or 0
+
+    total = _total_events(conn, labeler_did)
+
+    # Check minimum age
+    if age_hours < config.warmup_min_age_hours:
+        return "warming_up"
+
+    # Check minimum scans
+    if scan_count < config.warmup_min_scans:
+        return "warming_up"
+
+    # Age met — check if volume is too low for rate-based rules
+    if total < config.warmup_min_events:
+        return "sparse"
+
+    return "ready"
+
+
+def _should_suppress(warmup: str, rule_id: str, config: Config) -> bool:
+    """Decide whether to suppress an alert based on warmup state."""
+    if warmup == "ready":
+        return False
+    if warmup == "warming_up" and config.warmup_suppress_alerts:
+        return True
+    if warmup == "sparse" and rule_id in _RATE_BASED_RULES:
+        return True
+    return False
 
 
 def label_rate_spike(conn, config: Config, now: datetime) -> List[Dict]:
@@ -30,6 +125,11 @@ def label_rate_spike(conn, config: Config, now: datetime) -> List[Dict]:
     labelers = conn.execute("SELECT labeler_did FROM labelers").fetchall()
     for row in labelers:
         labeler_did = row["labeler_did"]
+
+        warmup = _warmup_state(conn, config, labeler_did)
+        if _should_suppress(warmup, RULE_RATE_SPIKE, config):
+            continue
+
         cur_count = conn.execute(
             "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=? AND ts>=? AND ts<?",
             (labeler_did, cur_start, cur_end),
@@ -43,6 +143,11 @@ def label_rate_spike(conn, config: Config, now: datetime) -> List[Dict]:
         base_minutes = max(int(config.baseline_hours * 60) - config.window_minutes, 1)
         base_rate = base_count / base_minutes
 
+        # Two-tier threshold: reference labelers use spike_min_count_reference,
+        # others use spike_min_count_default
+        is_ref = _is_reference_labeler(conn, labeler_did)
+        min_count = config.spike_min_count_reference if is_ref else config.spike_min_count_default
+
         triggered = False
         ratio = None
         if base_rate > 0:
@@ -50,7 +155,7 @@ def label_rate_spike(conn, config: Config, now: datetime) -> List[Dict]:
             triggered = ratio >= config.spike_k
         else:
             ratio = float("inf") if cur_count else 0.0
-            triggered = cur_count >= config.min_current_count
+            triggered = cur_count >= min_count
 
         if not triggered:
             continue
@@ -61,6 +166,8 @@ def label_rate_spike(conn, config: Config, now: datetime) -> List[Dict]:
         ).fetchall()
         evidence_hashes = [r["event_hash"] for r in evidence_rows]
 
+        confidence = _confidence_tag(conn, config, labeler_did)
+
         inputs = {
             "current_count": cur_count,
             "baseline_count": base_count,
@@ -69,7 +176,12 @@ def label_rate_spike(conn, config: Config, now: datetime) -> List[Dict]:
             "ratio": ratio,
             "window_minutes": config.window_minutes,
             "baseline_hours": config.baseline_hours,
+            "is_reference": is_ref,
+            "min_current_count_used": min_count,
+            "confidence": confidence,
         }
+        if warmup != "ready":
+            inputs["warmup"] = warmup
         alerts.append(
             {
                 "rule_id": RULE_RATE_SPIKE,
@@ -91,6 +203,11 @@ def flip_flop(conn, config: Config, now: datetime) -> List[Dict]:
     labelers = conn.execute("SELECT labeler_did FROM labelers").fetchall()
     for row in labelers:
         labeler_did = row["labeler_did"]
+
+        warmup = _warmup_state(conn, config, labeler_did)
+        if _should_suppress(warmup, RULE_FLIP_FLOP, config):
+            continue
+
         rows = conn.execute(
             """
             SELECT uri, val, neg, ts, event_hash
@@ -134,10 +251,14 @@ def flip_flop(conn, config: Config, now: datetime) -> List[Dict]:
         if flip_flop_count == 0:
             continue
         evidence_hashes = match_hashes[: config.max_evidence]
+        confidence = _confidence_tag(conn, config, labeler_did)
         inputs = {
             "flip_flop_count": flip_flop_count,
             "window_hours": config.flip_flop_window_hours,
+            "confidence": confidence,
         }
+        if warmup != "ready":
+            inputs["warmup"] = warmup
         alerts.append(
             {
                 "rule_id": RULE_FLIP_FLOP,
@@ -160,6 +281,11 @@ def target_concentration(conn, config: Config, now: datetime) -> List[Dict]:
     labelers = conn.execute("SELECT labeler_did FROM labelers").fetchall()
     for row in labelers:
         labeler_did = row["labeler_did"]
+
+        warmup = _warmup_state(conn, config, labeler_did)
+        if _should_suppress(warmup, RULE_TARGET_CONCENTRATION, config):
+            continue
+
         rows = conn.execute(
             "SELECT uri, COUNT(*) AS c FROM label_events WHERE labeler_did=? AND ts>=? AND ts<? GROUP BY uri",
             (labeler_did, start, end),
@@ -178,13 +304,17 @@ def target_concentration(conn, config: Config, now: datetime) -> List[Dict]:
             "SELECT event_hash FROM label_events WHERE labeler_did=? AND ts>=? AND ts<? LIMIT ?",
             (labeler_did, start, end, config.max_evidence),
         ).fetchall()
+        confidence = _confidence_tag(conn, config, labeler_did)
         inputs = {
             "hhi": round(hhi, 6),
             "total_labels": total,
             "unique_targets": len(rows),
             "top_target_count": top_targets[0]["c"] if top_targets else 0,
             "window_hours": config.concentration_window_hours,
+            "confidence": confidence,
         }
+        if warmup != "ready":
+            inputs["warmup"] = warmup
         alerts.append({
             "rule_id": RULE_TARGET_CONCENTRATION,
             "labeler_did": labeler_did,
@@ -206,6 +336,11 @@ def churn_index(conn, config: Config, now: datetime) -> List[Dict]:
     labelers = conn.execute("SELECT labeler_did FROM labelers").fetchall()
     for row in labelers:
         labeler_did = row["labeler_did"]
+
+        warmup = _warmup_state(conn, config, labeler_did)
+        if _should_suppress(warmup, RULE_CHURN, config):
+            continue
+
         first_half = conn.execute(
             "SELECT DISTINCT uri FROM label_events WHERE labeler_did=? AND ts>=? AND ts<?",
             (labeler_did, format_ts(start), format_ts(mid)),
@@ -228,6 +363,7 @@ def churn_index(conn, config: Config, now: datetime) -> List[Dict]:
             "SELECT event_hash FROM label_events WHERE labeler_did=? AND ts>=? AND ts<? LIMIT ?",
             (labeler_did, format_ts(start), format_ts(now), config.max_evidence),
         ).fetchall()
+        confidence = _confidence_tag(conn, config, labeler_did)
         inputs = {
             "jaccard_distance": round(jaccard_distance, 6),
             "first_half_targets": len(set_a),
@@ -235,7 +371,10 @@ def churn_index(conn, config: Config, now: datetime) -> List[Dict]:
             "intersection": len(intersection),
             "union": len(union),
             "window_hours": config.churn_window_hours,
+            "confidence": confidence,
         }
+        if warmup != "ready":
+            inputs["warmup"] = warmup
         alerts.append({
             "rule_id": RULE_CHURN,
             "labeler_did": labeler_did,

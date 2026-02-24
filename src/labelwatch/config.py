@@ -34,6 +34,27 @@ class Config:
     churn_threshold: float = 0.8
     churn_min_targets: int = 10
 
+    discovery_enabled: bool = False
+    discovery_interval_hours: int = 24
+    reference_dids: List[str] = field(default_factory=lambda: ["did:plc:ar7c4by46qjdydhdevvrndac"])
+
+    multi_ingest_timeout: int = 15
+    multi_ingest_budget: int = 300
+    multi_ingest_max_pages: int = 5
+
+    spike_min_count_reference: int = 50
+    spike_min_count_default: int = 5
+    confidence_min_events: int = 100
+    confidence_min_age_hours: int = 168
+
+    noise_policy_enabled: bool = True
+
+    warmup_enabled: bool = True
+    warmup_min_age_hours: int = 48
+    warmup_min_events: int = 20
+    warmup_min_scans: int = 3
+    warmup_suppress_alerts: bool = True
+
     def to_receipt_dict(self) -> dict:
         return {
             "window_minutes": self.window_minutes,
@@ -49,6 +70,10 @@ class Config:
             "churn_window_hours": self.churn_window_hours,
             "churn_threshold": self.churn_threshold,
             "churn_min_targets": self.churn_min_targets,
+            "spike_min_count_reference": self.spike_min_count_reference,
+            "spike_min_count_default": self.spike_min_count_default,
+            "confidence_min_events": self.confidence_min_events,
+            "confidence_min_age_hours": self.confidence_min_age_hours,
         }
 
 
