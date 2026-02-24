@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import db, ingest, report as report_mod, scan
+from . import db, ingest, report as report_mod, resolve, scan
 from .config import Config
 from .utils import now_utc
 
@@ -33,6 +33,7 @@ def run_loop(
             if not cfg.labeler_dids:
                 raise SystemExit("labeler_dids must be configured for ingest")
             ingest.ingest_from_service(conn, cfg)
+            resolve.resolve_handles_for_labelers(conn)
             last_ingest = now_mono
 
         if scan_interval > 0 and now_mono - last_scan >= scan_interval:

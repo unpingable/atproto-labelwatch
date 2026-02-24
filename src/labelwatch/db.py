@@ -5,7 +5,7 @@ from typing import Iterable, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS label_events (
 
 CREATE TABLE IF NOT EXISTS labelers (
     labeler_did TEXT PRIMARY KEY,
+    handle TEXT,
     description TEXT,
     first_seen TEXT,
     last_seen TEXT
@@ -114,6 +115,13 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         conn.executescript(SCHEMA)
         set_schema_version(conn, 1)
         current = 1
+    if current == 1 and target >= 2:
+        # Add handle column to labelers
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
+        if "handle" not in cols:
+            conn.execute("ALTER TABLE labelers ADD COLUMN handle TEXT")
+        set_schema_version(conn, 2)
+        current = 2
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
@@ -150,6 +158,13 @@ def get_cursor(conn: sqlite3.Connection, source: str) -> str | None:
 def set_cursor(conn: sqlite3.Connection, source: str, cursor: str) -> None:
     set_meta(conn, f"ingest_cursor:{source}", cursor)
     conn.commit()
+
+
+def get_handle(conn: sqlite3.Connection, labeler_did: str) -> Optional[str]:
+    row = conn.execute("SELECT handle FROM labelers WHERE labeler_did=?", (labeler_did,)).fetchone()
+    if row and row["handle"]:
+        return row["handle"]
+    return None
 
 
 def insert_alert(conn: sqlite3.Connection, row: tuple) -> None:

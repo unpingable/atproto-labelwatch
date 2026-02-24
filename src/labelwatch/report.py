@@ -15,6 +15,29 @@ from .receipts import config_hash as config_hash_fn
 from .utils import format_ts, get_git_commit, parse_ts
 
 
+def _handle_cache(conn) -> Dict[str, Optional[str]]:
+    """Build a DID -> handle lookup from the labelers table."""
+    rows = conn.execute("SELECT labeler_did, handle FROM labelers").fetchall()
+    return {r["labeler_did"]: r["handle"] for r in rows}
+
+
+def _display_name(did: str, handles: Dict[str, Optional[str]]) -> str:
+    """Return 'handle (did)' if resolved, else just the DID."""
+    h = handles.get(did)
+    if h:
+        return f"{h}"
+    return did
+
+
+def _labeler_link(did: str, handles: Dict[str, Optional[str]]) -> str:
+    """Return an HTML link to a labeler page, showing handle if available."""
+    did_path = quote(did, safe="")
+    h = handles.get(did)
+    if h:
+        return f'<a href="labeler/{did_path}.html">{escape(h)}</a> <span class="small">({escape(did)})</span>'
+    return f'<a href="labeler/{did_path}.html">{escape(did)}</a>'
+
+
 STYLE = """
 body { font-family: Georgia, "Times New Roman", serif; margin: 2rem; color: #111; }
 header { margin-bottom: 2rem; }
@@ -358,6 +381,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
 
     labelers = conn.execute("SELECT * FROM labelers ORDER BY labeler_did").fetchall()
     alerts = conn.execute("SELECT * FROM alerts ORDER BY ts DESC").fetchall()
+    handles = _handle_cache(conn)
 
     overview = {
         "generated_at": now_ts,
@@ -387,6 +411,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         did_path = quote(did, safe="")
         labeler_rows.append({
             "labeler_did": did,
+            "handle": handles.get(did),
             "first_seen": row["first_seen"],
             "last_seen": row["last_seen"],
             "href": f"labeler/{did_path}.html",
@@ -427,7 +452,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     if alerts_7d:
         overview_tables += "<h2>Alerts by rule (7d)</h2>" + _table(["rule_id", "count"], dict_rows(alerts_7d))
 
-    top_rows = [[f"<a href=\"labeler/{quote(r['labeler_did'], safe='')}.html\">{escape(r['labeler_did'])}</a>", str(r["count"]) ] for r in top_labelers]
+    top_rows = [[_labeler_link(r["labeler_did"], handles), str(r["count"])] for r in top_labelers]
     if top_rows:
         overview_tables += "<h2>Top labelers by alerts (7d)</h2>" + _table(["labeler", "count"], top_rows)
 
@@ -446,14 +471,14 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         counts = _hourly_counts(conn, did, start_7d, now_ts)
         spark = _sparkline_svg(counts)
         labeler_table_rows.append([
-            f"<a href=\"labeler/{quote(did, safe='')}.html\">{escape(did)}</a>",
+            _labeler_link(did, handles),
             escape(str(r["first_seen"])),
             escape(str(r["last_seen"])),
             spark,
             _badges_html(badges),
         ])
     labeler_links = "<h2>Labelers</h2>" + _table(
-        ["labeler_did", "first_seen", "last_seen", "activity", "behavior"],
+        ["labeler", "first_seen", "last_seen", "activity", "behavior"],
         labeler_table_rows,
     )
 
@@ -462,11 +487,12 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     for r in alerts[:50]:
         is_anomaly = r["rule_id"] in anomaly_rules
         row_class = ' class="anomaly-row"' if is_anomaly else ""
+        labeler_cell = _display_name(r["labeler_did"], handles)
         alert_table_rows.append(
             f"<tr{row_class}>"
             f"<td><a href=\"alert/{r['id']}.html\">{r['id']}</a></td>"
             f"<td>{escape(r['rule_id'])}</td>"
-            f"<td>{escape(r['labeler_did'])}</td>"
+            f"<td>{escape(labeler_cell)}</td>"
             f"<td>{escape(r['ts'])}</td>"
             f"</tr>"
         )
@@ -492,6 +518,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
 
         payload = {
             "labeler_did": did,
+            "handle": handles.get(did),
             "first_seen": row["first_seen"],
             "last_seen": row["last_seen"],
             "events_24h": events_24h,
@@ -504,9 +531,11 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         sparkline_counts = _hourly_counts(conn, did, start_7d, now_ts)
         health_card = _labeler_health_card(conn, did, start_7d, now_ts, sparkline_counts)
 
+        handle = handles.get(did)
+        labeler_title = f"{handle} ({did})" if handle else did
         info_card = f"""
 <div class=\"grid\">
-  <div class=\"card\"><h3>Labeler</h3><div><code>{escape(did)}</code></div></div>
+  <div class=\"card\"><h3>Labeler</h3><div>{('<strong>' + escape(handle) + '</strong><br/>' if handle else '')}<code>{escape(did)}</code></div></div>
   <div class=\"card\"><h3>First seen</h3><div>{escape(str(row['first_seen']))}</div></div>
   <div class=\"card\"><h3>Last seen</h3><div>{escape(str(row['last_seen']))}</div></div>
   <div class=\"card\"><h3>Events (24h)</h3><div>{events_24h}</div></div>
@@ -533,7 +562,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             )
         alert_head = "<tr><th>id</th><th>rule_id</th><th>ts</th></tr>"
         alerts_table = f"<h2>Alerts timeline</h2><table><thead>{alert_head}</thead><tbody>{''.join(alert_detail_rows)}</tbody></table>"
-        html = _layout(f"Labeler {did}", f"<p><a href=\"../index.html\">Overview</a></p>" + health_card + info_card + targets_table + alerts_table + METHODS_HTML)
+        html = _layout(f"Labeler: {labeler_title}", f"<p><a href=\"../index.html\">Overview</a></p>" + health_card + info_card + targets_table + alerts_table + METHODS_HTML)
         _write(os.path.join(tmp_dir, "labeler", f"{did_path}.html"), html)
 
     for row in alerts:
