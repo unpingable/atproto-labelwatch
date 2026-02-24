@@ -1,0 +1,30 @@
+[Unit]
+Description=labelwatch - ATProto labeler behavior monitor
+After=network.target
+
+[Service]
+Type=simple
+User=labelwatch
+Group=labelwatch
+WorkingDirectory=/opt/labelwatch
+ExecStart=/opt/labelwatch/.venv/bin/labelwatch run \
+    --config /opt/labelwatch/config.toml \
+    --db /var/lib/labelwatch/labelwatch.db \
+    --ingest-interval 120 \
+    --scan-interval 300 \
+    --report-out /var/www/labelwatch
+Restart=on-failure
+RestartSec=30
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=50%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/labelwatch /var/www/labelwatch
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
