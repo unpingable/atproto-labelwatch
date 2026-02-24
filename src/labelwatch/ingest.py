@@ -79,9 +79,14 @@ def fetch_labels(service_url: str, sources: List[str], cursor: Optional[str] = N
     return data
 
 
+def _cursor_key(config: Config) -> str:
+    return config.service_url.rstrip("/")
+
+
 def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int = 10) -> int:
     total = 0
-    cursor = None
+    source = _cursor_key(config)
+    cursor = db.get_cursor(conn, source)
     for _ in range(max_pages):
         payload = fetch_labels(config.service_url, config.labeler_dids, cursor=cursor, limit=limit)
         labels = payload.get("labels", [])
@@ -106,8 +111,11 @@ def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int =
             )
             db.upsert_labeler(conn, event.labeler_did, event.ts)
         total += db.insert_label_events(conn, rows)
-        conn.commit()
         cursor = payload.get("cursor")
+        # Persist cursor only after events are committed
+        if cursor:
+            db.set_cursor(conn, source, cursor)
+        conn.commit()
         if not cursor:
             break
     return total

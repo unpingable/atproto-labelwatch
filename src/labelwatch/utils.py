@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 
 def now_utc() -> datetime:
@@ -26,3 +27,22 @@ def stable_json(data: Any) -> str:
 
 def hash_sha256(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def get_git_commit() -> Optional[str]:
+    try:
+        head_path = os.path.join(os.getcwd(), ".git", "HEAD")
+        if not os.path.exists(head_path):
+            return None
+        with open(head_path, "r", encoding="utf-8") as f:
+            ref = f.read().strip()
+        if ref.startswith("ref:"):
+            ref_path = ref.split(" ", 1)[1].strip()
+            full_ref = os.path.join(os.getcwd(), ".git", ref_path)
+            if os.path.exists(full_ref):
+                with open(full_ref, "r", encoding="utf-8") as f:
+                    return f.read().strip() or None
+            return None
+        return ref or None
+    except OSError:
+        return None

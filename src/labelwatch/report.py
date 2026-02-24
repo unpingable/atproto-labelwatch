@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 from . import db
 from .receipts import config_hash as config_hash_fn
-from .utils import format_ts, parse_ts
+from .utils import format_ts, get_git_commit, parse_ts
 
 
 STYLE = """
@@ -153,25 +153,6 @@ def _parse_ts_safe(value: Optional[str]) -> Optional[datetime]:
     return dt
 
 
-def _get_git_commit() -> Optional[str]:
-    try:
-        head_path = os.path.join(os.getcwd(), ".git", "HEAD")
-        if not os.path.exists(head_path):
-            return None
-        with open(head_path, "r", encoding="utf-8") as f:
-            ref = f.read().strip()
-        if ref.startswith("ref:"):
-            ref_path = ref.split(" ", 1)[1].strip()
-            full_ref = os.path.join(os.getcwd(), ".git", ref_path)
-            if os.path.exists(full_ref):
-                with open(full_ref, "r", encoding="utf-8") as f:
-                    return f.read().strip() or None
-            return None
-        return ref or None
-    except OSError:
-        return None
-
-
 def _get_package_version() -> Optional[str]:
     try:
         return metadata.version("labelwatch")
@@ -237,7 +218,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     build_signature = {
         "package_version": _get_package_version(),
         "schema_version": db.SCHEMA_VERSION,
-        "git_commit": _get_git_commit(),
+        "git_commit": get_git_commit(),
         "config_hash": cfg_hash_latest,
     }
 

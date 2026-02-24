@@ -21,3 +21,4 @@ test = ["pytest>=7"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
+pythonpath = ["src"]

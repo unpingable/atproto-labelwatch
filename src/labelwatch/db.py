@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import os
 import sqlite3
 from typing import Iterable, Optional
+
+from .utils import get_git_commit
 
 SCHEMA_VERSION = 1
 
@@ -70,7 +71,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.commit()
 
     set_meta(conn, "code_schema_version_seen", str(SCHEMA_VERSION))
-    git_commit = _get_git_commit()
+    git_commit = get_git_commit()
     if git_commit:
         set_meta(conn, "code_build_seen", git_commit)
     conn.commit()
@@ -117,25 +118,6 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
 
-def _get_git_commit() -> str | None:
-    try:
-        head_path = os.path.join(os.getcwd(), ".git", "HEAD")
-        if not os.path.exists(head_path):
-            return None
-        with open(head_path, "r", encoding="utf-8") as f:
-            ref = f.read().strip()
-        if ref.startswith("ref:"):
-            ref_path = ref.split(" ", 1)[1].strip()
-            full_ref = os.path.join(os.getcwd(), ".git", ref_path)
-            if os.path.exists(full_ref):
-                with open(full_ref, "r", encoding="utf-8") as f:
-                    return f.read().strip() or None
-            return None
-        return ref or None
-    except OSError:
-        return None
-
-
 def upsert_labeler(conn: sqlite3.Connection, labeler_did: str, seen_ts: str, description: Optional[str] = None) -> None:
     conn.execute(
         """
@@ -159,6 +141,15 @@ def insert_label_events(conn: sqlite3.Connection, rows: Iterable[tuple]) -> int:
         rows,
     )
     return cur.rowcount
+
+
+def get_cursor(conn: sqlite3.Connection, source: str) -> str | None:
+    return get_meta(conn, f"ingest_cursor:{source}")
+
+
+def set_cursor(conn: sqlite3.Connection, source: str, cursor: str) -> None:
+    set_meta(conn, f"ingest_cursor:{source}", cursor)
+    conn.commit()
 
 
 def insert_alert(conn: sqlite3.Connection, row: tuple) -> None:

@@ -61,6 +61,10 @@ labelwatch report --format html --out report --now max
 
 Open `report/index.html` in a browser or host the `report/` directory anywhere. Reports include build signatures plus clock-skew and timestamp-assumption diagnostics for traceability.
 
+## Governed development
+
+This project is designed to be built under [agent_gov](https://github.com/anthropics/agent_gov) governance. See `CLAUDE.md` for architecture rules and conventions.
+
 ## Docker
 
 Copy and edit the example config:
@@ -74,3 +78,7 @@ Then run:
 ```bash
 docker compose up --build
 ```
+
+## License
+
+Unless otherwise noted, this repository is licensed under MIT OR Apache-2.0, at your option. Contributions are accepted under the same terms.
