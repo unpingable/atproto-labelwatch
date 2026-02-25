@@ -2,8 +2,8 @@
 
 # labelwatch Architecture
 
-**Version**: 0.3
-**Last Updated**: 2026-02-24
+**Version**: 0.4
+**Last Updated**: 2026-02-25
 **Owner**: James Beck / unpingable
 **Status**: Draft — reflects actual MVP implementation
 
@@ -33,7 +33,7 @@ labelwatch is a meta-governance tool for ATProto's label ecosystem. It discovers
            │                           │
            ▼                           ▼
        ┌──────────────────────────────────┐
-       │  SQLite DB (schema v4)           │
+       │  SQLite DB (schema v5)           │
        │  label_events | labelers         │
        │  alerts | labeler_evidence       │
        │  labeler_probe_history | meta    │
@@ -49,6 +49,16 @@ labelwatch is a meta-governance tool for ATProto's label ecosystem. It discovers
 │  concentration      │     │  warmup gating   │
 │  churn              │     └────────┬─────────┘
 └─────────────────────┘              │
+                                     ▼
+                            ┌──────────────────┐
+                            │  Derive          │
+                            │  (derive.py)     │
+                            │  regime state    │
+                            │  risk scores     │
+                            │  coherence       │
+                            │  receipts        │
+                            └────────┬─────────┘
+                                     │
                                      ▼
                             ┌──────────────────┐
                             │  Report          │
@@ -74,16 +84,17 @@ labelwatch is a meta-governance tool for ATProto's label ecosystem. It discovers
 | Component | Responsibility | Source |
 |-----------|---------------|--------|
 | Config | TOML config loading, dataclass with defaults | `config.py` |
-| DB | SQLite schema (v4), connection, migrations, evidence/probe CRUD | `db.py` |
+| DB | SQLite schema (v5), connection, migrations, evidence/probe/derive CRUD | `db.py` |
 | Classify | Pure classifier: EvidenceDict → Classification (no network, no DB) | `classify.py` |
 | Discover | Labeler discovery, DID resolution, endpoint probing, evidence collection | `discover.py` |
 | Resolve | DID document resolution, service endpoint and label key extraction | `resolve.py` |
 | Ingest | HTTP polling via queryLabels, event normalization, observed-only tracking | `ingest.py` |
 | Rules | Detection logic: rate spike, flip-flop, concentration, churn; warmup gating | `rules.py` |
-| Scan | Orchestrator: runs rules, computes receipts, writes alerts, scan_count | `scan.py` |
+| Derive | Pure regime/risk/coherence classifiers from LabelerSignals (no DB, no network) | `derive.py` |
+| Scan | Orchestrator: runs rules, computes receipts, writes alerts, runs derive pass | `scan.py` |
 | Report | Static HTML + JSON: census page, triage views, evidence expanders | `report.py` |
 | Receipts | config_hash and receipt_hash computation | `receipts.py` |
-| Runner | Continuous ingest/scan loop for docker | `runner.py` |
+| Runner | Continuous ingest/scan loop with heartbeat timestamps | `runner.py` |
 | CLI | argparse entry point: ingest, scan, discover, labelers, census, reclassify, report, run | `cli.py` |
 | Utils | Timestamps, hashing, git commit detection | `utils.py` |
 
@@ -130,11 +141,12 @@ labelwatch is a meta-governance tool for ATProto's label ecosystem. It discovers
 | Table | Purpose | Key Fields | Mutability |
 |-------|---------|------------|------------|
 | `label_events` | Raw label events from queryLabels | labeler_did, uri, val, neg, ts, event_hash | Append-only (INSERT OR IGNORE) |
-| `labelers` | Per-labeler profile + classification | labeler_did, visibility_class, reachability_state, auditability, sticky evidence fields, scan_count | Upsert (sticky fields never downgraded) |
+| `labelers` | Per-labeler profile + classification + derive scores | labeler_did, visibility_class, reachability_state, auditability, regime_state, auditability_risk, inference_risk, temporal_coherence, sticky evidence fields, scan_count | Upsert (sticky fields never downgraded) |
 | `alerts` | Detection results with receipts | rule_id, labeler_did, ts, inputs_json, evidence_hashes_json, config_hash, receipt_hash | Append-only |
 | `labeler_evidence` | Append-only evidence records | labeler_did, evidence_type, evidence_value, ts, source | Append-only (dedupe within run) |
 | `labeler_probe_history` | Endpoint probe results | labeler_did, ts, endpoint, http_status, normalized_status, latency_ms, failure_type | Append-only |
-| `meta` | Key-value store for schema version, build info | key, value | Upsert |
+| `derived_receipts` | State change receipts for regime/risk derivations | labeler_did, receipt_type, derivation_version, trigger, ts, input_hash, previous/new_value_json, reason_codes_json | Append-only |
+| `meta` | Key-value store for schema version, build info, heartbeats | key, value | Upsert |
 
 ### 4.2 Labeler Classification
 
@@ -159,10 +171,11 @@ Each labeler has a `visibility_class` (what kind of thing it is) and a `reachabi
 - `idx_alerts_rule_ts` — (rule_id, ts) for rule-based alert queries
 - `idx_labeler_evidence_did` — (labeler_did, evidence_type) for evidence lookups
 - `idx_probe_history_did_ts` — (labeler_did, ts) for probe history queries
+- `idx_derived_receipts_did_type` — (labeler_did, receipt_type, ts) for derived state lookups
 
 ### 4.4 Schema Version
 
-Schema version is tracked in the `meta` table (`key = "schema_version"`). Current version: 4. Migrations are handled in `db.init_db()` with automatic v2→v3→v4 upgrades.
+Schema version is tracked in the `meta` table (`key = "schema_version"`). Current version: 5. Migrations are handled in `db.init_db()` with automatic v2→v3→v4→v5 upgrades.
 
 ---
 
@@ -194,17 +207,28 @@ Four detection rules, all with warm-up gating:
 
 All rules collect evidence hashes (capped at `max_evidence`) pointing to specific label_events rows.
 
-### 5.4 Scan (`scan.py`)
+### 5.4 Derive (`derive.py`)
 
-Orchestrator that runs all rules, computes config_hash and receipt_hash for each alert, and writes results to the `alerts` table. Increments `scan_count` for all labelers after each scan. Single entry point: `run_scan(conn, config, now)`.
+Pure module with no DB or network dependencies. Takes a `LabelerSignals` dataclass (event counts, probe stats, classification state, churn metrics) and produces four independent signals:
 
-### 5.5 Report (`report.py`)
+- **`regime_state`**: Priority cascade classifier — warming_up / inactive / flapping / degraded / ghost_declared / dark_operational / bursty / stable. Each state has explicit reason codes.
+- **`auditability_risk`** (0-100): Structural observability risk. High score means the labeler is hard to inspect, regardless of behavior quality.
+- **`inference_risk`** (0-100): Epistemic risk. High score means dashboard conclusions are likely shaky (warmup, low volume, churn, sparse probes).
+- **`temporal_coherence`** (0-100): History usability. High score means past behavior is a usable predictor.
+
+Design constraint: four separate dials, not one collapsed trust score.
+
+### 5.5 Scan (`scan.py`)
+
+Orchestrator that runs all rules, computes config_hash and receipt_hash for each alert, writes results to the `alerts` table, increments `scan_count`, then runs the derive pass. The derive pass builds `LabelerSignals` from DB queries per labeler, runs all four classifiers, emits derived receipts on state change, and updates labeler rows. Single entry point: `run_scan(conn, config, now)`.
+
+### 5.6 Report (`report.py`)
 
 Generates a static HTML + JSON site: overview page with triage views (Active/Alerts/New/Opaque/All tabs), census page with visibility/reachability/confidence/auditability breakdowns, per-labeler pages with evidence expanders and probe history, per-alert pages. Includes warm-up banner, staleness indicators, alert rollups for low-confidence alerts, build signature, clock-skew detection, and naive-timestamp warnings. Uses atomic directory swap for safe updates. Per-labeler URLs use slug format (`did-plc-abc123.html`).
 
-### 5.6 Runner (`runner.py`)
+### 5.7 Runner (`runner.py`)
 
-Continuous loop for Docker deployment. Runs ingest on a configurable interval (default 120s), scan on another (default 300s), and optionally regenerates the HTML report after each scan.
+Continuous loop for systemd deployment. Runs discovery, ingest, scan, and report on configurable intervals. Each subsystem is wrapped in try/except so a failure in one (e.g. scan crash) doesn't kill the others. Writes heartbeat timestamps (`last_ingest_ok_ts`, `last_scan_ok_ts`, `last_report_ok_ts`, `last_discovery_ok_ts`) to the meta table for half-dead state detection.
 
 ---
 
@@ -337,3 +361,4 @@ Potential future work (not committed):
 | 0.1 | 2025-02-13 | unpingable | Initial draft (aspirational) |
 | 0.2 | 2026-02-13 | unpingable | Rewrite to match actual implementation |
 | 0.3 | 2026-02-24 | unpingable | Schema v4: evidence-based classification, warm-up gating, census |
+| 0.4 | 2026-02-25 | unpingable | Schema v5: derive module (regime/risk/coherence), derived receipts, runner hardening, heartbeats |

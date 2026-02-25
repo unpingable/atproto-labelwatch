@@ -10,38 +10,42 @@ labelwatch is an ATProto label behavior monitor. It polls `com.atproto.label.que
 - **Pure classifier** — `classify.py` is a pure function (no network, no DB). Classification is derived from structured evidence, not ad-hoc heuristics.
 - **Sticky evidence** — once a labeler evidence field (observed_as_src, has_labeler_service, etc.) is set to true, it is never downgraded by transient failures.
 - **Warm-up gating** — new labelers suppress alerts until they have sufficient scan history, age, and event volume.
+- **Derive module** — `derive.py` is a pure module (no DB, no network). Produces regime state, auditability risk, inference risk, and temporal coherence from `LabelerSignals`. Four dials, not one trust score.
+- **Derived receipts** — state changes in regime/risk are append-only receipted in `derived_receipts` table. Emit on change only.
 
 ## File structure
 
 ```
 src/labelwatch/
   config.py     — Config dataclass, TOML loader
-  db.py         — SQLite schema (v4), connect, init, migrations, evidence/probe CRUD
+  db.py         — SQLite schema (v5), connect, init, migrations, evidence/probe/derive CRUD
   classify.py   — Pure classifier: EvidenceDict → Classification (visibility, reachability, auditability)
+  derive.py     — Pure derive module: LabelerSignals → regime state, risk scores, temporal coherence
   discover.py   — Labeler discovery via listReposByCollection, DID resolution, endpoint probing
   ingest.py     — HTTP polling via queryLabels, event normalization, observed-only tracking
   resolve.py    — DID document resolution, service endpoint and label key extraction
   rules.py      — Detection rules: label_rate_spike, flip_flop, target_concentration, churn_index
-  scan.py       — Orchestrator: runs rules, computes receipts, writes alerts, increments scan_count
+  scan.py       — Orchestrator: runs rules, computes receipts, writes alerts, runs derive pass
   report.py     — Static HTML + JSON report: census page, triage views, evidence expanders
   receipts.py   — config_hash and receipt_hash helpers
-  runner.py     — Continuous ingest/scan loop for docker
+  runner.py     — Continuous ingest/scan loop with heartbeat timestamps
   cli.py        — argparse CLI: ingest, scan, report, export, discover, labelers, census, reclassify, run
-  utils.py      — Timestamps, hashing, git commit detection
+  utils.py      — Timestamps, hashing, sqlite_safe_text, git commit detection
 tests/
   test_ingest.py, test_rules_spikes.py, test_concentration.py, test_churn.py,
   test_receipts_shape.py, test_rules_overlap.py, test_discovery.py,
   test_multi_ingest.py, test_schema_v4.py, test_classify.py,
-  test_warmup.py, test_report_census.py, test_resolve.py
+  test_warmup.py, test_report_census.py, test_resolve.py, test_derive.py
 ```
 
-## Key tables (schema v4)
+## Key tables (schema v5)
 
-- `labelers` — per-labeler profile with visibility_class, reachability_state, auditability, sticky evidence fields
+- `labelers` — per-labeler profile with classification, derive scores (regime_state, auditability_risk, inference_risk, temporal_coherence), sticky evidence fields
 - `label_events` — append-only label events
 - `alerts` — detection results with receipt hashes
 - `labeler_evidence` — append-only evidence records per labeler
 - `labeler_probe_history` — append-only endpoint probe results
+- `derived_receipts` — append-only state change receipts for regime/risk derivations
 
 ## Commands
 
@@ -56,7 +60,3 @@ labelwatch census
 labelwatch reclassify --dry-run
 labelwatch report --format html --out report --now max
 ```
-
-## Governed development
-
-This project uses agent_gov for governed development. Governor state lives in `.governor/` (git-ignored).
