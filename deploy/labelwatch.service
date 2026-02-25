@@ -13,11 +13,13 @@ ExecStart=/opt/labelwatch/.venv/bin/labelwatch run \
     --ingest-interval 120 \
     --scan-interval 300 \
     --report-out /var/www/labelwatch
-Restart=on-failure
-RestartSec=30
+Restart=always
+RestartSec=5
+OOMPolicy=restart
+TimeoutStopSec=30
 
 # Resource limits
-MemoryMax=512M
+MemoryMax=1G
 CPUQuota=50%
 
 # Security hardening

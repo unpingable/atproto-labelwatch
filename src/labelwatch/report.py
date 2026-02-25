@@ -726,12 +726,18 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     ref_labelers = [r for r in labelers if r["is_reference"]]
     nonref_labelers = [r for r in labelers if not r["is_reference"]]
 
+    # Heartbeat timestamps from runner loop
+    heartbeats = {}
+    for hb_key in ("last_ingest_ok_ts", "last_scan_ok_ts", "last_report_ok_ts", "last_discovery_ok_ts"):
+        heartbeats[hb_key] = db.get_meta(conn, hb_key)
+
     overview = {
         "api_version": "v0",
         "generated_at": now_ts,
         "last_ingest": last_ingest,
         "last_scan": last_scan,
         "last_discovery": last_discovery,
+        "heartbeats": heartbeats,
         "schema_version": db.SCHEMA_VERSION,
         "schema_version_source": schema_version_source,
         "alerts_by_rule_24h": alerts_24h,

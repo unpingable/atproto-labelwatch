@@ -29,6 +29,21 @@ def hash_sha256(data: str) -> str:
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
+def sqlite_safe_text(value: Any) -> Optional[str]:
+    """Coerce any value to a type sqlite3 can bind as TEXT, or None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bytes):
+        return value.hex()
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return str(value)
+
+
 def get_git_commit() -> Optional[str]:
     try:
         head_path = os.path.join(os.getcwd(), ".git", "HEAD")

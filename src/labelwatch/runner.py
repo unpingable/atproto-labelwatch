@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
 from typing import Optional
 
 from . import db, discover, ingest, report as report_mod, resolve, scan
 from .config import Config
-from .utils import now_utc
+from .utils import format_ts, now_utc
 
 log = logging.getLogger(__name__)
 
@@ -16,6 +15,12 @@ def _sleep_until(next_ingest: float, next_scan: float) -> None:
     next_due = min(next_ingest, next_scan)
     delay = max(1.0, next_due - time.monotonic())
     time.sleep(min(delay, 60.0))
+
+
+def _heartbeat(conn, key: str) -> None:
+    """Write a heartbeat timestamp to meta for observability."""
+    db.set_meta(conn, key, format_ts(now_utc()))
+    conn.commit()
 
 
 def run_loop(
@@ -39,30 +44,41 @@ def run_loop(
         if cfg.discovery_enabled and now_mono - last_discovery >= discovery_interval:
             try:
                 discover.run_discovery(conn, cfg)
+                _heartbeat(conn, "last_discovery_ok_ts")
             except Exception:
                 log.warning("Discovery failed", exc_info=True)
             last_discovery = now_mono
 
+        # Ingest pass
         if ingest_interval > 0 and now_mono - last_ingest >= ingest_interval:
-            if not cfg.labeler_dids:
-                raise SystemExit("labeler_dids must be configured for ingest")
-            ingest.ingest_from_service(conn, cfg)
+            try:
+                if not cfg.labeler_dids:
+                    raise SystemExit("labeler_dids must be configured for ingest")
+                ingest.ingest_from_service(conn, cfg)
 
-            # Multi-source ingest from discovered labelers
-            if cfg.discovery_enabled:
-                try:
+                # Multi-source ingest from discovered labelers
+                if cfg.discovery_enabled:
                     ingest.ingest_multi(conn, cfg)
-                except Exception:
-                    log.warning("Multi-ingest failed", exc_info=True)
 
-            resolve.resolve_handles_for_labelers(conn)
+                resolve.resolve_handles_for_labelers(conn)
+                _heartbeat(conn, "last_ingest_ok_ts")
+            except SystemExit:
+                raise
+            except Exception:
+                log.error("Ingest failed", exc_info=True)
             last_ingest = now_mono
 
+        # Scan + report pass
         if scan_interval > 0 and now_mono - last_scan >= scan_interval:
-            scan_time = now_utc()
-            scan.run_scan(conn, cfg, now=scan_time)
-            if report_out:
-                report_mod.generate_report(conn, report_out, now=scan_time)
+            try:
+                scan_time = now_utc()
+                scan.run_scan(conn, cfg, now=scan_time)
+                _heartbeat(conn, "last_scan_ok_ts")
+                if report_out:
+                    report_mod.generate_report(conn, report_out, now=scan_time)
+                    _heartbeat(conn, "last_report_ok_ts")
+            except Exception:
+                log.error("Scan/report failed", exc_info=True)
             last_scan = now_mono
 
         _sleep_until(last_ingest + ingest_interval, last_scan + scan_interval)

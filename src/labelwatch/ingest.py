@@ -11,7 +11,7 @@ from typing import Dict, Iterable, List, Optional
 
 from . import db
 from .config import Config
-from .utils import format_ts, hash_sha256, now_utc, stable_json
+from .utils import format_ts, hash_sha256, now_utc, sqlite_safe_text, stable_json
 
 log = logging.getLogger(__name__)
 
@@ -46,14 +46,17 @@ def normalize_label(raw: Dict) -> LabelEvent:
     val = raw.get("val")
     if not uri or not val:
         raise ValueError("uri and val required")
-    cid = raw.get("cid")
+    cid = sqlite_safe_text(raw.get("cid"))
     neg = 1 if raw.get("neg") else 0
-    exp = raw.get("exp")
+    exp = sqlite_safe_text(raw.get("exp"))
     sig_raw = raw.get("sig")
     if isinstance(sig_raw, dict):
         sig = sig_raw.get("$bytes")
     else:
         sig = sig_raw
+    sig = sqlite_safe_text(sig)
+    if sig_raw is not None and not isinstance(sig_raw, (str, dict, type(None))):
+        log.info("Coerced sig type=%s for %s: %.80r", type(sig_raw).__name__, labeler_did, sig_raw)
     ts = raw.get("ts") or format_ts(now_utc())
     canonical = {
         "labeler_did": labeler_did,
