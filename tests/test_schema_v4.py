@@ -74,9 +74,9 @@ def test_fresh_db_has_probe_history_table():
     assert "labeler_probe_history" in tables
 
 
-def test_fresh_db_schema_version_is_4():
+def test_fresh_db_schema_version():
     conn = _make_db()
-    assert db.get_schema_version(conn) == 4
+    assert db.get_schema_version(conn) == db.SCHEMA_VERSION
 
 
 def test_fresh_db_labeler_defaults():
@@ -114,10 +114,11 @@ def test_migrate_v3_to_v4_adds_columns():
 
     db.init_db(conn)
 
-    assert db.get_schema_version(conn) == 4
+    assert db.get_schema_version(conn) == db.SCHEMA_VERSION
 
     cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
-    for col in ["visibility_class", "reachability_state", "auditability", "declared_record", "scan_count"]:
+    for col in ["visibility_class", "reachability_state", "auditability", "declared_record", "scan_count",
+                "regime_state", "auditability_risk", "inference_risk", "temporal_coherence"]:
         assert col in cols, f"Missing column after migration: {col}"
 
 

@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -51,7 +51,20 @@ CREATE TABLE IF NOT EXISTS labelers (
     has_label_key INTEGER DEFAULT 0,
     declared_record INTEGER DEFAULT 0,
     likely_test_dev INTEGER DEFAULT 0,
-    scan_count INTEGER DEFAULT 0
+    scan_count INTEGER DEFAULT 0,
+    regime_state TEXT,
+    regime_reason_codes TEXT,
+    auditability_risk INTEGER,
+    auditability_risk_band TEXT,
+    auditability_risk_reasons TEXT,
+    inference_risk INTEGER,
+    inference_risk_band TEXT,
+    inference_risk_reasons TEXT,
+    temporal_coherence INTEGER,
+    temporal_coherence_band TEXT,
+    temporal_coherence_reasons TEXT,
+    derive_version TEXT,
+    derived_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS alerts (
@@ -85,6 +98,21 @@ CREATE TABLE IF NOT EXISTS labeler_probe_history (
     failure_type TEXT,
     error TEXT
 );
+
+CREATE TABLE IF NOT EXISTS derived_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    labeler_did TEXT NOT NULL,
+    receipt_type TEXT NOT NULL,
+    derivation_version TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    input_hash TEXT NOT NULL,
+    previous_value_json TEXT NOT NULL,
+    new_value_json TEXT NOT NULL,
+    reason_codes_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_derived_receipts_did_type ON derived_receipts(labeler_did, receipt_type, ts);
 
 CREATE INDEX IF NOT EXISTS idx_label_events_labeler_ts ON label_events(labeler_did, ts);
 CREATE INDEX IF NOT EXISTS idx_label_events_uri_ts ON label_events(uri, ts);
@@ -246,6 +274,47 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
 
         set_schema_version(conn, 4)
         current = 4
+    if current == 4 and target >= 5:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
+        for col, typedef in [
+            ("regime_state", "TEXT"),
+            ("regime_reason_codes", "TEXT"),
+            ("auditability_risk", "INTEGER"),
+            ("auditability_risk_band", "TEXT"),
+            ("auditability_risk_reasons", "TEXT"),
+            ("inference_risk", "INTEGER"),
+            ("inference_risk_band", "TEXT"),
+            ("inference_risk_reasons", "TEXT"),
+            ("temporal_coherence", "INTEGER"),
+            ("temporal_coherence_band", "TEXT"),
+            ("temporal_coherence_reasons", "TEXT"),
+            ("derive_version", "TEXT"),
+            ("derived_at", "TEXT"),
+        ]:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS derived_receipts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                labeler_did TEXT NOT NULL,
+                receipt_type TEXT NOT NULL,
+                derivation_version TEXT NOT NULL,
+                trigger TEXT NOT NULL,
+                ts TEXT NOT NULL,
+                input_hash TEXT NOT NULL,
+                previous_value_json TEXT NOT NULL,
+                new_value_json TEXT NOT NULL,
+                reason_codes_json TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_derived_receipts_did_type
+            ON derived_receipts(labeler_did, receipt_type, ts)
+        """)
+
+        set_schema_version(conn, 5)
+        current = 5
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
@@ -344,6 +413,63 @@ def get_probe_history(conn: sqlite3.Connection, labeler_did: str,
         (labeler_did, limit),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def insert_derived_receipt(conn: sqlite3.Connection, labeler_did: str,
+                           receipt_type: str, derivation_version: str,
+                           trigger: str, ts: str, input_hash: str,
+                           previous_value_json: str, new_value_json: str,
+                           reason_codes_json: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO derived_receipts(
+            labeler_did, receipt_type, derivation_version, trigger, ts,
+            input_hash, previous_value_json, new_value_json, reason_codes_json
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (labeler_did, receipt_type, derivation_version, trigger, ts,
+         input_hash, previous_value_json, new_value_json, reason_codes_json),
+    )
+
+
+def get_latest_derived(conn: sqlite3.Connection, labeler_did: str,
+                       receipt_type: str) -> Optional[dict]:
+    row = conn.execute(
+        """
+        SELECT * FROM derived_receipts
+        WHERE labeler_did=? AND receipt_type=?
+        ORDER BY ts DESC LIMIT 1
+        """,
+        (labeler_did, receipt_type),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def update_labeler_derived(conn: sqlite3.Connection, labeler_did: str,
+                           regime_state: str, regime_reason_codes: str,
+                           auditability_risk: int, auditability_risk_band: str,
+                           auditability_risk_reasons: str,
+                           inference_risk: int, inference_risk_band: str,
+                           inference_risk_reasons: str,
+                           temporal_coherence: int, temporal_coherence_band: str,
+                           temporal_coherence_reasons: str,
+                           derive_version: str, derived_at: str) -> None:
+    conn.execute(
+        """
+        UPDATE labelers SET
+            regime_state=?, regime_reason_codes=?,
+            auditability_risk=?, auditability_risk_band=?, auditability_risk_reasons=?,
+            inference_risk=?, inference_risk_band=?, inference_risk_reasons=?,
+            temporal_coherence=?, temporal_coherence_band=?, temporal_coherence_reasons=?,
+            derive_version=?, derived_at=?
+        WHERE labeler_did=?
+        """,
+        (regime_state, regime_reason_codes,
+         auditability_risk, auditability_risk_band, auditability_risk_reasons,
+         inference_risk, inference_risk_band, inference_risk_reasons,
+         temporal_coherence, temporal_coherence_band, temporal_coherence_reasons,
+         derive_version, derived_at, labeler_did),
+    )
 
 
 def increment_scan_count(conn: sqlite3.Connection, labeler_did: str) -> None:
