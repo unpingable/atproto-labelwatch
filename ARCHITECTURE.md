@@ -2,8 +2,8 @@
 
 # labelwatch Architecture
 
-**Version**: 0.4
-**Last Updated**: 2026-02-25
+**Version**: 0.5
+**Last Updated**: 2026-02-26
 **Owner**: James Beck / unpingable
 **Status**: Draft — reflects actual MVP implementation
 
@@ -33,7 +33,7 @@ labelwatch is a meta-governance tool for ATProto's label ecosystem. It discovers
            │                           │
            ▼                           ▼
        ┌──────────────────────────────────┐
-       │  SQLite DB (schema v5)           │
+       │  SQLite DB (schema v8)           │
        │  label_events | labelers         │
        │  alerts | labeler_evidence       │
        │  labeler_probe_history | meta    │
@@ -84,7 +84,7 @@ labelwatch is a meta-governance tool for ATProto's label ecosystem. It discovers
 | Component | Responsibility | Source |
 |-----------|---------------|--------|
 | Config | TOML config loading, dataclass with defaults | `config.py` |
-| DB | SQLite schema (v5), connection, migrations, evidence/probe/derive CRUD | `db.py` |
+| DB | SQLite schema (v8), connection, migrations, evidence/probe/derive CRUD | `db.py` |
 | Classify | Pure classifier: EvidenceDict → Classification (no network, no DB) | `classify.py` |
 | Discover | Labeler discovery, DID resolution, endpoint probing, evidence collection | `discover.py` |
 | Resolve | DID document resolution, service endpoint and label key extraction | `resolve.py` |
@@ -142,7 +142,7 @@ labelwatch is a meta-governance tool for ATProto's label ecosystem. It discovers
 |-------|---------|------------|------------|
 | `label_events` | Raw label events from queryLabels | labeler_did, uri, val, neg, ts, event_hash | Append-only (INSERT OR IGNORE) |
 | `labelers` | Per-labeler profile + classification + derive scores | labeler_did, visibility_class, reachability_state, auditability, regime_state, auditability_risk, inference_risk, temporal_coherence, sticky evidence fields, scan_count | Upsert (sticky fields never downgraded) |
-| `alerts` | Detection results with receipts | rule_id, labeler_did, ts, inputs_json, evidence_hashes_json, config_hash, receipt_hash | Append-only |
+| `alerts` | Detection results with receipts | rule_id, labeler_did, ts, inputs_json, evidence_hashes_json, config_hash, receipt_hash, warmup_alert | Append-only |
 | `labeler_evidence` | Append-only evidence records | labeler_did, evidence_type, evidence_value, ts, source | Append-only (dedupe within run) |
 | `labeler_probe_history` | Endpoint probe results | labeler_did, ts, endpoint, http_status, normalized_status, latency_ms, failure_type | Append-only |
 | `derived_receipts` | State change receipts for regime/risk derivations | labeler_did, receipt_type, derivation_version, trigger, ts, input_hash, previous/new_value_json, reason_codes_json | Append-only |
@@ -175,7 +175,7 @@ Each labeler has a `visibility_class` (what kind of thing it is) and a `reachabi
 
 ### 4.4 Schema Version
 
-Schema version is tracked in the `meta` table (`key = "schema_version"`). Current version: 5. Migrations are handled in `db.init_db()` with automatic v2→v3→v4→v5 upgrades.
+Schema version is tracked in the `meta` table (`key = "schema_version"`). Current version: 8. Migrations are handled in `db.init_db()` with automatic v2→v3→v4→v5→v6→v7→v8 upgrades.
 
 ---
 
@@ -220,7 +220,7 @@ Design constraint: four separate dials, not one collapsed trust score.
 
 ### 5.5 Scan (`scan.py`)
 
-Orchestrator that runs all rules, computes config_hash and receipt_hash for each alert, writes results to the `alerts` table, increments `scan_count`, then runs the derive pass. The derive pass builds `LabelerSignals` from DB queries per labeler, runs all four classifiers, emits derived receipts on state change, and updates labeler rows. Single entry point: `run_scan(conn, config, now)`.
+Orchestrator that runs all rules, computes config_hash and receipt_hash for each alert, writes results to the `alerts` table (with `warmup_alert` flag), increments `scan_count`, then runs the derive pass. The derive pass builds `LabelerSignals` from batched DB queries (~6 total), runs all four classifiers with regime hysteresis (requires N consecutive passes before state change), shifts current scores to prev for delta rendering, emits derived receipts on state change, and updates labeler rows. Entry points: `run_scan(conn, config, now)` and `run_derive(conn, config, now)`.
 
 ### 5.6 Report (`report.py`)
 
@@ -254,7 +254,7 @@ Continuous loop for systemd deployment. Runs discovery, ingest, scan, and report
 
 **Current state**: MVP. Single-process, no redundancy.
 
-- **Ingest failure**: Runner retries on next interval. No cursor persistence across restarts — may re-fetch events (deduped by event_hash).
+- **Ingest failure**: Runner retries on next interval. Cursor persistence across restarts avoids redundant re-fetches; events still deduped by event_hash as a safety net.
 - **DB corruption**: No automated backup. Restore from external backup or re-ingest.
 - **Process crash**: Docker `restart: unless-stopped` handles restarts.
 
@@ -309,7 +309,7 @@ TBD for post-MVP: structured logging, metrics endpoint.
 
 | Tension | Current State | Notes |
 |---------|---------------|-------|
-| HTTP polling vs streaming | Polling via queryLabels | Misses events between polls; no cursor persistence across restarts. Jetstream would provide real-time streaming but adds complexity. |
+| HTTP polling vs streaming | Polling via queryLabels | Misses events between polls. Cursor persistence across restarts is implemented. Jetstream would provide real-time streaming but adds complexity. |
 | SHA-256 hashing vs cryptographic signing | Receipt hashes are SHA-256 digests | Verifiable (reproducible) but not attributable to a specific signer. True cryptographic signing would require key management. |
 | Single-threaded | One process does ingest + scan + report | Adequate for MVP scale. Would need separation for higher throughput. |
 
@@ -317,7 +317,7 @@ TBD for post-MVP: structured logging, metrics endpoint.
 
 | Item | Severity | Notes |
 |------|----------|-------|
-| No cursor persistence across restarts | Medium | Re-fetches events on restart; deduped but wasteful |
+| ~~No cursor persistence across restarts~~ | ~~Medium~~ | Done — `ingest_cursors` table |
 | No structured logging | Low | print() statements; hard to parse at scale |
 | No integration tests against live ATProto | Medium | Only synthetic fixture tests exist |
 
@@ -362,3 +362,4 @@ Potential future work (not committed):
 | 0.2 | 2026-02-13 | unpingable | Rewrite to match actual implementation |
 | 0.3 | 2026-02-24 | unpingable | Schema v4: evidence-based classification, warm-up gating, census |
 | 0.4 | 2026-02-25 | unpingable | Schema v5: derive module (regime/risk/coherence), derived receipts, runner hardening, heartbeats |
+| 0.5 | 2026-02-26 | unpingable | Schema v6-v8: regime hysteresis, score deltas (prev columns), warmup alert quarantine, badge/score suppression during warmup, safe deploy script |

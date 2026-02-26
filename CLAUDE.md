@@ -18,14 +18,14 @@ labelwatch is an ATProto label behavior monitor. It polls `com.atproto.label.que
 ```
 src/labelwatch/
   config.py     — Config dataclass, TOML loader
-  db.py         — SQLite schema (v5), connect, init, migrations, evidence/probe/derive CRUD
+  db.py         — SQLite schema (v8), connect, init, migrations, evidence/probe/derive CRUD
   classify.py   — Pure classifier: EvidenceDict → Classification (visibility, reachability, auditability)
   derive.py     — Pure derive module: LabelerSignals → regime state, risk scores, temporal coherence
   discover.py   — Labeler discovery via listReposByCollection, DID resolution, endpoint probing
   ingest.py     — HTTP polling via queryLabels, event normalization, observed-only tracking
   resolve.py    — DID document resolution, service endpoint and label key extraction
   rules.py      — Detection rules: label_rate_spike, flip_flop, target_concentration, churn_index
-  scan.py       — Orchestrator: runs rules, computes receipts, writes alerts, runs derive pass
+  scan.py       — Orchestrator: runs rules, computes receipts, writes alerts, runs derive pass with hysteresis
   report.py     — Static HTML + JSON report: census page, triage views, evidence expanders
   receipts.py   — config_hash and receipt_hash helpers
   runner.py     — Continuous ingest/scan loop with heartbeat timestamps
@@ -38,11 +38,11 @@ tests/
   test_warmup.py, test_report_census.py, test_resolve.py, test_derive.py
 ```
 
-## Key tables (schema v5)
+## Key tables (schema v8)
 
-- `labelers` — per-labeler profile with classification, derive scores (regime_state, auditability_risk, inference_risk, temporal_coherence), sticky evidence fields
+- `labelers` — per-labeler profile with classification, derive scores (regime_state, auditability_risk, inference_risk, temporal_coherence), hysteresis state (regime_pending, regime_pending_count), prev scores for deltas, sticky evidence fields
 - `label_events` — append-only label events
-- `alerts` — detection results with receipt hashes
+- `alerts` — detection results with receipt hashes; warmup_alert flag for legacy quarantine
 - `labeler_evidence` — append-only evidence records per labeler
 - `labeler_probe_history` — append-only endpoint probe results
 - `derived_receipts` — append-only state change receipts for regime/risk derivations
