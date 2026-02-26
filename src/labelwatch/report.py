@@ -11,6 +11,7 @@ from html import escape
 from typing import Any, Dict, List, Optional
 
 from . import db
+from .derive import burstiness_index
 from .receipts import config_hash as config_hash_fn
 from .utils import format_ts, get_git_commit, parse_ts
 
@@ -174,6 +175,12 @@ pre { background: var(--pre-bg); padding: 0.5rem; border-radius: 4px; overflow-x
 .hidden { display: none; }
 .theme-toggle { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--fg-muted); }
 .theme-toggle:hover { background: var(--link-hover-bg); }
+.badge-explainer { margin: 0.5rem 0 1rem 0; font-size: 0.85rem; }
+.badge-explainer summary { cursor: pointer; color: var(--fg-muted); }
+.badge-explainer ul { margin: 0.3rem 0; padding-left: 1.2rem; }
+.badge-explainer li { margin: 0.2rem 0; }
+.data-maturity { color: var(--fg-muted); font-size: 0.85rem; margin: 0.5rem 0 0.75rem 0; }
+.behavior-one-liner { color: var(--fg-muted); font-size: 0.9rem; font-style: italic; margin: 0.25rem 0 0.5rem 0; }
 .explainer { background: var(--methods-bg); border: 1px solid var(--methods-border); padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 1.5rem; max-width: 52rem; font-size: 0.95rem; line-height: 1.5; }
 .explainer p { margin: 0.4rem 0; }
 .labeler-context { color: var(--fg-muted); font-size: 0.9rem; margin-bottom: 0.75rem; }
@@ -437,6 +444,199 @@ def _labeler_badges(conn, labeler_did: str, start: str, end: str,
 
 def _badges_html(badges: List[tuple[str, str]]) -> str:
     return " ".join(f'<span class="badge {cls}">{escape(label)}</span>' for label, cls in badges)
+
+
+def _data_maturity_line(row) -> str:
+    """Render data maturity indicator: 'Observed 14d · 47 scans · Coverage 95% · Ready'."""
+    first_seen = row["first_seen"]
+    scan_count = row["scan_count"] or 0
+    coverage_ratio = row["coverage_ratio"]
+    regime_state = row["regime_state"]
+
+    # Age
+    age_str = "unknown"
+    if first_seen:
+        first_dt = _parse_ts_safe(first_seen)
+        if first_dt:
+            delta = datetime.now(timezone.utc) - first_dt
+            hours = delta.total_seconds() / 3600
+            if hours < 24:
+                age_str = "&lt;24h"
+            else:
+                days = int(delta.days) or 1
+                age_str = f"{days}d"
+
+    # Scans
+    scan_str = f"{scan_count} scan" if scan_count == 1 else f"{scan_count} scans"
+
+    # Coverage
+    cov_str = ""
+    if coverage_ratio is not None:
+        cov_str = f" · Coverage {int(coverage_ratio * 100)}%"
+
+    # State
+    if regime_state == "warming_up" or scan_count < 3:
+        state = "Warmup"
+    else:
+        state = "Ready"
+
+    return f'<div class="data-maturity">Observed {age_str} · {scan_str}{cov_str} · {state}</div>'
+
+
+def _behavior_summary(regime_state: Optional[str], rules_fired: set, hourly_counts: List[int]) -> dict:
+    """Compute 2-axis behavior summary (stability + tempo) from existing data.
+
+    Returns dict with stability, tempo, CSS classes, one-liner, and burstiness score.
+    """
+    # Warmup override
+    if regime_state == "warming_up":
+        return {
+            "stability": "warming_up",
+            "tempo": "warming_up",
+            "stability_css": "badge-low-conf",
+            "tempo_css": "badge-low-conf",
+            "one_liner": "Baselines forming — behavior axes not yet available.",
+            "burstiness": 0,
+            "warmup": True,
+        }
+
+    # Stability axis
+    if regime_state == "flapping":
+        stability = "flappy"
+    elif "flip_flop" in rules_fired:
+        stability = "reversal-heavy"
+    elif any(hourly_counts):  # has event data (at least one nonzero)
+        stability = "stable"
+    else:
+        stability = "unknown"
+
+    # Tempo axis
+    has_data = any(c > 0 for c in hourly_counts) if hourly_counts else False
+    if not has_data:
+        tempo = "unknown"
+        burst_score = 0
+    else:
+        burst_score = int(burstiness_index(hourly_counts))
+        if burst_score >= 65:
+            tempo = "burst-prone"
+        else:
+            tempo = "steady"
+
+    # CSS classes
+    stability_css_map = {
+        "stable": "badge-stable",
+        "reversal-heavy": "badge-flipflop",
+        "flappy": "badge-churn",
+        "unknown": "badge-low-conf",
+    }
+    tempo_css_map = {
+        "steady": "badge-stable",
+        "burst-prone": "badge-burst",
+        "unknown": "badge-low-conf",
+    }
+
+    # One-liner
+    one_liner = _behavior_one_liner(stability, tempo)
+
+    return {
+        "stability": stability,
+        "tempo": tempo,
+        "stability_css": stability_css_map[stability],
+        "tempo_css": tempo_css_map[tempo],
+        "one_liner": one_liner,
+        "burstiness": burst_score,
+        "warmup": False,
+    }
+
+
+def _behavior_one_liner(stability: str, tempo: str) -> str:
+    """Generate a templated one-liner from the two axes."""
+    # Full combo
+    if stability != "unknown" and tempo != "unknown":
+        combos = {
+            ("stable", "steady"): "Steady cadence, stable labeling.",
+            ("stable", "burst-prone"): "Burst-prone, otherwise stable.",
+            ("reversal-heavy", "steady"): "Steady cadence, reversal-heavy.",
+            ("reversal-heavy", "burst-prone"): "Burst-prone with elevated reversals.",
+            ("flappy", "steady"): "Steady cadence, flapping regime.",
+            ("flappy", "burst-prone"): "Burst-prone with flapping regime.",
+        }
+        return combos.get((stability, tempo), "")
+
+    # One unknown — omit the unknown part
+    if stability == "unknown" and tempo == "unknown":
+        return ""
+    if stability == "unknown":
+        tempo_text = {"steady": "Steady cadence.", "burst-prone": "Burst-prone."}
+        return tempo_text.get(tempo, "")
+    if tempo == "unknown":
+        stability_text = {
+            "stable": "Stable labeling.",
+            "reversal-heavy": "Reversal-heavy.",
+            "flappy": "Flapping regime.",
+        }
+        return stability_text.get(stability, "")
+    return ""
+
+
+def _badge_explainer_html(summary: dict, latest_alerts_by_rule: Optional[dict] = None) -> str:
+    """Render <details> block explaining why each behavior tag was assigned."""
+    if summary.get("warmup"):
+        return ""
+
+    items = []
+    stability = summary["stability"]
+    tempo = summary["tempo"]
+    burst = summary.get("burstiness", 0)
+
+    # Stability explainer
+    if stability == "stable":
+        items.append("<li><strong>Stable</strong>: No flip-flop sequences detected in 7d window.</li>")
+    elif stability == "reversal-heavy":
+        detail = "Flip-flop pattern detected in last 7d window."
+        if latest_alerts_by_rule and "flip_flop" in latest_alerts_by_rule:
+            try:
+                inputs = json.loads(latest_alerts_by_rule["flip_flop"].get("inputs_json", "{}"))
+                count = inputs.get("flip_flop_count")
+                if count is not None:
+                    detail = f"{count} apply\u2192negate\u2192reapply sequences in 24h."
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        items.append(f"<li><strong>Reversal-heavy</strong>: {detail}</li>")
+    elif stability == "flappy":
+        items.append("<li><strong>Flappy</strong>: Regime classified as flapping in last derive.</li>")
+    elif stability == "unknown":
+        items.append("<li><strong>Unknown stability</strong>: Insufficient data to classify.</li>")
+
+    # Tempo explainer
+    if tempo == "steady":
+        items.append(f"<li><strong>Steady</strong>: Burstiness index {burst}/100 (7d hourly distribution).</li>")
+    elif tempo == "burst-prone":
+        items.append(f"<li><strong>Burst-prone</strong>: Burstiness index {burst}/100 (7d hourly distribution).</li>")
+    elif tempo == "unknown":
+        items.append("<li><strong>Unknown tempo</strong>: Insufficient data to classify.</li>")
+
+    if not items:
+        return ""
+
+    return (
+        '<details class="badge-explainer">\n'
+        '  <summary>Why these tags?</summary>\n'
+        '  <ul>\n    ' + '\n    '.join(items) + '\n  </ul>\n'
+        '</details>'
+    )
+
+
+def _non_axis_badges(rules_fired: set) -> List[tuple[str, str]]:
+    """Return non-axis badges (target-fixated, high churn, data gap) from rules fired."""
+    badges = []
+    if "target_concentration" in rules_fired:
+        badges.append(("Target-fixated", "badge-fixated"))
+    if "churn_index" in rules_fired:
+        badges.append(("High churn", "badge-churn"))
+    if "data_gap" in rules_fired:
+        badges.append(("Data gap", "badge-churn"))
+    return badges
 
 
 def _labeler_health_card(conn, labeler_did: str, start_7d: str, now_ts: str, sparkline_counts: List[int],
@@ -950,7 +1150,6 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
 
     for r in nonref_labelers:
         did = r["labeler_did"]
-        badges = _labeler_badges(conn, did, start_7d, now_ts, regime_state=r["regime_state"])
         counts = _hourly_counts(conn, did, start_7d, now_ts)
         spark = _sparkline_svg(counts)
         ep_status = r["endpoint_status"] if r["endpoint_status"] else "unknown"
@@ -964,6 +1163,29 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         last_seen_dt = _parse_ts_safe(r["last_seen"])
         is_inactive = "1" if last_seen_dt and last_seen_dt < _parse_ts_safe(start_30d) else "0"
 
+        # Behavior summary: reuse same alert query as _labeler_badges
+        alert_rows_for_did = conn.execute(
+            "SELECT rule_id FROM alerts WHERE labeler_did=? AND ts>=? AND ts<=? AND warmup_alert=0",
+            (did, start_7d, now_ts),
+        ).fetchall()
+        rules_fired = {ar["rule_id"] for ar in alert_rows_for_did}
+        summary = _behavior_summary(r["regime_state"], rules_fired, counts)
+
+        if summary["warmup"]:
+            behavior_html = '<span class="badge badge-low-conf">Warming up</span>'
+        else:
+            axis_badges = []
+            if summary["stability"] != "unknown":
+                axis_badges.append((summary["stability"].capitalize() if summary["stability"] != "burst-prone" else summary["stability"].title(),
+                                    summary["stability_css"]))
+            if summary["tempo"] != "unknown":
+                axis_badges.append((summary["tempo"].capitalize() if summary["tempo"] != "burst-prone" else "Burst-prone",
+                                    summary["tempo_css"]))
+            extra = _non_axis_badges(rules_fired)
+            behavior_html = _badges_html(axis_badges + extra)
+            if not axis_badges and not extra:
+                behavior_html = '<span class="small">--</span>'
+
         labeler_table_rows_html += (
             f'<tr class="labeler-row" '
             f'data-events7d="{events_7d}" data-alert-count="{alert_count}" '
@@ -975,7 +1197,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             f'<td>{escape(str(r["first_seen"]))}</td>'
             f'<td>{escape(str(r["last_seen"]))}</td>'
             f'<td>{spark}</td>'
-            f'<td>{_badges_html(badges)}</td>'
+            f'<td>{behavior_html}</td>'
             f'</tr>'
         )
 
@@ -1071,6 +1293,48 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
 
         sparkline_counts = _hourly_counts(conn, did, start_7d, now_ts)
         health_card = _labeler_health_card(conn, did, start_7d, now_ts, sparkline_counts, regime_state=row["regime_state"])
+
+        # Data maturity line (below health card)
+        maturity_line = _data_maturity_line(row)
+
+        # Behavior summary for per-labeler page
+        labeler_alert_rows_7d = conn.execute(
+            "SELECT rule_id, inputs_json FROM alerts WHERE labeler_did=? AND ts>=? AND ts<=? AND warmup_alert=0 ORDER BY ts DESC",
+            (did, start_7d, now_ts),
+        ).fetchall()
+        labeler_rules_fired = {ar["rule_id"] for ar in labeler_alert_rows_7d}
+        labeler_summary = _behavior_summary(row["regime_state"], labeler_rules_fired, sparkline_counts)
+
+        # Build latest_alerts_by_rule for explainer (most recent per rule_id)
+        latest_alerts_by_rule = {}
+        for ar in labeler_alert_rows_7d:
+            rid = ar["rule_id"]
+            if rid not in latest_alerts_by_rule:
+                latest_alerts_by_rule[rid] = dict(ar)
+
+        # Behavior section HTML
+        if labeler_summary["warmup"]:
+            behavior_section = '<div><span class="badge badge-low-conf">Warming up</span></div>'
+            behavior_section += f'<p class="behavior-one-liner">{labeler_summary["one_liner"]}</p>'
+        else:
+            axis_badges = []
+            if labeler_summary["stability"] != "unknown":
+                stab_label = labeler_summary["stability"].capitalize()
+                if labeler_summary["stability"] == "reversal-heavy":
+                    stab_label = "Reversal-heavy"
+                elif labeler_summary["stability"] == "burst-prone":
+                    stab_label = "Burst-prone"
+                axis_badges.append((stab_label, labeler_summary["stability_css"]))
+            if labeler_summary["tempo"] != "unknown":
+                tempo_label = "Burst-prone" if labeler_summary["tempo"] == "burst-prone" else labeler_summary["tempo"].capitalize()
+                axis_badges.append((tempo_label, labeler_summary["tempo_css"]))
+            extra_badges = _non_axis_badges(labeler_rules_fired)
+            all_badges = axis_badges + extra_badges
+            behavior_section = f'<div>{_badges_html(all_badges)}</div>' if all_badges else ''
+            if labeler_summary["one_liner"]:
+                behavior_section += f'<p class="behavior-one-liner">{labeler_summary["one_liner"]}</p>'
+
+        explainer_html_block = _badge_explainer_html(labeler_summary, latest_alerts_by_rule)
 
         handle = handles.get(did)
         dn = display_names.get(did)
@@ -1202,7 +1466,9 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         html = _layout(
             f"Labeler: {labeler_title}",
             f"<p><a href=\"../index.html\">Overview</a> | <a href=\"../census.html\">Census</a></p>"
-            + labeler_context + warmup_indicator + health_card + info_card + scores_card + evidence_section
+            + labeler_context + warmup_indicator + health_card + maturity_line
+            + behavior_section + explainer_html_block
+            + info_card + scores_card + evidence_section
             + targets_table + probe_section + alerts_table + METHODS_HTML,
             canonical=f"labeler/{slug}.html",
         )
