@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -69,7 +69,12 @@ CREATE TABLE IF NOT EXISTS labelers (
     regime_pending_count INTEGER DEFAULT 0,
     auditability_risk_prev INTEGER,
     inference_risk_prev INTEGER,
-    temporal_coherence_prev INTEGER
+    temporal_coherence_prev INTEGER,
+    coverage_ratio REAL,
+    coverage_window_successes INTEGER DEFAULT 0,
+    coverage_window_attempts INTEGER DEFAULT 0,
+    last_ingest_success_ts TEXT,
+    last_ingest_attempt_ts TEXT
 );
 
 CREATE TABLE IF NOT EXISTS alerts (
@@ -119,6 +124,22 @@ CREATE TABLE IF NOT EXISTS derived_receipts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_derived_receipts_did_type ON derived_receipts(labeler_did, receipt_type, ts);
+
+CREATE TABLE IF NOT EXISTS ingest_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    labeler_did TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    attempt_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    events_fetched INTEGER,
+    http_status INTEGER,
+    latency_ms INTEGER,
+    error_type TEXT,
+    error_summary TEXT,
+    source TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingest_outcomes_did_ts ON ingest_outcomes(labeler_did, ts);
 
 CREATE INDEX IF NOT EXISTS idx_label_events_labeler_ts ON label_events(labeler_did, ts);
 CREATE INDEX IF NOT EXISTS idx_label_events_uri_ts ON label_events(uri, ts);
@@ -366,6 +387,38 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
             conn.execute("UPDATE alerts SET warmup_alert = 1")
         set_schema_version(conn, 8)
         current = 8
+    if current == 8 and target >= 9:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ingest_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                labeler_did TEXT NOT NULL,
+                ts TEXT NOT NULL,
+                attempt_id TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                events_fetched INTEGER,
+                http_status INTEGER,
+                latency_ms INTEGER,
+                error_type TEXT,
+                error_summary TEXT,
+                source TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ingest_outcomes_did_ts
+            ON ingest_outcomes(labeler_did, ts)
+        """)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
+        for col, typedef in [
+            ("coverage_ratio", "REAL"),
+            ("coverage_window_successes", "INTEGER DEFAULT 0"),
+            ("coverage_window_attempts", "INTEGER DEFAULT 0"),
+            ("last_ingest_success_ts", "TEXT"),
+            ("last_ingest_attempt_ts", "TEXT"),
+        ]:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
+        set_schema_version(conn, 9)
+        current = 9
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
@@ -537,4 +590,21 @@ def increment_scan_count(conn: sqlite3.Connection, labeler_did: str) -> None:
     conn.execute(
         "UPDATE labelers SET scan_count = scan_count + 1 WHERE labeler_did = ?",
         (labeler_did,),
+    )
+
+
+def insert_ingest_outcome(conn: sqlite3.Connection, labeler_did: str, ts: str,
+                           attempt_id: str, outcome: str, events_fetched: int,
+                           http_status: Optional[int], latency_ms: Optional[int],
+                           error_type: Optional[str], error_summary: Optional[str],
+                           source: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO ingest_outcomes(
+            labeler_did, ts, attempt_id, outcome, events_fetched,
+            http_status, latency_ms, error_type, error_summary, source
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (labeler_did, ts, attempt_id, outcome, events_fetched,
+         http_status, latency_ms, error_type, error_summary, source),
     )

@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+import socket
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
+from uuid import uuid4
 
 from . import db
 from .config import Config
@@ -16,6 +19,23 @@ from .utils import format_ts, hash_sha256, now_utc, sqlite_safe_text, stable_jso
 log = logging.getLogger(__name__)
 
 _VALID_DID_RE = re.compile(r"^did:(plc|web):[a-zA-Z0-9._:%-]{1,256}$")
+
+
+def _classify_exception(exc: Exception) -> tuple[str, int | None]:
+    """Classify an exception as 'timeout' or 'error', and extract http_status if available."""
+    if isinstance(exc, socket.timeout):
+        return "timeout", None
+    # HTTPError is a subclass of URLError, so check it first
+    if isinstance(exc, urllib.error.HTTPError):
+        return "error", getattr(exc, "code", None)
+    if isinstance(exc, urllib.error.URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, (socket.timeout, TimeoutError)):
+            return "timeout", None
+        return "error", None
+    if isinstance(exc, TimeoutError):
+        return "timeout", None
+    return "error", None
 
 
 def _is_valid_did(did: str) -> bool:
@@ -148,40 +168,74 @@ def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int =
     source = _cursor_key(config)
     cursor = db.get_cursor(conn, source)
     evidence_seen: set = set()
-    for _ in range(max_pages):
-        payload = fetch_labels(config.service_url, config.labeler_dids, cursor=cursor, limit=limit)
-        labels = payload.get("labels", [])
-        if not labels:
-            break
-        rows = []
-        for raw in labels:
-            event = normalize_label(raw)
-            rows.append(
-                (
-                    event.labeler_did,
-                    event.src,
-                    event.uri,
-                    event.cid,
-                    event.val,
-                    event.neg,
-                    event.exp,
-                    event.sig,
-                    event.ts,
-                    event.event_hash,
+    attempt_id = uuid4().hex
+    ts_now = format_ts(now_utc())
+    seen_dids: set = set()
+    t0 = time.monotonic()
+
+    try:
+        for _ in range(max_pages):
+            payload = fetch_labels(config.service_url, config.labeler_dids, cursor=cursor, limit=limit)
+            labels = payload.get("labels", [])
+            if not labels:
+                break
+            rows = []
+            for raw in labels:
+                event = normalize_label(raw)
+                rows.append(
+                    (
+                        event.labeler_did,
+                        event.src,
+                        event.uri,
+                        event.cid,
+                        event.val,
+                        event.neg,
+                        event.exp,
+                        event.sig,
+                        event.ts,
+                        event.event_hash,
+                    )
                 )
+                seen_dids.add(event.labeler_did)
+                db.upsert_labeler(conn, event.labeler_did, event.ts)
+                # Track observed src DID
+                src_did = event.src or event.labeler_did
+                _track_observed_src(conn, src_did, event.ts, evidence_seen)
+            total += db.insert_label_events(conn, rows)
+            cursor = payload.get("cursor")
+            # Persist cursor only after events are committed
+            if cursor:
+                db.set_cursor(conn, source, cursor)
+            conn.commit()
+            if not cursor:
+                break
+    except Exception as exc:
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        outcome, http_status = _classify_exception(exc)
+        error_type = type(exc).__name__
+        error_summary = str(exc)[:200]
+        for did in config.labeler_dids:
+            db.insert_ingest_outcome(
+                conn, did, ts_now, attempt_id, outcome, 0,
+                http_status, latency_ms, error_type, error_summary, "service",
             )
-            db.upsert_labeler(conn, event.labeler_did, event.ts)
-            # Track observed src DID
-            src_did = event.src or event.labeler_did
-            _track_observed_src(conn, src_did, event.ts, evidence_seen)
-        total += db.insert_label_events(conn, rows)
-        cursor = payload.get("cursor")
-        # Persist cursor only after events are committed
-        if cursor:
-            db.set_cursor(conn, source, cursor)
         conn.commit()
-        if not cursor:
-            break
+        raise
+
+    latency_ms = int((time.monotonic() - t0) * 1000)
+    # Record outcomes per configured DID
+    for did in config.labeler_dids:
+        if did in seen_dids:
+            db.insert_ingest_outcome(
+                conn, did, ts_now, attempt_id, "success", total,
+                None, latency_ms, None, None, "service",
+            )
+        else:
+            db.insert_ingest_outcome(
+                conn, did, ts_now, attempt_id, "partial", 0,
+                None, latency_ms, None, None, "service",
+            )
+    conn.commit()
     return total
 
 
@@ -236,6 +290,8 @@ def ingest_multi(conn, config: Config, timeout: int | None = None,
 
     results: Dict[str, int] = {}
     start_time = time.monotonic()
+    attempt_id = uuid4().hex
+    ts_now = format_ts(now_utc())
 
     for row in rows:
         if time.monotonic() - start_time > budget:
@@ -251,6 +307,7 @@ def ingest_multi(conn, config: Config, timeout: int | None = None,
         cursor = db.get_cursor(conn, cursor_key)
         total = 0
         evidence_seen: set = set()
+        t0 = time.monotonic()
 
         try:
             for _ in range(max_pages):
@@ -276,7 +333,24 @@ def ingest_multi(conn, config: Config, timeout: int | None = None,
                 conn.commit()
                 if not cursor:
                     break
-        except Exception:
+
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            outcome = "success" if total > 0 else "empty"
+            db.insert_ingest_outcome(
+                conn, did, ts_now, attempt_id, outcome, total,
+                None, latency_ms, None, None, "multi",
+            )
+            conn.commit()
+        except Exception as exc:
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            outcome, http_status = _classify_exception(exc)
+            error_type = type(exc).__name__
+            error_summary = str(exc)[:200]
+            db.insert_ingest_outcome(
+                conn, did, ts_now, attempt_id, outcome, 0,
+                http_status, latency_ms, error_type, error_summary, "multi",
+            )
+            conn.commit()
             log.warning("Multi-ingest failed for %s at %s", did, endpoint, exc_info=True)
 
         results[did] = total

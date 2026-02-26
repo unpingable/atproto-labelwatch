@@ -12,6 +12,7 @@ RULE_RATE_SPIKE = "label_rate_spike"
 RULE_FLIP_FLOP = "flip_flop"
 RULE_TARGET_CONCENTRATION = "target_concentration"
 RULE_CHURN = "churn_index"
+RULE_DATA_GAP = "data_gap"
 
 # Rate-based rules: suppressed when warmup state is "sparse"
 _RATE_BASED_RULES = {RULE_RATE_SPIKE, RULE_CHURN}
@@ -61,6 +62,37 @@ def _build_event_count_cache(conn) -> dict[str, int]:
         "SELECT labeler_did, COUNT(*) AS c FROM label_events GROUP BY labeler_did"
     ).fetchall()
     return {r["labeler_did"]: r["c"] for r in rows}
+
+
+def _build_coverage_cache(conn, now: datetime, config: Config) -> dict[str, dict]:
+    """One query: per-labeler coverage stats over the coverage window.
+
+    Returns {did: {"ratio": float, "attempts": int, "successes": int, "sufficient": bool}}.
+    If no ingest_outcomes table exists (pre-migration), returns empty dict.
+    """
+    window_start = format_ts(now - timedelta(minutes=config.coverage_window_minutes))
+    try:
+        rows = conn.execute(
+            """SELECT labeler_did,
+                      COUNT(*) AS attempts,
+                      SUM(CASE WHEN outcome IN ('success','empty') THEN 1 ELSE 0 END) AS successes
+               FROM ingest_outcomes WHERE ts >= ? GROUP BY labeler_did""",
+            (window_start,),
+        ).fetchall()
+    except Exception:
+        return {}
+    cache: dict[str, dict] = {}
+    for r in rows:
+        attempts = r["attempts"]
+        successes = r["successes"]
+        ratio = successes / attempts if attempts > 0 else 0.0
+        cache[r["labeler_did"]] = {
+            "ratio": ratio,
+            "attempts": attempts,
+            "successes": successes,
+            "sufficient": ratio >= config.coverage_threshold,
+        }
+    return cache
 
 
 def _confidence_tag(conn, config: Config, labeler_did: str,
@@ -128,7 +160,8 @@ def _should_suppress(warmup: str, rule_id: str, config: Config) -> bool:
 
 
 def label_rate_spike(conn, config: Config, now: datetime,
-                     _cache: dict | None = None) -> List[Dict]:
+                     _cache: dict | None = None,
+                     _cov_cache: dict | None = None) -> List[Dict]:
     alerts = []
     now = now.astimezone(timezone.utc)
     cur_start, cur_end = _window_bounds(now, config.window_minutes)
@@ -138,6 +171,10 @@ def label_rate_spike(conn, config: Config, now: datetime,
     labelers = conn.execute("SELECT labeler_did FROM labelers").fetchall()
     for row in labelers:
         labeler_did = row["labeler_did"]
+
+        cov = (_cov_cache or {}).get(labeler_did, {"sufficient": True})
+        if not cov["sufficient"]:
+            continue
 
         warmup = _warmup_state(conn, config, labeler_did, _cache)
         if _should_suppress(warmup, RULE_RATE_SPIKE, config):
@@ -208,7 +245,8 @@ def label_rate_spike(conn, config: Config, now: datetime,
 
 
 def flip_flop(conn, config: Config, now: datetime,
-              _cache: dict | None = None) -> List[Dict]:
+              _cache: dict | None = None,
+              _cov_cache: dict | None = None) -> List[Dict]:
     alerts = []
     now = now.astimezone(timezone.utc)
     start = format_ts(now - timedelta(hours=config.flip_flop_window_hours))
@@ -217,6 +255,10 @@ def flip_flop(conn, config: Config, now: datetime,
     labelers = conn.execute("SELECT labeler_did FROM labelers").fetchall()
     for row in labelers:
         labeler_did = row["labeler_did"]
+
+        cov = (_cov_cache or {}).get(labeler_did, {"sufficient": True})
+        if not cov["sufficient"]:
+            continue
 
         warmup = _warmup_state(conn, config, labeler_did, _cache)
         if _should_suppress(warmup, RULE_FLIP_FLOP, config):
@@ -286,7 +328,8 @@ def flip_flop(conn, config: Config, now: datetime,
 
 
 def target_concentration(conn, config: Config, now: datetime,
-                         _cache: dict | None = None) -> List[Dict]:
+                         _cache: dict | None = None,
+                         _cov_cache: dict | None = None) -> List[Dict]:
     """HHI on target URI distribution. High HHI = fixated on few targets."""
     alerts = []
     now = now.astimezone(timezone.utc)
@@ -296,6 +339,10 @@ def target_concentration(conn, config: Config, now: datetime,
     labelers = conn.execute("SELECT labeler_did FROM labelers").fetchall()
     for row in labelers:
         labeler_did = row["labeler_did"]
+
+        cov = (_cov_cache or {}).get(labeler_did, {"sufficient": True})
+        if not cov["sufficient"]:
+            continue
 
         warmup = _warmup_state(conn, config, labeler_did, _cache)
         if _should_suppress(warmup, RULE_TARGET_CONCENTRATION, config):
@@ -341,7 +388,8 @@ def target_concentration(conn, config: Config, now: datetime,
 
 
 def churn_index(conn, config: Config, now: datetime,
-                _cache: dict | None = None) -> List[Dict]:
+                _cache: dict | None = None,
+                _cov_cache: dict | None = None) -> List[Dict]:
     """Jaccard distance of target sets across two adjacent half-windows."""
     alerts = []
     now = now.astimezone(timezone.utc)
@@ -352,6 +400,10 @@ def churn_index(conn, config: Config, now: datetime,
     labelers = conn.execute("SELECT labeler_did FROM labelers").fetchall()
     for row in labelers:
         labeler_did = row["labeler_did"]
+
+        cov = (_cov_cache or {}).get(labeler_did, {"sufficient": True})
+        if not cov["sufficient"]:
+            continue
 
         warmup = _warmup_state(conn, config, labeler_did, _cache)
         if _should_suppress(warmup, RULE_CHURN, config):
@@ -401,12 +453,64 @@ def churn_index(conn, config: Config, now: datetime,
     return alerts
 
 
+def data_gap(conn, config: Config, now: datetime,
+             _cov_cache: dict | None = None) -> List[Dict]:
+    """Emit alerts for labelers with insufficient ingest coverage."""
+    alerts = []
+    if not _cov_cache:
+        return alerts
+
+    now = now.astimezone(timezone.utc)
+
+    labelers = conn.execute("SELECT labeler_did, first_seen, scan_count FROM labelers").fetchall()
+    for row in labelers:
+        labeler_did = row["labeler_did"]
+        cov = _cov_cache.get(labeler_did)
+        if cov is None:
+            continue
+        if cov["sufficient"]:
+            continue
+
+        # Skip labelers still in warmup
+        warmup = _warmup_state(conn, config, labeler_did)
+        if warmup == "warming_up":
+            continue
+
+        # Get last success/attempt timestamps
+        last_success_row = conn.execute(
+            "SELECT MAX(ts) AS ts FROM ingest_outcomes WHERE labeler_did=? AND outcome IN ('success','empty')",
+            (labeler_did,),
+        ).fetchone()
+        last_attempt_row = conn.execute(
+            "SELECT MAX(ts) AS ts FROM ingest_outcomes WHERE labeler_did=?",
+            (labeler_did,),
+        ).fetchone()
+
+        alerts.append({
+            "rule_id": RULE_DATA_GAP,
+            "labeler_did": labeler_did,
+            "ts": format_ts(now),
+            "inputs": {
+                "coverage_ratio": round(cov["ratio"], 4),
+                "coverage_attempts": cov["attempts"],
+                "coverage_successes": cov["successes"],
+                "coverage_threshold": config.coverage_threshold,
+                "last_success_ts": last_success_row["ts"] if last_success_row else None,
+                "last_attempt_ts": last_attempt_row["ts"] if last_attempt_row else None,
+            },
+            "evidence_hashes": [],
+        })
+    return alerts
+
+
 def run_rules(conn, config: Config, now: datetime) -> List[Dict]:
     # Pre-compute per-labeler event counts once (1 query instead of ~1600)
     cache = _build_event_count_cache(conn)
+    cov_cache = _build_coverage_cache(conn, now, config)
     alerts = []
-    alerts.extend(label_rate_spike(conn, config, now, cache))
-    alerts.extend(flip_flop(conn, config, now, cache))
-    alerts.extend(target_concentration(conn, config, now, cache))
-    alerts.extend(churn_index(conn, config, now, cache))
+    alerts.extend(label_rate_spike(conn, config, now, cache, cov_cache))
+    alerts.extend(flip_flop(conn, config, now, cache, cov_cache))
+    alerts.extend(target_concentration(conn, config, now, cache, cov_cache))
+    alerts.extend(churn_index(conn, config, now, cache, cov_cache))
+    alerts.extend(data_gap(conn, config, now, cov_cache))
     return alerts

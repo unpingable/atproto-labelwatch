@@ -10,6 +10,7 @@ labelwatch is an ATProto label behavior monitor. It polls `com.atproto.label.que
 - **Pure classifier** — `classify.py` is a pure function (no network, no DB). Classification is derived from structured evidence, not ad-hoc heuristics.
 - **Sticky evidence** — once a labeler evidence field (observed_as_src, has_labeler_service, etc.) is set to true, it is never downgraded by transient failures.
 - **Warm-up gating** — new labelers suppress alerts until they have sufficient scan history, age, and event volume.
+- **Coverage watermark** — anomaly rules are suppressed when ingest coverage is below threshold (coverage_ratio < 0.5). `data_gap` alert emitted instead. Baselines frozen during gaps.
 - **Derive module** — `derive.py` is a pure module (no DB, no network). Produces regime state, auditability risk, inference risk, and temporal coherence from `LabelerSignals`. Four dials, not one trust score.
 - **Derived receipts** — state changes in regime/risk are append-only receipted in `derived_receipts` table. Emit on change only.
 
@@ -18,7 +19,7 @@ labelwatch is an ATProto label behavior monitor. It polls `com.atproto.label.que
 ```
 src/labelwatch/
   config.py     — Config dataclass, TOML loader
-  db.py         — SQLite schema (v8), connect, init, migrations, evidence/probe/derive CRUD
+  db.py         — SQLite schema (v9), connect, init, migrations, evidence/probe/derive/ingest-outcome CRUD
   classify.py   — Pure classifier: EvidenceDict → Classification (visibility, reachability, auditability)
   derive.py     — Pure derive module: LabelerSignals → regime state, risk scores, temporal coherence
   discover.py   — Labeler discovery via listReposByCollection, DID resolution, endpoint probing
@@ -35,10 +36,11 @@ tests/
   test_ingest.py, test_rules_spikes.py, test_concentration.py, test_churn.py,
   test_receipts_shape.py, test_rules_overlap.py, test_discovery.py,
   test_multi_ingest.py, test_schema_v4.py, test_classify.py,
-  test_warmup.py, test_report_census.py, test_resolve.py, test_derive.py
+  test_warmup.py, test_report_census.py, test_resolve.py, test_derive.py,
+  test_coverage.py
 ```
 
-## Key tables (schema v8)
+## Key tables (schema v9)
 
 - `labelers` — per-labeler profile with classification, derive scores (regime_state, auditability_risk, inference_risk, temporal_coherence), hysteresis state (regime_pending, regime_pending_count), prev scores for deltas, sticky evidence fields
 - `label_events` — append-only label events
@@ -46,6 +48,7 @@ tests/
 - `labeler_evidence` — append-only evidence records per labeler
 - `labeler_probe_history` — append-only endpoint probe results
 - `derived_receipts` — append-only state change receipts for regime/risk derivations
+- `ingest_outcomes` — per-labeler per-attempt fetch results (success/empty/partial/timeout/error) for coverage tracking
 
 ## Commands
 

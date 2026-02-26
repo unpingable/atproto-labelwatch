@@ -61,6 +61,9 @@ class Config:
     derive_interval_minutes: int = 30
     regime_hysteresis_scans: int = 2
 
+    coverage_window_minutes: int = 30
+    coverage_threshold: float = 0.5
+
     def to_receipt_dict(self) -> dict:
         return {
             "window_minutes": self.window_minutes,

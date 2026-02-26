@@ -416,9 +416,70 @@ def run_scan(conn, config: Config, now: datetime | None = None) -> int:
     return len(alerts)
 
 
+def _update_coverage_columns(conn, config: Config, now: datetime) -> None:
+    """Batch-update labelers.coverage_* columns from ingest_outcomes."""
+    window_start = format_ts(now - timedelta(minutes=config.coverage_window_minutes))
+    try:
+        rows = conn.execute(
+            """SELECT labeler_did,
+                      COUNT(*) AS attempts,
+                      SUM(CASE WHEN outcome IN ('success','empty') THEN 1 ELSE 0 END) AS successes
+               FROM ingest_outcomes WHERE ts >= ? GROUP BY labeler_did""",
+            (window_start,),
+        ).fetchall()
+    except Exception:
+        return
+
+    for r in rows:
+        attempts = r["attempts"]
+        successes = r["successes"]
+        ratio = successes / attempts if attempts > 0 else 0.0
+        conn.execute(
+            """UPDATE labelers SET
+                coverage_ratio=?, coverage_window_successes=?, coverage_window_attempts=?
+               WHERE labeler_did=?""",
+            (ratio, successes, attempts, r["labeler_did"]),
+        )
+
+    # Update last_ingest_success_ts and last_ingest_attempt_ts
+    try:
+        success_rows = conn.execute(
+            """SELECT labeler_did, MAX(ts) AS ts
+               FROM ingest_outcomes WHERE outcome IN ('success','empty')
+               GROUP BY labeler_did"""
+        ).fetchall()
+        for r in success_rows:
+            conn.execute(
+                "UPDATE labelers SET last_ingest_success_ts=? WHERE labeler_did=?",
+                (r["ts"], r["labeler_did"]),
+            )
+
+        attempt_rows = conn.execute(
+            "SELECT labeler_did, MAX(ts) AS ts FROM ingest_outcomes GROUP BY labeler_did"
+        ).fetchall()
+        for r in attempt_rows:
+            conn.execute(
+                "UPDATE labelers SET last_ingest_attempt_ts=? WHERE labeler_did=?",
+                (r["ts"], r["labeler_did"]),
+            )
+    except Exception:
+        pass
+
+
+def _cleanup_ingest_outcomes(conn, now: datetime) -> None:
+    """Remove ingest_outcomes older than 7 days."""
+    cutoff = format_ts(now - timedelta(days=7))
+    try:
+        conn.execute("DELETE FROM ingest_outcomes WHERE ts < ?", (cutoff,))
+    except Exception:
+        pass
+
+
 def run_derive(conn, config: Config, now: datetime | None = None) -> None:
     """Run regime/risk/coherence derivation (expensive — call less often than scan)."""
     if now is None:
         now = now_utc()
     _run_derive_pass(conn, config, now)
+    _update_coverage_columns(conn, config, now)
+    _cleanup_ingest_outcomes(conn, now)
     conn.commit()

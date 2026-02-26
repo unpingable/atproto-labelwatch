@@ -246,6 +246,20 @@ TRIAGE_JS = """
 """
 
 
+def _coverage_badge(ratio: Optional[float]) -> str:
+    """Render coverage ratio as a colored badge."""
+    if ratio is None:
+        return ''
+    pct = int(ratio * 100)
+    if ratio >= 0.8:
+        cls = "badge-stable"
+    elif ratio >= 0.5:
+        cls = "badge-burst"
+    else:
+        cls = "badge-churn"
+    return f'<span class="badge {cls}">{pct}% coverage</span>'
+
+
 def _score_delta_html(current: Optional[int], prev: Optional[int]) -> str:
     """Format a score with optional delta: '72 (+4)' or just '72'."""
     if current is None:
@@ -414,6 +428,8 @@ def _labeler_badges(conn, labeler_did: str, start: str, end: str,
         badges.append(("Target-fixated", "badge-fixated"))
     if "flip_flop" in rules_fired:
         badges.append(("Reversal-heavy", "badge-flipflop"))
+    if "data_gap" in rules_fired:
+        badges.append(("Data gap", "badge-churn"))
     if not badges:
         badges.append(("Stable", "badge-stable"))
     return badges
@@ -852,6 +868,31 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     if warmup_count > 0:
         warmup_banner = f'<div class="warmup-banner">Baselines forming: {warmup_count} labeler{"s" if warmup_count != 1 else ""} still in warm-up period.</div>'
 
+    # --- Platform coverage card ---
+    coverage_card = ""
+    try:
+        cov_rows = conn.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN outcome IN ('success','empty') THEN 1 ELSE 0 END) AS good
+               FROM ingest_outcomes WHERE ts >= ?""",
+            (start_24h,),
+        ).fetchone()
+        cov_total = cov_rows["total"] or 0
+        cov_good = cov_rows["good"] or 0
+        if cov_total > 0:
+            platform_pct = int(cov_good / cov_total * 100)
+            low_cov_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM labelers WHERE coverage_ratio IS NOT NULL AND coverage_ratio < 0.5"
+            ).fetchone()["c"]
+            coverage_card = f"""
+<div class="grid">
+  <div class="card"><h3>Platform coverage (24h)</h3><div>{_coverage_badge(cov_good / cov_total)}</div><div class="small">{cov_good}/{cov_total} successful ingest outcomes</div></div>
+  <div class="card"><h3>Low-coverage labelers</h3><div>{low_cov_count}</div><div class="small">Below 50% coverage threshold</div></div>
+</div>
+"""
+    except Exception:
+        pass
+
     def dict_rows(d: Dict[str, int]) -> List[List[str]]:
         return [[escape(k), str(v)] for k, v in sorted(d.items(), key=lambda x: x[0])]
 
@@ -962,7 +1003,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
 
     overview_html = _layout(
         "Labelwatch overview",
-        explainer_html + staleness_cards + naive_banner + warmup_banner + reference_lane +
+        explainer_html + staleness_cards + naive_banner + warmup_banner + coverage_card + reference_lane +
         build_table + overview_tables + labeler_section + alert_links + METHODS_HTML + TRIAGE_JS,
     )
     _write(os.path.join(tmp_dir, "index.html"), overview_html)
@@ -994,7 +1035,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     _write(os.path.join(tmp_dir, "census.html"), census_html)
 
     # --- Per-labeler pages ---
-    anomaly_rules = {"label_rate_spike", "flip_flop", "target_concentration", "churn_index"}
+    anomaly_rules = {"label_rate_spike", "flip_flop", "target_concentration", "churn_index", "data_gap"}
 
     for row in labelers:
         did = row["labeler_did"]
@@ -1065,6 +1106,11 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         elif events_7d == 0 and events_24h == 0:
             warmup_indicator = '<p class="small">Insufficient volume: no events observed in the last 7 days.</p>'
 
+        cov_ratio = row["coverage_ratio"]
+        cov_card = ""
+        if cov_ratio is not None:
+            cov_card = f'<div class="card"><h3>Coverage</h3><div>{_coverage_badge(cov_ratio)}</div></div>'
+
         info_card = f"""
 <div class="grid">
   <div class="card"><h3>Labeler</h3><div>{('<strong>' + escape(labeler_label) + '</strong><br/>' if labeler_label else '')}<code>{escape(did)}</code>{ref_tag}</div></div>
@@ -1077,6 +1123,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
   <div class="card"><h3>Events (24h)</h3><div>{events_24h}</div></div>
   <div class="card"><h3>Events (7d)</h3><div>{events_7d}</div></div>
   <div class="card"><h3>Alerts</h3><div>{len(alerts_rows)}</div></div>
+  {cov_card}
   {profile_link}
 </div>
 """
