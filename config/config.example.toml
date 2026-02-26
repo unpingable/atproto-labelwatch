@@ -1,0 +1,8 @@
+db_path = "/var/lib/labelwatch/labelwatch.db"
+service_url = "https://mod.bsky.app"
+discovery_enabled = true
+
+labeler_dids = [
+    "did:plc:ar7c4by46qjdydhdevvrndac",   # Bluesky Moderation
+    "did:plc:e4elbtctnfqocyfcml6h2lf7",   # Skywatch Blue
+]
