@@ -396,9 +396,12 @@ def _hourly_counts(conn, labeler_did: str, start: str, end: str, buckets: int = 
     return counts
 
 
-def _labeler_badges(conn, labeler_did: str, start: str, end: str) -> List[tuple[str, str]]:
+def _labeler_badges(conn, labeler_did: str, start: str, end: str,
+                    regime_state: Optional[str] = None) -> List[tuple[str, str]]:
+    if regime_state == "warming_up":
+        return [("Warming up", "badge-low-conf")]
     alert_rows = conn.execute(
-        "SELECT rule_id FROM alerts WHERE labeler_did=? AND ts>=? AND ts<=?",
+        "SELECT rule_id FROM alerts WHERE labeler_did=? AND ts>=? AND ts<=? AND warmup_alert=0",
         (labeler_did, start, end),
     ).fetchall()
     rules_fired = {r["rule_id"] for r in alert_rows}
@@ -420,7 +423,8 @@ def _badges_html(badges: List[tuple[str, str]]) -> str:
     return " ".join(f'<span class="badge {cls}">{escape(label)}</span>' for label, cls in badges)
 
 
-def _labeler_health_card(conn, labeler_did: str, start_7d: str, now_ts: str, sparkline_counts: List[int]) -> str:
+def _labeler_health_card(conn, labeler_did: str, start_7d: str, now_ts: str, sparkline_counts: List[int],
+                         regime_state: Optional[str] = None) -> str:
     events_7d = conn.execute(
         "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=? AND ts>=? AND ts<=?",
         (labeler_did, start_7d, now_ts),
@@ -435,7 +439,7 @@ def _labeler_health_card(conn, labeler_did: str, start_7d: str, now_ts: str, spa
     ).fetchone()["c"]
     target_spread = f"{unique_targets}/{events_7d}" if events_7d else "0/0"
     sparkline = _sparkline_svg(sparkline_counts)
-    badges = _labeler_badges(conn, labeler_did, start_7d, now_ts)
+    badges = _labeler_badges(conn, labeler_did, start_7d, now_ts, regime_state=regime_state)
 
     return f"""
 <div class="card">
@@ -876,7 +880,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         for r in ref_labelers:
             did = r["labeler_did"]
             counts = _hourly_counts(conn, did, start_7d, now_ts)
-            ref_card = _labeler_health_card(conn, did, start_7d, now_ts, counts)
+            ref_card = _labeler_health_card(conn, did, start_7d, now_ts, counts, regime_state=r["regime_state"])
             ref_cards += f'<h3>{_labeler_link(did, handles, display_names)}</h3>{ref_card}'
         reference_lane = f'<div class="reference-lane"><h2>Reference labelers</h2>{ref_cards}</div>'
 
@@ -905,7 +909,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
 
     for r in nonref_labelers:
         did = r["labeler_did"]
-        badges = _labeler_badges(conn, did, start_7d, now_ts)
+        badges = _labeler_badges(conn, did, start_7d, now_ts, regime_state=r["regime_state"])
         counts = _hourly_counts(conn, did, start_7d, now_ts)
         spark = _sparkline_svg(counts)
         ep_status = r["endpoint_status"] if r["endpoint_status"] else "unknown"
@@ -1025,7 +1029,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         _write_json(os.path.join(tmp_dir, "labeler", f"{slug}.json"), payload)
 
         sparkline_counts = _hourly_counts(conn, did, start_7d, now_ts)
-        health_card = _labeler_health_card(conn, did, start_7d, now_ts, sparkline_counts)
+        health_card = _labeler_health_card(conn, did, start_7d, now_ts, sparkline_counts, regime_state=row["regime_state"])
 
         handle = handles.get(did)
         dn = display_names.get(did)

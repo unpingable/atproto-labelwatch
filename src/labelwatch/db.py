@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS alerts (
     inputs_json TEXT NOT NULL,
     evidence_hashes_json TEXT NOT NULL,
     config_hash TEXT NOT NULL,
-    receipt_hash TEXT NOT NULL
+    receipt_hash TEXT NOT NULL,
+    warmup_alert INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS labeler_evidence (
@@ -357,6 +358,14 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
                 conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
         set_schema_version(conn, 7)
         current = 7
+    if current == 7 and target >= 8:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
+        if "warmup_alert" not in cols:
+            conn.execute("ALTER TABLE alerts ADD COLUMN warmup_alert INTEGER DEFAULT 0")
+            # Mark all existing alerts as warmup (system was in warmup when they were created)
+            conn.execute("UPDATE alerts SET warmup_alert = 1")
+        set_schema_version(conn, 8)
+        current = 8
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 

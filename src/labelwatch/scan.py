@@ -391,10 +391,11 @@ def run_scan(conn, config: Config, now: datetime | None = None) -> int:
             alert["evidence_hashes"],
             cfg_hash,
         )
+        is_warmup = 1 if alert["inputs"].get("warmup") else 0
         conn.execute(
             """
-            INSERT INTO alerts(rule_id, labeler_did, ts, inputs_json, evidence_hashes_json, config_hash, receipt_hash)
-            VALUES(?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO alerts(rule_id, labeler_did, ts, inputs_json, evidence_hashes_json, config_hash, receipt_hash, warmup_alert)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 alert["rule_id"],
@@ -404,6 +405,7 @@ def run_scan(conn, config: Config, now: datetime | None = None) -> int:
                 evidence_json,
                 cfg_hash,
                 receipt,
+                is_warmup,
             ),
         )
 
