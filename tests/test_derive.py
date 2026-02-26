@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
 import pytest
 
 from labelwatch.derive import (
@@ -11,7 +12,11 @@ from labelwatch.derive import (
     score_inference_risk,
     score_temporal_coherence,
 )
+from labelwatch.config import Config
+from labelwatch import db
+from labelwatch.scan import run_derive
 import labelwatch.derive as derive
+import labelwatch.scan as scan_mod
 
 
 def _base_signals() -> LabelerSignals:
@@ -450,3 +455,126 @@ def test_temporal_coherence_cadence_thresholds(monkeypatch, irregularity, expect
     assert out.score == expected_score
     if expected_reason:
         _assert_reasons(out, expected_reason)
+
+
+# ---------------------------------------------------------------------------
+# Hysteresis on regime transitions (integration tests via run_derive)
+# ---------------------------------------------------------------------------
+
+_DID = "did:plc:hysteresis_test"
+_NOW = datetime(2025, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _make_derive_db(regime_state="stable", regime_pending=None, regime_pending_count=0):
+    """Create an in-memory DB with one labeler row, ready for run_derive."""
+    conn = db.connect(":memory:")
+    db.init_db(conn)
+    conn.execute(
+        """INSERT INTO labelers(
+            labeler_did, first_seen, last_seen, scan_count,
+            declared_record, has_labeler_service, has_label_key, observed_as_src,
+            visibility_class, auditability, classification_confidence,
+            regime_state, regime_pending, regime_pending_count
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (_DID, "2025-01-01T00:00:00Z", "2025-07-01T00:00:00Z", 10,
+         1, 1, 1, 1, "declared", "high", "high",
+         regime_state, regime_pending, regime_pending_count),
+    )
+    conn.commit()
+    return conn
+
+
+def _mock_classify(regime_state):
+    """Return a monkeypatch-compatible callable for classify_regime_state."""
+    return lambda _signals: RegimeResult(regime_state, [f"test_{regime_state}"])
+
+
+def _get_labeler(conn):
+    return conn.execute("SELECT * FROM labelers WHERE labeler_did=?", (_DID,)).fetchone()
+
+
+def _receipt_count(conn):
+    return conn.execute(
+        "SELECT COUNT(*) AS c FROM derived_receipts WHERE labeler_did=? AND receipt_type='regime'",
+        (_DID,),
+    ).fetchone()["c"]
+
+
+def test_hysteresis_steady_state(monkeypatch):
+    """computed == current -> no pending, no receipt."""
+    conn = _make_derive_db(regime_state="stable")
+    monkeypatch.setattr(scan_mod, "classify_regime_state", _mock_classify("stable"))
+    run_derive(conn, Config(), now=_NOW)
+
+    row = _get_labeler(conn)
+    assert row["regime_state"] == "stable"
+    assert row["regime_pending"] is None
+    assert row["regime_pending_count"] == 0
+    assert _receipt_count(conn) == 0
+
+
+def test_hysteresis_first_derive_no_delay(monkeypatch):
+    """Empty current regime -> immediate transition, no hysteresis."""
+    conn = _make_derive_db(regime_state="")
+    monkeypatch.setattr(scan_mod, "classify_regime_state", _mock_classify("bursty"))
+    run_derive(conn, Config(), now=_NOW)
+
+    row = _get_labeler(conn)
+    assert row["regime_state"] == "bursty"
+    assert row["regime_pending"] is None
+    assert row["regime_pending_count"] == 0
+    # Receipt emitted for the transition "" -> "bursty"
+    assert _receipt_count(conn) == 1
+
+
+def test_hysteresis_pending_accumulates(monkeypatch):
+    """1 pass with new regime -> pending set, regime unchanged, no receipt."""
+    conn = _make_derive_db(regime_state="stable")
+    monkeypatch.setattr(scan_mod, "classify_regime_state", _mock_classify("bursty"))
+    run_derive(conn, Config(), now=_NOW)
+
+    row = _get_labeler(conn)
+    assert row["regime_state"] == "stable"  # unchanged
+    assert row["regime_pending"] == "bursty"
+    assert row["regime_pending_count"] == 1
+    assert _receipt_count(conn) == 0
+
+
+def test_hysteresis_pending_confirms(monkeypatch):
+    """2 passes with same new regime (threshold=2) -> regime transitions, receipt emitted."""
+    # After first pass: pending="bursty", count=1
+    conn = _make_derive_db(regime_state="stable", regime_pending="bursty", regime_pending_count=1)
+    monkeypatch.setattr(scan_mod, "classify_regime_state", _mock_classify("bursty"))
+    run_derive(conn, Config(), now=_NOW)
+
+    row = _get_labeler(conn)
+    assert row["regime_state"] == "bursty"  # transitioned!
+    assert row["regime_pending"] is None
+    assert row["regime_pending_count"] == 0
+    assert _receipt_count(conn) == 1  # receipt for stable -> bursty
+
+
+def test_hysteresis_pending_resets_on_different(monkeypatch):
+    """pending=X then computed=Y -> pending resets to Y, count=1."""
+    conn = _make_derive_db(regime_state="stable", regime_pending="bursty", regime_pending_count=1)
+    monkeypatch.setattr(scan_mod, "classify_regime_state", _mock_classify("degraded"))
+    run_derive(conn, Config(), now=_NOW)
+
+    row = _get_labeler(conn)
+    assert row["regime_state"] == "stable"  # unchanged
+    assert row["regime_pending"] == "degraded"  # reset to new proposal
+    assert row["regime_pending_count"] == 1
+    assert _receipt_count(conn) == 0
+
+
+def test_hysteresis_pending_resets_on_revert(monkeypatch):
+    """pending=X then computed=current -> pending cleared."""
+    conn = _make_derive_db(regime_state="stable", regime_pending="bursty", regime_pending_count=1)
+    monkeypatch.setattr(scan_mod, "classify_regime_state", _mock_classify("stable"))
+    run_derive(conn, Config(), now=_NOW)
+
+    row = _get_labeler(conn)
+    assert row["regime_state"] == "stable"
+    assert row["regime_pending"] is None
+    assert row["regime_pending_count"] == 0
+    assert _receipt_count(conn) == 0

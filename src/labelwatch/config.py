@@ -59,6 +59,7 @@ class Config:
     warmup_suppress_alerts: bool = True
 
     derive_interval_minutes: int = 30
+    regime_hysteresis_scans: int = 2
 
     def to_receipt_dict(self) -> dict:
         return {

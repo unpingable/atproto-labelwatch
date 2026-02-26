@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -64,7 +64,9 @@ CREATE TABLE IF NOT EXISTS labelers (
     temporal_coherence_band TEXT,
     temporal_coherence_reasons TEXT,
     derive_version TEXT,
-    derived_at TEXT
+    derived_at TEXT,
+    regime_pending TEXT,
+    regime_pending_count INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS alerts (
@@ -331,6 +333,16 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
 
         set_schema_version(conn, 5)
         current = 5
+    if current == 5 and target >= 6:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
+        for col, typedef in [
+            ("regime_pending", "TEXT"),
+            ("regime_pending_count", "INTEGER DEFAULT 0"),
+        ]:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
+        set_schema_version(conn, 6)
+        current = 6
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
@@ -469,7 +481,9 @@ def update_labeler_derived(conn: sqlite3.Connection, labeler_did: str,
                            inference_risk_reasons: str,
                            temporal_coherence: int, temporal_coherence_band: str,
                            temporal_coherence_reasons: str,
-                           derive_version: str, derived_at: str) -> None:
+                           derive_version: str, derived_at: str,
+                           regime_pending: Optional[str] = None,
+                           regime_pending_count: int = 0) -> None:
     conn.execute(
         """
         UPDATE labelers SET
@@ -477,14 +491,16 @@ def update_labeler_derived(conn: sqlite3.Connection, labeler_did: str,
             auditability_risk=?, auditability_risk_band=?, auditability_risk_reasons=?,
             inference_risk=?, inference_risk_band=?, inference_risk_reasons=?,
             temporal_coherence=?, temporal_coherence_band=?, temporal_coherence_reasons=?,
-            derive_version=?, derived_at=?
+            derive_version=?, derived_at=?,
+            regime_pending=?, regime_pending_count=?
         WHERE labeler_did=?
         """,
         (regime_state, regime_reason_codes,
          auditability_risk, auditability_risk_band, auditability_risk_reasons,
          inference_risk, inference_risk_band, inference_risk_reasons,
          temporal_coherence, temporal_coherence_band, temporal_coherence_reasons,
-         derive_version, derived_at, labeler_did),
+         derive_version, derived_at,
+         regime_pending, regime_pending_count, labeler_did),
     )
 
 

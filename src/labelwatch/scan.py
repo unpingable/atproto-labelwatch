@@ -8,6 +8,7 @@ from . import db
 from .config import Config
 from .derive import (
     LabelerSignals,
+    RegimeResult,
     classify_regime_state,
     score_auditability_risk,
     score_inference_risk,
@@ -263,17 +264,57 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
     # Fetch labeler rows for previous derived values
     labelers = conn.execute("SELECT * FROM labelers").fetchall()
 
+    threshold = config.regime_hysteresis_scans
+
     for row in labelers:
         did = row["labeler_did"]
         signals = signals_map.get(did)
         if signals is None:
             continue
 
-        # Classify
+        # Classify (computed proposal)
         regime = classify_regime_state(signals)
+        computed = regime.regime_state
+
+        # Hysteresis: determine effective regime
+        current = row["regime_state"] or ""
+        pending = row["regime_pending"]
+        pending_count = row["regime_pending_count"] or 0
+
+        if current == "":
+            # First derive — accept immediately, no hysteresis
+            effective = computed
+            pending = None
+            pending_count = 0
+        elif computed == current:
+            # Steady state — clear any pending
+            effective = current
+            pending = None
+            pending_count = 0
+        elif computed == pending:
+            # Same proposal as last pass — increment
+            pending_count += 1
+            if pending_count >= threshold:
+                effective = computed
+                pending = None
+                pending_count = 0
+            else:
+                effective = current
+        else:
+            # New/different proposal — reset counter
+            effective = current
+            pending = computed
+            pending_count = 1
+
+        # Build effective RegimeResult for scoring and receipts
+        if effective == computed:
+            effective_regime = regime
+        else:
+            effective_regime = RegimeResult(effective, regime.reason_codes)
+
         audit_risk = score_auditability_risk(signals)
-        inf_risk = score_inference_risk(signals, regime)
-        coherence = score_temporal_coherence(signals, regime)
+        inf_risk = score_inference_risk(signals, effective_regime)
+        coherence = score_temporal_coherence(signals, effective_regime)
 
         # Build input hash for receipts
         input_hash = stable_json({
@@ -286,14 +327,14 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
             "scan_count": signals.scan_count,
         })
 
-        # Emit receipts on change
+        # Emit receipts on change (using effective regime)
         prev_regime = row["regime_state"] or ""
         prev_audit = str(row["auditability_risk"] or "")
         prev_inf = str(row["inference_risk"] or "")
 
         _emit_receipt_if_changed(
-            conn, did, "regime", prev_regime, regime.regime_state,
-            regime.reason_codes, input_hash, ts,
+            conn, did, "regime", prev_regime, effective_regime.regime_state,
+            effective_regime.reason_codes, input_hash, ts,
         )
         _emit_receipt_if_changed(
             conn, did, "auditability_risk", prev_audit, str(audit_risk.score),
@@ -304,11 +345,11 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
             inf_risk.reason_codes, input_hash, ts,
         )
 
-        # Update labeler row
+        # Update labeler row (with effective regime + pending state)
         db.update_labeler_derived(
             conn, did,
-            regime_state=regime.regime_state,
-            regime_reason_codes=json.dumps(regime.reason_codes, separators=(",", ":")),
+            regime_state=effective_regime.regime_state,
+            regime_reason_codes=json.dumps(effective_regime.reason_codes, separators=(",", ":")),
             auditability_risk=audit_risk.score,
             auditability_risk_band=audit_risk.band,
             auditability_risk_reasons=json.dumps(audit_risk.reason_codes, separators=(",", ":")),
@@ -320,6 +361,8 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
             temporal_coherence_reasons=json.dumps(coherence.reason_codes, separators=(",", ":")),
             derive_version=DERIVE_VERSION,
             derived_at=ts,
+            regime_pending=pending,
+            regime_pending_count=pending_count,
         )
 
 
