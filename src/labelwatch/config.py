@@ -55,6 +55,8 @@ class Config:
     warmup_min_scans: int = 3
     warmup_suppress_alerts: bool = True
 
+    derive_interval_minutes: int = 30
+
     def to_receipt_dict(self) -> dict:
         return {
             "window_minutes": self.window_minutes,

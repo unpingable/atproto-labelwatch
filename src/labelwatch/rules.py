@@ -46,23 +46,35 @@ def _labeler_age_hours(conn, labeler_did: str) -> float:
     return max(0.0, age)
 
 
-def _total_events(conn, labeler_did: str) -> int:
+def _total_events(conn, labeler_did: str, _cache: dict | None = None) -> int:
     """Total label events ever recorded for a labeler."""
+    if _cache is not None and labeler_did in _cache:
+        return _cache[labeler_did]
     return conn.execute(
         "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=?", (labeler_did,)
     ).fetchone()["c"]
 
 
-def _confidence_tag(conn, config: Config, labeler_did: str) -> str:
+def _build_event_count_cache(conn) -> dict[str, int]:
+    """One query: per-labeler total event counts."""
+    rows = conn.execute(
+        "SELECT labeler_did, COUNT(*) AS c FROM label_events GROUP BY labeler_did"
+    ).fetchall()
+    return {r["labeler_did"]: r["c"] for r in rows}
+
+
+def _confidence_tag(conn, config: Config, labeler_did: str,
+                    _cache: dict | None = None) -> str:
     """Return 'high' or 'low' confidence based on event count and age."""
-    total = _total_events(conn, labeler_did)
+    total = _total_events(conn, labeler_did, _cache)
     age = _labeler_age_hours(conn, labeler_did)
     if total >= config.confidence_min_events and age >= config.confidence_min_age_hours:
         return "high"
     return "low"
 
 
-def _warmup_state(conn, config: Config, labeler_did: str) -> str:
+def _warmup_state(conn, config: Config, labeler_did: str,
+                  _cache: dict | None = None) -> str:
     """Determine warmup state for a labeler.
 
     Returns:
@@ -87,7 +99,7 @@ def _warmup_state(conn, config: Config, labeler_did: str) -> str:
     age_hours = max(0.0, (datetime.now(timezone.utc) - first).total_seconds() / 3600)
     scan_count = row["scan_count"] or 0
 
-    total = _total_events(conn, labeler_did)
+    total = _total_events(conn, labeler_did, _cache)
 
     # Check minimum age
     if age_hours < config.warmup_min_age_hours:
@@ -115,7 +127,8 @@ def _should_suppress(warmup: str, rule_id: str, config: Config) -> bool:
     return False
 
 
-def label_rate_spike(conn, config: Config, now: datetime) -> List[Dict]:
+def label_rate_spike(conn, config: Config, now: datetime,
+                     _cache: dict | None = None) -> List[Dict]:
     alerts = []
     now = now.astimezone(timezone.utc)
     cur_start, cur_end = _window_bounds(now, config.window_minutes)
@@ -126,7 +139,7 @@ def label_rate_spike(conn, config: Config, now: datetime) -> List[Dict]:
     for row in labelers:
         labeler_did = row["labeler_did"]
 
-        warmup = _warmup_state(conn, config, labeler_did)
+        warmup = _warmup_state(conn, config, labeler_did, _cache)
         if _should_suppress(warmup, RULE_RATE_SPIKE, config):
             continue
 
@@ -166,7 +179,7 @@ def label_rate_spike(conn, config: Config, now: datetime) -> List[Dict]:
         ).fetchall()
         evidence_hashes = [r["event_hash"] for r in evidence_rows]
 
-        confidence = _confidence_tag(conn, config, labeler_did)
+        confidence = _confidence_tag(conn, config, labeler_did, _cache)
 
         inputs = {
             "current_count": cur_count,
@@ -194,7 +207,8 @@ def label_rate_spike(conn, config: Config, now: datetime) -> List[Dict]:
     return alerts
 
 
-def flip_flop(conn, config: Config, now: datetime) -> List[Dict]:
+def flip_flop(conn, config: Config, now: datetime,
+              _cache: dict | None = None) -> List[Dict]:
     alerts = []
     now = now.astimezone(timezone.utc)
     start = format_ts(now - timedelta(hours=config.flip_flop_window_hours))
@@ -204,7 +218,7 @@ def flip_flop(conn, config: Config, now: datetime) -> List[Dict]:
     for row in labelers:
         labeler_did = row["labeler_did"]
 
-        warmup = _warmup_state(conn, config, labeler_did)
+        warmup = _warmup_state(conn, config, labeler_did, _cache)
         if _should_suppress(warmup, RULE_FLIP_FLOP, config):
             continue
 
@@ -251,7 +265,7 @@ def flip_flop(conn, config: Config, now: datetime) -> List[Dict]:
         if flip_flop_count == 0:
             continue
         evidence_hashes = match_hashes[: config.max_evidence]
-        confidence = _confidence_tag(conn, config, labeler_did)
+        confidence = _confidence_tag(conn, config, labeler_did, _cache)
         inputs = {
             "flip_flop_count": flip_flop_count,
             "window_hours": config.flip_flop_window_hours,
@@ -271,7 +285,8 @@ def flip_flop(conn, config: Config, now: datetime) -> List[Dict]:
     return alerts
 
 
-def target_concentration(conn, config: Config, now: datetime) -> List[Dict]:
+def target_concentration(conn, config: Config, now: datetime,
+                         _cache: dict | None = None) -> List[Dict]:
     """HHI on target URI distribution. High HHI = fixated on few targets."""
     alerts = []
     now = now.astimezone(timezone.utc)
@@ -282,7 +297,7 @@ def target_concentration(conn, config: Config, now: datetime) -> List[Dict]:
     for row in labelers:
         labeler_did = row["labeler_did"]
 
-        warmup = _warmup_state(conn, config, labeler_did)
+        warmup = _warmup_state(conn, config, labeler_did, _cache)
         if _should_suppress(warmup, RULE_TARGET_CONCENTRATION, config):
             continue
 
@@ -304,7 +319,7 @@ def target_concentration(conn, config: Config, now: datetime) -> List[Dict]:
             "SELECT event_hash FROM label_events WHERE labeler_did=? AND ts>=? AND ts<? LIMIT ?",
             (labeler_did, start, end, config.max_evidence),
         ).fetchall()
-        confidence = _confidence_tag(conn, config, labeler_did)
+        confidence = _confidence_tag(conn, config, labeler_did, _cache)
         inputs = {
             "hhi": round(hhi, 6),
             "total_labels": total,
@@ -325,7 +340,8 @@ def target_concentration(conn, config: Config, now: datetime) -> List[Dict]:
     return alerts
 
 
-def churn_index(conn, config: Config, now: datetime) -> List[Dict]:
+def churn_index(conn, config: Config, now: datetime,
+                _cache: dict | None = None) -> List[Dict]:
     """Jaccard distance of target sets across two adjacent half-windows."""
     alerts = []
     now = now.astimezone(timezone.utc)
@@ -337,7 +353,7 @@ def churn_index(conn, config: Config, now: datetime) -> List[Dict]:
     for row in labelers:
         labeler_did = row["labeler_did"]
 
-        warmup = _warmup_state(conn, config, labeler_did)
+        warmup = _warmup_state(conn, config, labeler_did, _cache)
         if _should_suppress(warmup, RULE_CHURN, config):
             continue
 
@@ -363,7 +379,7 @@ def churn_index(conn, config: Config, now: datetime) -> List[Dict]:
             "SELECT event_hash FROM label_events WHERE labeler_did=? AND ts>=? AND ts<? LIMIT ?",
             (labeler_did, format_ts(start), format_ts(now), config.max_evidence),
         ).fetchall()
-        confidence = _confidence_tag(conn, config, labeler_did)
+        confidence = _confidence_tag(conn, config, labeler_did, _cache)
         inputs = {
             "jaccard_distance": round(jaccard_distance, 6),
             "first_half_targets": len(set_a),
@@ -386,9 +402,11 @@ def churn_index(conn, config: Config, now: datetime) -> List[Dict]:
 
 
 def run_rules(conn, config: Config, now: datetime) -> List[Dict]:
+    # Pre-compute per-labeler event counts once (1 query instead of ~1600)
+    cache = _build_event_count_cache(conn)
     alerts = []
-    alerts.extend(label_rate_spike(conn, config, now))
-    alerts.extend(flip_flop(conn, config, now))
-    alerts.extend(target_concentration(conn, config, now))
-    alerts.extend(churn_index(conn, config, now))
+    alerts.extend(label_rate_spike(conn, config, now, cache))
+    alerts.extend(flip_flop(conn, config, now, cache))
+    alerts.extend(target_concentration(conn, config, now, cache))
+    alerts.extend(churn_index(conn, config, now, cache))
     return alerts

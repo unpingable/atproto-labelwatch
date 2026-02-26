@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from datetime import datetime, timedelta
 
 from . import db
@@ -19,145 +20,219 @@ from .utils import format_ts, now_utc, parse_ts, stable_json
 DERIVE_VERSION = "derive_v1"
 
 
-def _build_signals(conn, row, config: Config, now: datetime) -> LabelerSignals:
-    """Build LabelerSignals from a labeler DB row + aggregated queries."""
-    did = row["labeler_did"]
+def _fetch_event_stats(conn, ts_24h: str, ts_7d: str, ts_30d: str) -> dict:
+    """One query: per-labeler event counts (24h/7d/30d/total) + last event ts."""
+    rows = conn.execute(
+        """SELECT labeler_did,
+                  SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS cnt_24h,
+                  SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS cnt_7d,
+                  SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS cnt_30d,
+                  COUNT(*) AS cnt_total,
+                  MAX(ts) AS last_event_ts
+           FROM label_events
+           GROUP BY labeler_did""",
+        (ts_24h, ts_7d, ts_30d),
+    ).fetchall()
+    return {r["labeler_did"]: dict(r) for r in rows}
 
-    # Event counts
+
+def _fetch_hourly_counts(conn, ts_7d: str) -> dict:
+    """One query: per-labeler hourly event counts for burstiness."""
+    rows = conn.execute(
+        """SELECT labeler_did, strftime('%Y-%m-%d %H', ts) AS hr, COUNT(*) AS c
+           FROM label_events
+           WHERE ts >= ?
+           GROUP BY labeler_did, hr""",
+        (ts_7d,),
+    ).fetchall()
+    result: dict[str, dict[str, int]] = defaultdict(dict)
+    for r in rows:
+        result[r["labeler_did"]][r["hr"]] = r["c"]
+    return result
+
+
+def _fetch_probe_history(conn, ts_7d: str, ts_30d: str) -> dict:
+    """One query: per-labeler probe statuses (30d), split into 30d/7d in memory."""
+    rows = conn.execute(
+        """SELECT labeler_did, ts, normalized_status
+           FROM labeler_probe_history
+           WHERE ts >= ?
+           ORDER BY labeler_did, ts""",
+        (ts_30d,),
+    ).fetchall()
+    result: dict[str, dict] = {}
+    current_did = None
+    statuses_30d: list[str] = []
+    statuses_7d: list[str] = []
+
+    def _flush(did):
+        nonlocal statuses_30d, statuses_7d
+        count = len(statuses_30d)
+        successes = sum(1 for s in statuses_30d if s == "accessible")
+        # Transitions
+        transitions = 0
+        for i in range(1, len(statuses_30d)):
+            if statuses_30d[i] != statuses_30d[i - 1]:
+                transitions += 1
+        # Fail streak (from end)
+        fail_streak = 0
+        for s in reversed(statuses_30d):
+            if s != "accessible":
+                fail_streak += 1
+            else:
+                break
+        result[did] = {
+            "probe_count_30d": count,
+            "probe_success_ratio_30d": successes / count if count else 0.0,
+            "probe_transition_count_30d": transitions,
+            "probe_recent_fail_streak": fail_streak,
+            "probe_statuses_7d": list(statuses_7d),
+        }
+
+    for r in rows:
+        did = r["labeler_did"]
+        if did != current_did:
+            if current_did is not None:
+                _flush(current_did)
+            current_did = did
+            statuses_30d = []
+            statuses_7d = []
+        statuses_30d.append(r["normalized_status"])
+        if r["ts"] >= ts_7d:
+            statuses_7d.append(r["normalized_status"])
+    if current_did is not None:
+        _flush(current_did)
+    return result
+
+
+def _fetch_receipt_stats(conn, ts_30d: str) -> dict:
+    """One query: per-labeler derived receipt counts by type (30d)."""
+    rows = conn.execute(
+        """SELECT labeler_did, receipt_type, COUNT(*) AS c
+           FROM derived_receipts
+           WHERE ts >= ?
+           GROUP BY labeler_did, receipt_type""",
+        (ts_30d,),
+    ).fetchall()
+    result: dict[str, dict[str, int]] = defaultdict(lambda: {"regime": 0, "inference_risk": 0})
+    for r in rows:
+        result[r["labeler_did"]][r["receipt_type"]] = r["c"]
+    return result
+
+
+def _fetch_last_regime_change(conn) -> dict:
+    """One query: per-labeler most recent regime change timestamp."""
+    rows = conn.execute(
+        """SELECT labeler_did, MAX(ts) AS ts
+           FROM derived_receipts
+           WHERE receipt_type = 'regime'
+           GROUP BY labeler_did""",
+    ).fetchall()
+    return {r["labeler_did"]: r["ts"] for r in rows}
+
+
+def _build_all_signals(conn, config: Config, now: datetime) -> dict[str, LabelerSignals]:
+    """Build LabelerSignals for all labelers using batched queries.
+
+    ~6 grouped queries instead of ~10 per labeler.
+    """
     ts_24h = format_ts(now - timedelta(hours=24))
     ts_7d = format_ts(now - timedelta(days=7))
     ts_30d = format_ts(now - timedelta(days=30))
 
-    event_count_24h = conn.execute(
-        "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=? AND ts>=?",
-        (did, ts_24h),
-    ).fetchone()["c"]
-    event_count_7d = conn.execute(
-        "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=? AND ts>=?",
-        (did, ts_7d),
-    ).fetchone()["c"]
-    event_count_30d = conn.execute(
-        "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=? AND ts>=?",
-        (did, ts_30d),
-    ).fetchone()["c"]
-    event_count_total = conn.execute(
-        "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=?",
-        (did,),
-    ).fetchone()["c"]
+    # Batch queries (6 total)
+    event_stats = _fetch_event_stats(conn, ts_24h, ts_7d, ts_30d)
+    hourly_map = _fetch_hourly_counts(conn, ts_7d)
+    probe_stats = _fetch_probe_history(conn, ts_7d, ts_30d)
+    receipt_stats = _fetch_receipt_stats(conn, ts_30d)
+    last_regime = _fetch_last_regime_change(conn)
 
-    # Hourly counts for 7d (for burstiness)
-    hourly_counts: list[int] = []
-    rows_h = conn.execute(
-        """SELECT strftime('%Y-%m-%d %H', ts) AS hr, COUNT(*) AS c
-           FROM label_events WHERE labeler_did=? AND ts>=?
-           GROUP BY hr ORDER BY hr""",
-        (did, ts_7d),
-    ).fetchall()
-    hour_map = {r["hr"]: r["c"] for r in rows_h}
-    # Fill 168 hours
+    labelers = conn.execute("SELECT * FROM labelers").fetchall()
+
+    # Pre-compute hour keys for 168-slot array
+    hour_keys = []
     for i in range(168):
         hr_dt = now - timedelta(hours=167 - i)
-        hr_key = hr_dt.strftime("%Y-%m-%d %H")
-        hourly_counts.append(hour_map.get(hr_key, 0))
+        hour_keys.append(hr_dt.strftime("%Y-%m-%d %H"))
 
-    # Dormancy
-    last_event = conn.execute(
-        "SELECT MAX(ts) AS ts FROM label_events WHERE labeler_did=?", (did,)
-    ).fetchone()["ts"]
-    if last_event:
-        dormancy_days = (now - parse_ts(last_event)).total_seconds() / 86400
-    else:
-        first_seen = row["first_seen"]
-        dormancy_days = (now - parse_ts(first_seen)).total_seconds() / 86400 if first_seen else 999.0
+    signals_map: dict[str, LabelerSignals] = {}
+    empty_event_stats = {"cnt_24h": 0, "cnt_7d": 0, "cnt_30d": 0, "cnt_total": 0, "last_event_ts": None}
+    empty_probe_stats = {
+        "probe_count_30d": 0, "probe_success_ratio_30d": 0.0,
+        "probe_transition_count_30d": 0, "probe_recent_fail_streak": 0,
+        "probe_statuses_7d": [],
+    }
 
-    # Age
-    first_seen_hours = 999.0
-    if row["first_seen"]:
-        first_seen_hours = (now - parse_ts(row["first_seen"])).total_seconds() / 3600
+    for row in labelers:
+        did = row["labeler_did"]
 
-    # Probe stats from probe_history
-    probe_rows = conn.execute(
-        "SELECT normalized_status FROM labeler_probe_history WHERE labeler_did=? AND ts>=? ORDER BY ts",
-        (did, ts_30d),
-    ).fetchall()
-    probe_count_30d = len(probe_rows)
-    probe_successes = sum(1 for r in probe_rows if r["normalized_status"] == "accessible")
-    probe_success_ratio = probe_successes / probe_count_30d if probe_count_30d else 0.0
+        # Event data
+        ev = event_stats.get(did, empty_event_stats)
 
-    # Probe transitions
-    probe_statuses_30d = [r["normalized_status"] for r in probe_rows]
-    transitions = 0
-    for i in range(1, len(probe_statuses_30d)):
-        if probe_statuses_30d[i] != probe_statuses_30d[i - 1]:
-            transitions += 1
+        # Hourly counts (fill 168 slots)
+        did_hourly = hourly_map.get(did, {})
+        hourly_counts = [did_hourly.get(hk, 0) for hk in hour_keys]
 
-    # Recent probe statuses (7d)
-    probe_rows_7d = conn.execute(
-        "SELECT normalized_status FROM labeler_probe_history WHERE labeler_did=? AND ts>=? ORDER BY ts",
-        (did, ts_7d),
-    ).fetchall()
-    probe_statuses_7d = [r["normalized_status"] for r in probe_rows_7d]
-
-    # Fail streak
-    fail_streak = 0
-    for status in reversed(probe_statuses_30d):
-        if status != "accessible":
-            fail_streak += 1
+        # Dormancy
+        last_event_ts = ev["last_event_ts"]
+        if last_event_ts:
+            dormancy_days = (now - parse_ts(last_event_ts)).total_seconds() / 86400
         else:
-            break
+            first_seen = row["first_seen"]
+            dormancy_days = (now - parse_ts(first_seen)).total_seconds() / 86400 if first_seen else 999.0
 
-    # Class/confidence churn from derived_receipts
-    class_transitions = conn.execute(
-        "SELECT COUNT(*) AS c FROM derived_receipts WHERE labeler_did=? AND receipt_type='regime' AND ts>=?",
-        (did, ts_30d),
-    ).fetchone()["c"]
-    conf_transitions = conn.execute(
-        "SELECT COUNT(*) AS c FROM derived_receipts WHERE labeler_did=? AND receipt_type='inference_risk' AND ts>=?",
-        (did, ts_30d),
-    ).fetchone()["c"]
+        # Age
+        first_seen_hours = 999.0
+        if row["first_seen"]:
+            first_seen_hours = (now - parse_ts(row["first_seen"])).total_seconds() / 3600
 
-    # Recent class change
-    last_regime_change = conn.execute(
-        "SELECT ts FROM derived_receipts WHERE labeler_did=? AND receipt_type='regime' ORDER BY ts DESC LIMIT 1",
-        (did,),
-    ).fetchone()
-    recent_class_change_hours = None
-    if last_regime_change:
-        recent_class_change_hours = (now - parse_ts(last_regime_change["ts"])).total_seconds() / 3600
+        # Probe data
+        pr = probe_stats.get(did, empty_probe_stats)
 
-    return LabelerSignals(
-        labeler_did=did,
-        visibility_class=row["visibility_class"] or "unresolved",
-        auditability=row["auditability"] or "low",
-        classification_confidence=row["classification_confidence"] or "low",
-        likely_test_dev=bool(row["likely_test_dev"]),
-        first_seen_hours_ago=first_seen_hours,
-        scan_count=row["scan_count"] or 0,
-        event_count_total=event_count_total,
-        warmup_enabled=config.warmup_enabled,
-        warmup_min_age_hours=config.warmup_min_age_hours,
-        warmup_min_events=config.warmup_min_events,
-        warmup_min_scans=config.warmup_min_scans,
-        event_count_24h=event_count_24h,
-        event_count_7d=event_count_7d,
-        event_count_30d=event_count_30d,
-        hourly_counts_7d=hourly_counts,
-        interarrival_secs_7d=[],  # expensive to compute; empty triggers neutral cadence score
-        dormancy_days=dormancy_days,
-        probe_count_30d=probe_count_30d,
-        probe_success_ratio_30d=probe_success_ratio,
-        probe_transition_count_30d=transitions,
-        probe_last_status=row["endpoint_status"],
-        probe_statuses_7d=probe_statuses_7d,
-        probe_recent_fail_streak=fail_streak,
-        class_transition_count_30d=class_transitions,
-        confidence_transition_count_30d=conf_transitions,
-        recent_class_change_hours_ago=recent_class_change_hours,
-        declared_record=bool(row["declared_record"]),
-        has_labeler_service=bool(row["has_labeler_service"]),
-        has_label_key=bool(row["has_label_key"]),
-        observed_as_src=bool(row["observed_as_src"]),
-    )
+        # Receipt data
+        rc = receipt_stats.get(did, {"regime": 0, "inference_risk": 0})
+
+        # Recent regime change
+        recent_class_change_hours = None
+        regime_ts = last_regime.get(did)
+        if regime_ts:
+            recent_class_change_hours = (now - parse_ts(regime_ts)).total_seconds() / 3600
+
+        signals_map[did] = LabelerSignals(
+            labeler_did=did,
+            visibility_class=row["visibility_class"] or "unresolved",
+            auditability=row["auditability"] or "low",
+            classification_confidence=row["classification_confidence"] or "low",
+            likely_test_dev=bool(row["likely_test_dev"]),
+            first_seen_hours_ago=first_seen_hours,
+            scan_count=row["scan_count"] or 0,
+            event_count_total=ev["cnt_total"],
+            warmup_enabled=config.warmup_enabled,
+            warmup_min_age_hours=config.warmup_min_age_hours,
+            warmup_min_events=config.warmup_min_events,
+            warmup_min_scans=config.warmup_min_scans,
+            event_count_24h=ev["cnt_24h"],
+            event_count_7d=ev["cnt_7d"],
+            event_count_30d=ev["cnt_30d"],
+            hourly_counts_7d=hourly_counts,
+            interarrival_secs_7d=[],
+            dormancy_days=dormancy_days,
+            probe_count_30d=pr["probe_count_30d"],
+            probe_success_ratio_30d=pr["probe_success_ratio_30d"],
+            probe_transition_count_30d=pr["probe_transition_count_30d"],
+            probe_last_status=row["endpoint_status"],
+            probe_statuses_7d=pr["probe_statuses_7d"],
+            probe_recent_fail_streak=pr["probe_recent_fail_streak"],
+            class_transition_count_30d=rc["regime"],
+            confidence_transition_count_30d=rc["inference_risk"],
+            recent_class_change_hours_ago=recent_class_change_hours,
+            declared_record=bool(row["declared_record"]),
+            has_labeler_service=bool(row["has_labeler_service"]),
+            has_label_key=bool(row["has_label_key"]),
+            observed_as_src=bool(row["observed_as_src"]),
+        )
+
+    return signals_map
 
 
 def _emit_receipt_if_changed(conn, did: str, receipt_type: str,
@@ -176,13 +251,23 @@ def _emit_receipt_if_changed(conn, did: str, receipt_type: str,
 
 
 def _run_derive_pass(conn, config: Config, now: datetime) -> None:
-    """Run regime/risk/coherence derivation for all labelers."""
+    """Run regime/risk/coherence derivation for all labelers.
+
+    Uses batched queries (~6 total) instead of per-labeler queries.
+    """
     ts = format_ts(now)
+
+    # Build all signals in one pass (6 grouped queries)
+    signals_map = _build_all_signals(conn, config, now)
+
+    # Fetch labeler rows for previous derived values
     labelers = conn.execute("SELECT * FROM labelers").fetchall()
 
     for row in labelers:
         did = row["labeler_did"]
-        signals = _build_signals(conn, row, config, now)
+        signals = signals_map.get(did)
+        if signals is None:
+            continue
 
         # Classify
         regime = classify_regime_state(signals)
@@ -271,13 +356,16 @@ def run_scan(conn, config: Config, now: datetime | None = None) -> int:
             ),
         )
 
-    # Increment scan_count for all labelers
-    labeler_rows = conn.execute("SELECT labeler_did FROM labelers").fetchall()
-    for row in labeler_rows:
-        db.increment_scan_count(conn, row["labeler_did"])
-
-    # Run derive pass (regime, risk scores, coherence)
-    _run_derive_pass(conn, config, now)
+    # Batch increment scan_count for all labelers (1 query instead of N)
+    conn.execute("UPDATE labelers SET scan_count = scan_count + 1")
 
     conn.commit()
     return len(alerts)
+
+
+def run_derive(conn, config: Config, now: datetime | None = None) -> None:
+    """Run regime/risk/coherence derivation (expensive — call less often than scan)."""
+    if now is None:
+        now = now_utc()
+    _run_derive_pass(conn, config, now)
+    conn.commit()

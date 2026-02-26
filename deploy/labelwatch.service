@@ -19,7 +19,7 @@ OOMPolicy=restart
 TimeoutStopSec=30
 
 # Resource limits
-MemoryMax=1G
+MemoryMax=2G
 CPUQuota=50%
 
 # Security hardening

@@ -122,9 +122,22 @@ CREATE INDEX IF NOT EXISTS idx_probe_history_did_ts ON labeler_probe_history(lab
 """
 
 
-def connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+def connect(db_path: str, readonly: bool = False) -> sqlite3.Connection:
+    if readonly:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    else:
+        conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    # WAL mode: readers don't block writers
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    # Cap SQLite page cache to ~50MB so aggregates don't eat all RAM
+    conn.execute("PRAGMA cache_size=-50000")
+    # Force temp tables (GROUP BY, ORDER BY) to disk instead of RAM
+    conn.execute("PRAGMA temp_store=FILE")
+    if readonly:
+        conn.execute("PRAGMA query_only=ON")
     return conn
 
 
@@ -140,6 +153,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     if current < SCHEMA_VERSION:
         migrate(conn, current, SCHEMA_VERSION)
         conn.commit()
+
+    # Update query planner statistics so grouped queries use indexes
+    conn.execute("ANALYZE")
 
     set_meta(conn, "code_schema_version_seen", str(SCHEMA_VERSION))
     git_commit = get_git_commit()

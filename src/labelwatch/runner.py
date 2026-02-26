@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import gc
 import logging
 import time
 from typing import Optional
@@ -23,6 +25,16 @@ def _heartbeat(conn, key: str) -> None:
     conn.commit()
 
 
+def _release_memory(conn) -> None:
+    """Force Python + SQLite to release memory back to OS."""
+    gc.collect()
+    conn.execute("PRAGMA shrink_memory")
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass  # Not on Linux or libc not found
+
+
 def run_loop(
     cfg: Config,
     ingest_interval: int,
@@ -34,8 +46,10 @@ def run_loop(
 
     last_ingest = 0.0
     last_scan = 0.0
+    last_derive = 0.0
     last_discovery = 0.0
     discovery_interval = cfg.discovery_interval_hours * 3600
+    derive_interval = cfg.derive_interval_minutes * 60
 
     while True:
         now_mono = time.monotonic()
@@ -66,6 +80,7 @@ def run_loop(
                 raise
             except Exception:
                 log.error("Ingest failed", exc_info=True)
+            _release_memory(conn)
             last_ingest = now_mono
 
         # Scan + report pass
@@ -74,11 +89,21 @@ def run_loop(
                 scan_time = now_utc()
                 scan.run_scan(conn, cfg, now=scan_time)
                 _heartbeat(conn, "last_scan_ok_ts")
+                _release_memory(conn)
+
+                # Derive pass (expensive — runs on its own interval)
+                if now_mono - last_derive >= derive_interval:
+                    scan.run_derive(conn, cfg, now=scan_time)
+                    _heartbeat(conn, "last_derive_ok_ts")
+                    last_derive = now_mono
+                    _release_memory(conn)
+
                 if report_out:
                     report_mod.generate_report(conn, report_out, now=scan_time)
                     _heartbeat(conn, "last_report_ok_ts")
             except Exception:
                 log.error("Scan/report failed", exc_info=True)
+            _release_memory(conn)
             last_scan = now_mono
 
         _sleep_until(last_ingest + ingest_interval, last_scan + scan_interval)

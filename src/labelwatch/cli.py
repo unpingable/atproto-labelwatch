@@ -70,6 +70,7 @@ def cmd_scan(args) -> None:
     db.init_db(conn)
     now = _resolve_now(conn, args.now)
     total = scan.run_scan(conn, cfg, now=now)
+    scan.run_derive(conn, cfg, now=now)
     print(json.dumps({"alerts": total}))
 
 
