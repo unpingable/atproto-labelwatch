@@ -246,6 +246,37 @@ TRIAGE_JS = """
 """
 
 
+def _score_delta_html(current: Optional[int], prev: Optional[int]) -> str:
+    """Format a score with optional delta: '72 (+4)' or just '72'."""
+    if current is None:
+        return '<span class="small">--</span>'
+    text = str(current)
+    if prev is not None:
+        delta = current - prev
+        if delta != 0:
+            sign = "+" if delta > 0 else ""
+            text += f' <span class="small">({sign}{delta})</span>'
+    return text
+
+
+def _regime_badge(regime_state: Optional[str]) -> str:
+    """Render regime state as a colored badge."""
+    if not regime_state:
+        return '<span class="small">--</span>'
+    badge_map = {
+        "stable": "badge-stable",
+        "bursty": "badge-burst",
+        "flapping": "badge-flipflop",
+        "degraded": "badge-churn",
+        "ghost_declared": "badge-low-conf",
+        "dark_operational": "badge-fixated",
+        "warming_up": "badge-burst",
+        "inactive": "badge-low-conf",
+    }
+    cls = badge_map.get(regime_state, "badge-low-conf")
+    return f'<span class="badge {cls}">{escape(regime_state)}</span>'
+
+
 def _write(path: str, content: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -1045,6 +1076,32 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
   {profile_link}
 </div>
 """
+        # Derived scores card (regime + risk + coherence with deltas)
+        regime_state = row["regime_state"]
+        audit_score = row["auditability_risk"]
+        inf_score = row["inference_risk"]
+        coh_score = row["temporal_coherence"]
+        audit_prev = row["auditability_risk_prev"]
+        inf_prev = row["inference_risk_prev"]
+        coh_prev = row["temporal_coherence_prev"]
+        derived_at = row["derived_at"]
+
+        scores_card = ""
+        if regime_state or audit_score is not None:
+            audit_band = row["auditability_risk_band"] or ""
+            inf_band = row["inference_risk_band"] or ""
+            coh_band = row["temporal_coherence_band"] or ""
+            derived_ts = f' <span class="small">as of {escape(derived_at)}</span>' if derived_at else ""
+            scores_card = f"""
+<h2>Derived scores{derived_ts}</h2>
+<div class="grid">
+  <div class="card"><h3>Regime</h3><div>{_regime_badge(regime_state)}</div></div>
+  <div class="card"><h3>Auditability risk</h3><div>{_score_delta_html(audit_score, audit_prev)}</div><div class="small">{escape(audit_band)}</div></div>
+  <div class="card"><h3>Inference risk</h3><div>{_score_delta_html(inf_score, inf_prev)}</div><div class="small">{escape(inf_band)}</div></div>
+  <div class="card"><h3>Temporal coherence</h3><div>{_score_delta_html(coh_score, coh_prev)}</div><div class="small">{escape(coh_band)}</div></div>
+</div>
+"""
+
         evidence_section = _evidence_expander(conn, did, row)
 
         targets_table = ""
@@ -1090,7 +1147,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         html = _layout(
             f"Labeler: {labeler_title}",
             f"<p><a href=\"../index.html\">Overview</a> | <a href=\"../census.html\">Census</a></p>"
-            + labeler_context + warmup_indicator + health_card + info_card + evidence_section
+            + labeler_context + warmup_indicator + health_card + info_card + scores_card + evidence_section
             + targets_table + probe_section + alerts_table + METHODS_HTML,
             canonical=f"labeler/{slug}.html",
         )

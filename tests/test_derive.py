@@ -465,7 +465,9 @@ _DID = "did:plc:hysteresis_test"
 _NOW = datetime(2025, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _make_derive_db(regime_state="stable", regime_pending=None, regime_pending_count=0):
+def _make_derive_db(regime_state="stable", regime_pending=None, regime_pending_count=0,
+                    auditability_risk=None, inference_risk=None, temporal_coherence=None,
+                    auditability_risk_prev=None, inference_risk_prev=None, temporal_coherence_prev=None):
     """Create an in-memory DB with one labeler row, ready for run_derive."""
     conn = db.connect(":memory:")
     db.init_db(conn)
@@ -474,11 +476,15 @@ def _make_derive_db(regime_state="stable", regime_pending=None, regime_pending_c
             labeler_did, first_seen, last_seen, scan_count,
             declared_record, has_labeler_service, has_label_key, observed_as_src,
             visibility_class, auditability, classification_confidence,
-            regime_state, regime_pending, regime_pending_count
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            regime_state, regime_pending, regime_pending_count,
+            auditability_risk, inference_risk, temporal_coherence,
+            auditability_risk_prev, inference_risk_prev, temporal_coherence_prev
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (_DID, "2025-01-01T00:00:00Z", "2025-07-01T00:00:00Z", 10,
          1, 1, 1, 1, "declared", "high", "high",
-         regime_state, regime_pending, regime_pending_count),
+         regime_state, regime_pending, regime_pending_count,
+         auditability_risk, inference_risk, temporal_coherence,
+         auditability_risk_prev, inference_risk_prev, temporal_coherence_prev),
     )
     conn.commit()
     return conn
@@ -578,3 +584,74 @@ def test_hysteresis_pending_resets_on_revert(monkeypatch):
     assert row["regime_pending"] is None
     assert row["regime_pending_count"] == 0
     assert _receipt_count(conn) == 0
+
+
+# ---------------------------------------------------------------------------
+# Score delta / prev score shift (integration tests via run_derive)
+# ---------------------------------------------------------------------------
+
+def test_score_prev_first_derive_stays_null(monkeypatch):
+    """First derive: current scores populated, prev stays NULL (no prior scores to shift)."""
+    conn = _make_derive_db(regime_state="stable")
+    monkeypatch.setattr(scan_mod, "classify_regime_state", _mock_classify("stable"))
+    run_derive(conn, Config(), now=_NOW)
+
+    row = _get_labeler(conn)
+    # Current scores should be populated
+    assert row["auditability_risk"] is not None
+    assert row["inference_risk"] is not None
+    assert row["temporal_coherence"] is not None
+    # Prev scores should be NULL (nothing to shift from)
+    assert row["auditability_risk_prev"] is None
+    assert row["inference_risk_prev"] is None
+    assert row["temporal_coherence_prev"] is None
+
+
+def test_score_prev_shifts_on_second_derive(monkeypatch):
+    """Second derive: prev = old current, current = newly computed."""
+    # Simulate a labeler that already has scores from a previous derive
+    conn = _make_derive_db(
+        regime_state="stable",
+        auditability_risk=10,
+        inference_risk=5,
+        temporal_coherence=80,
+    )
+    monkeypatch.setattr(scan_mod, "classify_regime_state", _mock_classify("stable"))
+    run_derive(conn, Config(), now=_NOW)
+
+    row = _get_labeler(conn)
+    # Prev should now hold the old current values
+    assert row["auditability_risk_prev"] == 10
+    assert row["inference_risk_prev"] == 5
+    assert row["temporal_coherence_prev"] == 80
+    # Current should be freshly computed (may differ from old values)
+    assert row["auditability_risk"] is not None
+    assert row["inference_risk"] is not None
+    assert row["temporal_coherence"] is not None
+
+
+def test_score_prev_chain_across_three_derives(monkeypatch):
+    """Three consecutive derives: prev always reflects the immediately prior current."""
+    conn = _make_derive_db(regime_state="stable")
+    monkeypatch.setattr(scan_mod, "classify_regime_state", _mock_classify("stable"))
+
+    # Derive 1: no prev (first time)
+    run_derive(conn, Config(), now=_NOW)
+    row1 = _get_labeler(conn)
+    assert row1["auditability_risk_prev"] is None
+    score1_audit = row1["auditability_risk"]
+    score1_inf = row1["inference_risk"]
+    score1_coh = row1["temporal_coherence"]
+
+    # Derive 2: prev = scores from derive 1
+    run_derive(conn, Config(), now=_NOW)
+    row2 = _get_labeler(conn)
+    assert row2["auditability_risk_prev"] == score1_audit
+    assert row2["inference_risk_prev"] == score1_inf
+    assert row2["temporal_coherence_prev"] == score1_coh
+    score2_audit = row2["auditability_risk"]
+
+    # Derive 3: prev = scores from derive 2
+    run_derive(conn, Config(), now=_NOW)
+    row3 = _get_labeler(conn)
+    assert row3["auditability_risk_prev"] == score2_audit

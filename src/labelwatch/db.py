@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -66,7 +66,10 @@ CREATE TABLE IF NOT EXISTS labelers (
     derive_version TEXT,
     derived_at TEXT,
     regime_pending TEXT,
-    regime_pending_count INTEGER DEFAULT 0
+    regime_pending_count INTEGER DEFAULT 0,
+    auditability_risk_prev INTEGER,
+    inference_risk_prev INTEGER,
+    temporal_coherence_prev INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS alerts (
@@ -343,6 +346,17 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
                 conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
         set_schema_version(conn, 6)
         current = 6
+    if current == 6 and target >= 7:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
+        for col, typedef in [
+            ("auditability_risk_prev", "INTEGER"),
+            ("inference_risk_prev", "INTEGER"),
+            ("temporal_coherence_prev", "INTEGER"),
+        ]:
+            if col not in cols:
+                conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
+        set_schema_version(conn, 7)
+        current = 7
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
@@ -483,7 +497,10 @@ def update_labeler_derived(conn: sqlite3.Connection, labeler_did: str,
                            temporal_coherence_reasons: str,
                            derive_version: str, derived_at: str,
                            regime_pending: Optional[str] = None,
-                           regime_pending_count: int = 0) -> None:
+                           regime_pending_count: int = 0,
+                           auditability_risk_prev: Optional[int] = None,
+                           inference_risk_prev: Optional[int] = None,
+                           temporal_coherence_prev: Optional[int] = None) -> None:
     conn.execute(
         """
         UPDATE labelers SET
@@ -492,7 +509,8 @@ def update_labeler_derived(conn: sqlite3.Connection, labeler_did: str,
             inference_risk=?, inference_risk_band=?, inference_risk_reasons=?,
             temporal_coherence=?, temporal_coherence_band=?, temporal_coherence_reasons=?,
             derive_version=?, derived_at=?,
-            regime_pending=?, regime_pending_count=?
+            regime_pending=?, regime_pending_count=?,
+            auditability_risk_prev=?, inference_risk_prev=?, temporal_coherence_prev=?
         WHERE labeler_did=?
         """,
         (regime_state, regime_reason_codes,
@@ -500,7 +518,9 @@ def update_labeler_derived(conn: sqlite3.Connection, labeler_did: str,
          inference_risk, inference_risk_band, inference_risk_reasons,
          temporal_coherence, temporal_coherence_band, temporal_coherence_reasons,
          derive_version, derived_at,
-         regime_pending, regime_pending_count, labeler_did),
+         regime_pending, regime_pending_count,
+         auditability_risk_prev, inference_risk_prev, temporal_coherence_prev,
+         labeler_did),
     )
 
 

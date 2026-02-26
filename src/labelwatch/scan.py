@@ -345,7 +345,12 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
             inf_risk.reason_codes, input_hash, ts,
         )
 
-        # Update labeler row (with effective regime + pending state)
+        # Shift current scores to prev (only if current is not NULL)
+        audit_prev = row["auditability_risk"] if row["auditability_risk"] is not None else None
+        inf_prev = row["inference_risk"] if row["inference_risk"] is not None else None
+        coh_prev = row["temporal_coherence"] if row["temporal_coherence"] is not None else None
+
+        # Update labeler row (with effective regime + pending state + prev scores)
         db.update_labeler_derived(
             conn, did,
             regime_state=effective_regime.regime_state,
@@ -363,6 +368,9 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
             derived_at=ts,
             regime_pending=pending,
             regime_pending_count=pending_count,
+            auditability_risk_prev=audit_prev,
+            inference_risk_prev=inf_prev,
+            temporal_coherence_prev=coh_prev,
         )
 
 
