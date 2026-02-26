@@ -36,7 +36,10 @@ class Config:
 
     discovery_enabled: bool = False
     discovery_interval_hours: int = 24
-    reference_dids: List[str] = field(default_factory=lambda: ["did:plc:ar7c4by46qjdydhdevvrndac"])
+    reference_dids: List[str] = field(default_factory=lambda: [
+        "did:plc:ar7c4by46qjdydhdevvrndac",   # Bluesky Moderation
+        "did:plc:e4elbtctnfqocyfcml6h2lf7",   # Skywatch Blue
+    ])
 
     multi_ingest_timeout: int = 15
     multi_ingest_budget: int = 300

@@ -9,3 +9,8 @@ min_current_count = 50
 flip_flop_window_hours = 24
 max_events_per_scan = 200000
 max_evidence = 50
+
+reference_dids = [
+    "did:plc:ar7c4by46qjdydhdevvrndac",  # Bluesky Moderation
+    "did:plc:e4elbtctnfqocyfcml6h2lf7",  # Skywatch Blue
+]

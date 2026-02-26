@@ -174,6 +174,9 @@ pre { background: var(--pre-bg); padding: 0.5rem; border-radius: 4px; overflow-x
 .hidden { display: none; }
 .theme-toggle { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--fg-muted); }
 .theme-toggle:hover { background: var(--link-hover-bg); }
+.explainer { background: var(--methods-bg); border: 1px solid var(--methods-border); padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 1.5rem; max-width: 52rem; font-size: 0.95rem; line-height: 1.5; }
+.explainer p { margin: 0.4rem 0; }
+.labeler-context { color: var(--fg-muted); font-size: 0.9rem; margin-bottom: 0.75rem; }
 """
 
 TRIAGE_JS = """
@@ -448,8 +451,13 @@ METHODS_HTML = """
 <div class="methods">
 <h3>Methods and caveats</h3>
 <ul>
-<li>Behavioral observation only. No content analysis, user profiling, or brute-force enumeration beyond declared/observed/protocol surfaces.</li>
-<li>Rules detect geometric patterns (rate anomalies, target distribution, churn). Thresholds are configurable.</li>
+<li><strong>What is a labeler?</strong> A third-party service that publishes tags (labels)
+about Bluesky posts or accounts. Clients choose which labelers to subscribe to
+and how to interpret labels (ignore / warn / hide).</li>
+<li>This site observes labeler behavior only. No content analysis, no user profiling,
+no moderation actions.</li>
+<li>Rules detect geometric patterns (rate anomalies, target distribution, churn).
+Thresholds are configurable.</li>
 <li>Every alert includes a receipted hash over rule_id, config, inputs, and evidence for reproducibility.</li>
 <li>Sparklines show hourly event counts over 7 days. Badges summarize which rules fired in the period.</li>
 <li>Observation surface: label events from com.atproto.label.queryLabels and labeler declarations from com.atproto.sync.listReposByCollection. Does not observe content, profiles, or social graph.</li>
@@ -906,9 +914,20 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     if naive_count > 0:
         naive_banner = f"<p class=\"small\">Note: {naive_count} timestamps lacked timezone info and were assumed UTC.</p>"
 
+    explainer_html = """
+<div class="explainer">
+  <p><strong>Labelwatch</strong> tracks labeler services on the Bluesky network.</p>
+  <p>A <dfn>labeler</dfn> is a third-party service that attaches tags to posts or accounts.
+  Your Bluesky app decides what to do with those tags \u2014 ignore, warn, or hide.
+  Most labelers are topical or curational (yes, including K-pop). Some are moderation/safety.</p>
+  <p>This page shows what labelers exist, what they\u2019re emitting, and when behavior changes.
+  It observes \u2014 it doesn\u2019t moderate anything by itself.</p>
+</div>
+"""
+
     overview_html = _layout(
         "Labelwatch overview",
-        staleness_cards + naive_banner + warmup_banner + reference_lane +
+        explainer_html + staleness_cards + naive_banner + warmup_banner + reference_lane +
         build_table + overview_tables + labeler_section + alert_links + METHODS_HTML + TRIAGE_JS,
     )
     _write(os.path.join(tmp_dir, "index.html"), overview_html)
@@ -1066,10 +1085,12 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         alert_head = "<tr><th>id</th><th>rule_id</th><th>ts</th></tr>"
         alerts_table = f"<h2>Alerts timeline</h2><table><thead>{alert_head}</thead><tbody>{''.join(alert_detail_rows)}</tbody></table>"
 
+        labeler_context = '<p class="labeler-context">This is a labeler service. It publishes labels about posts and accounts on the Bluesky network.</p>'
+
         html = _layout(
             f"Labeler: {labeler_title}",
             f"<p><a href=\"../index.html\">Overview</a> | <a href=\"../census.html\">Census</a></p>"
-            + warmup_indicator + health_card + info_card + evidence_section
+            + labeler_context + warmup_indicator + health_card + info_card + evidence_section
             + targets_table + probe_section + alerts_table + METHODS_HTML,
             canonical=f"labeler/{slug}.html",
         )

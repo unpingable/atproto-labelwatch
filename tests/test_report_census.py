@@ -311,9 +311,9 @@ def test_generate_report_scope_statement():
         out = os.path.join(tmpdir, "report")
         generate_report(conn, out, now=now)
         content = open(os.path.join(out, "index.html")).read()
-        assert "Behavioral observation only" in content
+        assert "observes labeler behavior only" in content
         assert "No content analysis" in content
-        assert "brute-force enumeration" in content
+        assert "What is a labeler?" in content
 
 
 def test_generate_report_cache_headers():
