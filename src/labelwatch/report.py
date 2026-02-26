@@ -1087,7 +1087,11 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         derived_at = row["derived_at"]
 
         scores_card = ""
-        if regime_state or audit_score is not None:
+        if (
+            regime_state
+            and regime_state != "warming_up"
+            and any(x is not None for x in (audit_score, inf_score, coh_score))
+        ):
             audit_band = row["auditability_risk_band"] or ""
             inf_band = row["inference_risk_band"] or ""
             coh_band = row["temporal_coherence_band"] or ""

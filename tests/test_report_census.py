@@ -562,3 +562,39 @@ def test_generate_report_data_attributes():
         content = open(os.path.join(out, "index.html")).read()
         assert 'data-opaque="1"' in content
         assert 'data-test-dev="1"' in content
+
+
+def test_generate_report_warmup_suppresses_scores_card():
+    """Labeler in warming_up regime should NOT show derived scores card, even if scores exist."""
+    conn = _make_db()
+    now = datetime.now(timezone.utc)
+    _insert_labeler(conn, "did:plc:warmscore",
+                    regime_state="warming_up",
+                    auditability_risk=15,
+                    inference_risk=56,
+                    temporal_coherence=28)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = os.path.join(tmpdir, "report")
+        generate_report(conn, out, now=now)
+        page = open(os.path.join(out, "labeler", "did-plc-warmscore.html")).read()
+        assert "Derived scores" not in page  # scores card is suppressed
+
+
+def test_generate_report_graduated_shows_scores_card():
+    """Labeler with a non-warmup regime should show derived scores card."""
+    conn = _make_db()
+    now = datetime.now(timezone.utc)
+    _insert_labeler(conn, "did:plc:graduated",
+                    regime_state="stable",
+                    auditability_risk=10,
+                    inference_risk=0,
+                    temporal_coherence=80,
+                    scan_count=10)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = os.path.join(tmpdir, "report")
+        generate_report(conn, out, now=now)
+        page = open(os.path.join(out, "labeler", "did-plc-graduated.html")).read()
+        assert "Derived scores" in page
+        assert "Regime" in page
