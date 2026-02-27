@@ -573,6 +573,46 @@ def _sync_driftwatch_facts(conn, config: Config) -> None:
         conn.execute("DETACH DATABASE drift")
 
 
+def _compute_labeler_lag_7d(conn) -> None:
+    """Aggregate per-labeler lag stats from derived_label_fp (last 7 days)."""
+    cutoff_epoch = int(time.time()) - (7 * 86400)
+
+    rows = conn.execute("""
+        SELECT labeler_did, lag_sec_claimed
+        FROM derived_label_fp
+        WHERE CAST(strftime('%s', label_ts) AS INTEGER) >= ?
+    """, (cutoff_epoch,)).fetchall()
+
+    per_labeler: dict[str, list] = defaultdict(list)
+    for r in rows:
+        per_labeler[r["labeler_did"]].append(r["lag_sec_claimed"])
+
+    now_epoch = int(time.time())
+    conn.execute("DELETE FROM derived_labeler_lag_7d")
+
+    for did, lags in per_labeler.items():
+        n_total = len(lags)
+        null_count = sum(1 for l in lags if l is None)
+        neg_count = sum(1 for l in lags if l is not None and l < 0)
+        non_null = sorted(l for l in lags if l is not None)
+
+        null_rate = null_count / n_total if n_total > 0 else 0.0
+        neg_rate = neg_count / n_total if n_total > 0 else 0.0
+
+        if non_null:
+            p50 = non_null[len(non_null) // 2]
+            p90_idx = min(int(len(non_null) * 0.9), len(non_null) - 1)
+            p90 = non_null[p90_idx]
+        else:
+            p50 = None
+            p90 = None
+
+        conn.execute(
+            "INSERT INTO derived_labeler_lag_7d VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (did, n_total, null_rate, p50, p90, neg_rate, now_epoch),
+        )
+
+
 def run_derive(conn, config: Config, now: datetime | None = None) -> None:
     """Run regime/risk/coherence derivation (expensive — call less often than scan)."""
     if now is None:
@@ -586,5 +626,10 @@ def run_derive(conn, config: Config, now: datetime | None = None) -> None:
             _sync_driftwatch_facts(conn, config)
         except Exception as exc:
             _log.warning("driftwatch facts sync failed: %s", exc)
+
+    try:
+        _compute_labeler_lag_7d(conn)
+    except Exception as exc:
+        _log.warning("labeler lag 7d compute failed: %s", exc)
 
     conn.commit()

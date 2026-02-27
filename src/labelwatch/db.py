@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -153,6 +153,16 @@ CREATE TABLE IF NOT EXISTS derived_label_fp (
 
 CREATE INDEX IF NOT EXISTS idx_derived_label_fp_labeler ON derived_label_fp(labeler_did);
 CREATE INDEX IF NOT EXISTS idx_derived_label_fp_fp ON derived_label_fp(claim_fingerprint);
+
+CREATE TABLE IF NOT EXISTS derived_labeler_lag_7d (
+    labeler_did    TEXT PRIMARY KEY,
+    n_total        INTEGER NOT NULL,
+    null_rate      REAL NOT NULL,
+    p50_lag        INTEGER,
+    p90_lag        INTEGER,
+    neg_rate       REAL NOT NULL,
+    updated_epoch  INTEGER NOT NULL
+);
 
 CREATE INDEX IF NOT EXISTS idx_label_events_labeler_ts ON label_events(labeler_did, ts);
 CREATE INDEX IF NOT EXISTS idx_label_events_uri_ts ON label_events(uri, ts);
@@ -454,6 +464,20 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         """)
         set_schema_version(conn, 10)
         current = 10
+    if current == 10 and target >= 11:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS derived_labeler_lag_7d (
+                labeler_did    TEXT PRIMARY KEY,
+                n_total        INTEGER NOT NULL,
+                null_rate      REAL NOT NULL,
+                p50_lag        INTEGER,
+                p90_lag        INTEGER,
+                neg_rate       REAL NOT NULL,
+                updated_epoch  INTEGER NOT NULL
+            )
+        """)
+        set_schema_version(conn, 11)
+        current = 11
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 

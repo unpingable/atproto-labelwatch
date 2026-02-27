@@ -1,4 +1,4 @@
-"""Tests for driftwatch facts bridge — _sync_driftwatch_facts in scan.py."""
+"""Tests for driftwatch facts bridge — _sync_driftwatch_facts and _compute_labeler_lag_7d in scan.py."""
 
 import os
 import sqlite3
@@ -9,7 +9,7 @@ import pytest
 
 from labelwatch import db
 from labelwatch.config import Config
-from labelwatch.scan import _sync_driftwatch_facts
+from labelwatch.scan import _compute_labeler_lag_7d, _sync_driftwatch_facts
 
 
 def _init_labelwatch_db(conn):
@@ -447,13 +447,14 @@ def test_schema_v10_migration():
     db.init_db(conn)
 
     version = db.get_schema_version(conn)
-    assert version == 10
+    assert version == db.SCHEMA_VERSION
 
     # derived_label_fp table should exist
     tables = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'"
     )}
     assert "derived_label_fp" in tables
+    assert "derived_labeler_lag_7d" in tables
 
     # Indexes should exist
     indexes = {r["name"] for r in conn.execute(
@@ -461,3 +462,162 @@ def test_schema_v10_migration():
     )}
     assert "idx_derived_label_fp_labeler" in indexes
     assert "idx_derived_label_fp_fp" in indexes
+
+
+# ===================================================================
+# Bake 1: derived_labeler_lag_7d tests
+# ===================================================================
+
+def _insert_derived_fp(conn, label_event_id, labeler_did, uri, label_ts, fp, post_created_ts, lag):
+    """Insert a row into derived_label_fp."""
+    conn.execute(
+        "INSERT INTO derived_label_fp VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (label_event_id, labeler_did, uri, label_ts, fp, post_created_ts, lag),
+    )
+
+
+class TestLabelerLag7d:
+    def test_empty_table(self):
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+        _compute_labeler_lag_7d(conn)
+        count = conn.execute("SELECT COUNT(*) AS c FROM derived_labeler_lag_7d").fetchone()["c"]
+        assert count == 0
+
+    def test_basic_stats(self):
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _insert_derived_fp(conn, 1, "did:lab:a", "at://u/app.bsky.feed.post/1", now_ts, "fp1", now_ts, 100)
+        _insert_derived_fp(conn, 2, "did:lab:a", "at://u/app.bsky.feed.post/2", now_ts, "fp2", now_ts, 200)
+        _insert_derived_fp(conn, 3, "did:lab:a", "at://u/app.bsky.feed.post/3", now_ts, "fp3", now_ts, 300)
+        conn.commit()
+
+        _compute_labeler_lag_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_lag_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row is not None
+        assert row["n_total"] == 3
+        assert row["null_rate"] == 0.0
+        assert row["neg_rate"] == 0.0
+        assert row["p50_lag"] == 200
+        assert row["p90_lag"] == 300
+
+    def test_multiple_labelers(self):
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _insert_derived_fp(conn, 1, "did:lab:a", "at://u/app.bsky.feed.post/1", now_ts, "fp1", now_ts, 100)
+        _insert_derived_fp(conn, 2, "did:lab:b", "at://u/app.bsky.feed.post/2", now_ts, "fp2", now_ts, 500)
+        conn.commit()
+
+        _compute_labeler_lag_7d(conn)
+
+        count = conn.execute("SELECT COUNT(*) AS c FROM derived_labeler_lag_7d").fetchone()["c"]
+        assert count == 2
+        row_a = conn.execute(
+            "SELECT p50_lag FROM derived_labeler_lag_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row_a["p50_lag"] == 100
+        row_b = conn.execute(
+            "SELECT p50_lag FROM derived_labeler_lag_7d WHERE labeler_did='did:lab:b'"
+        ).fetchone()
+        assert row_b["p50_lag"] == 500
+
+    def test_null_lag_counted(self):
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _insert_derived_fp(conn, 1, "did:lab:a", "at://u/app.bsky.feed.post/1", now_ts, "fp1", now_ts, 100)
+        _insert_derived_fp(conn, 2, "did:lab:a", "at://u/app.bsky.feed.post/2", now_ts, "fp2", None, None)
+        conn.commit()
+
+        _compute_labeler_lag_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_lag_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_total"] == 2
+        assert row["null_rate"] == 0.5
+        assert row["p50_lag"] == 100  # only non-null value
+
+    def test_negative_lag_rate(self):
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _insert_derived_fp(conn, 1, "did:lab:a", "at://u/app.bsky.feed.post/1", now_ts, "fp1", now_ts, -50)
+        _insert_derived_fp(conn, 2, "did:lab:a", "at://u/app.bsky.feed.post/2", now_ts, "fp2", now_ts, 100)
+        _insert_derived_fp(conn, 3, "did:lab:a", "at://u/app.bsky.feed.post/3", now_ts, "fp3", now_ts, -30)
+        _insert_derived_fp(conn, 4, "did:lab:a", "at://u/app.bsky.feed.post/4", now_ts, "fp4", now_ts, 200)
+        conn.commit()
+
+        _compute_labeler_lag_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_lag_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_total"] == 4
+        assert row["neg_rate"] == 0.5
+        # sorted non-null: [-50, -30, 100, 200]
+        assert row["p50_lag"] == 100  # index 2 of 4
+
+    def test_old_events_excluded(self):
+        """Events older than 7 days should not be included."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        old_ts = "2024-01-01T00:00:00Z"
+        _insert_derived_fp(conn, 1, "did:lab:a", "at://u/app.bsky.feed.post/1", now_ts, "fp1", now_ts, 100)
+        _insert_derived_fp(conn, 2, "did:lab:a", "at://u/app.bsky.feed.post/2", old_ts, "fp2", old_ts, 9999)
+        conn.commit()
+
+        _compute_labeler_lag_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_lag_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_total"] == 1
+        assert row["p50_lag"] == 100
+
+    def test_recompute_replaces(self):
+        """Second call replaces previous results."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _insert_derived_fp(conn, 1, "did:lab:a", "at://u/app.bsky.feed.post/1", now_ts, "fp1", now_ts, 100)
+        conn.commit()
+
+        _compute_labeler_lag_7d(conn)
+        assert conn.execute(
+            "SELECT p50_lag FROM derived_labeler_lag_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()["p50_lag"] == 100
+
+        # Add more data
+        _insert_derived_fp(conn, 2, "did:lab:a", "at://u/app.bsky.feed.post/2", now_ts, "fp2", now_ts, 500)
+        conn.commit()
+
+        _compute_labeler_lag_7d(conn)
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_lag_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_total"] == 2
+        assert row["p50_lag"] == 500  # sorted [100, 500], idx 1
+
+    def test_schema_v11_migration(self):
+        conn = db.connect(":memory:")
+        # Simulate v10 by running init_db (which creates at current SCHEMA_VERSION)
+        # then checking the table exists
+        db.init_db(conn)
+        assert db.get_schema_version(conn) == 11
+        tables = {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert "derived_labeler_lag_7d" in tables
