@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -140,6 +140,19 @@ CREATE TABLE IF NOT EXISTS ingest_outcomes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ingest_outcomes_did_ts ON ingest_outcomes(labeler_did, ts);
+
+CREATE TABLE IF NOT EXISTS derived_label_fp (
+    label_event_id    INTEGER PRIMARY KEY,
+    labeler_did       TEXT NOT NULL,
+    uri               TEXT NOT NULL,
+    label_ts          TEXT NOT NULL,
+    claim_fingerprint TEXT,
+    post_created_ts   TEXT,
+    lag_sec_claimed   INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_derived_label_fp_labeler ON derived_label_fp(labeler_did);
+CREATE INDEX IF NOT EXISTS idx_derived_label_fp_fp ON derived_label_fp(claim_fingerprint);
 
 CREATE INDEX IF NOT EXISTS idx_label_events_labeler_ts ON label_events(labeler_did, ts);
 CREATE INDEX IF NOT EXISTS idx_label_events_uri_ts ON label_events(uri, ts);
@@ -419,6 +432,28 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
                 conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
         set_schema_version(conn, 9)
         current = 9
+    if current == 9 and target >= 10:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS derived_label_fp (
+                label_event_id    INTEGER PRIMARY KEY,
+                labeler_did       TEXT NOT NULL,
+                uri               TEXT NOT NULL,
+                label_ts          TEXT NOT NULL,
+                claim_fingerprint TEXT,
+                post_created_ts   TEXT,
+                lag_sec_claimed   INTEGER
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_derived_label_fp_labeler
+            ON derived_label_fp(labeler_did)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_derived_label_fp_fp
+            ON derived_label_fp(claim_fingerprint)
+        """)
+        set_schema_version(conn, 10)
+        current = 10
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 

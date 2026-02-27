@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import sqlite3
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -515,6 +519,60 @@ def _cleanup_ingest_outcomes(conn, now: datetime) -> None:
         pass
 
 
+_log = logging.getLogger("labelwatch.scan")
+
+
+def _sync_driftwatch_facts(conn, config: Config) -> None:
+    """Join label_events with driftwatch facts sidecar to compute lag_sec_claimed."""
+    path = config.driftwatch_facts_path
+    if not path or not os.path.exists(path):
+        return
+
+    # Validate path (ATTACH doesn't support parameter binding)
+    if "'" in path or ";" in path:
+        _log.warning("driftwatch_facts_path contains unsafe characters, skipping")
+        return
+
+    # Retry once on ATTACH failure (rename race window)
+    for attempt in range(2):
+        try:
+            conn.execute(f"ATTACH DATABASE 'file:{path}?mode=ro' AS drift")
+            break
+        except sqlite3.OperationalError:
+            if attempt == 0:
+                time.sleep(1)
+                continue
+            raise
+
+    try:
+        hwm_row = conn.execute(
+            "SELECT COALESCE(MAX(label_event_id), 0) FROM derived_label_fp"
+        ).fetchone()
+        hwm = hwm_row[0] if hwm_row else 0
+
+        # 72h overlap floor as epoch
+        overlap_epoch = int(time.time()) - (72 * 3600)
+
+        conn.execute("""
+            INSERT OR REPLACE INTO derived_label_fp
+                (label_event_id, labeler_did, uri, label_ts,
+                 claim_fingerprint, post_created_ts, lag_sec_claimed)
+            SELECT
+                le.id, le.labeler_did, le.uri, le.ts,
+                uf.fingerprint,
+                datetime(uf.created_epoch, 'unixepoch'),
+                CAST(strftime('%s', le.ts) AS INTEGER) - uf.created_epoch
+            FROM label_events le
+            JOIN drift.uri_fingerprint uf ON le.uri = uf.post_uri
+            WHERE (le.id > ?
+                   OR CAST(strftime('%s', le.ts) AS INTEGER) >= ?)
+              AND le.uri LIKE 'at://%/app.bsky.feed.post/%'
+        """, (hwm, overlap_epoch))
+        conn.commit()
+    finally:
+        conn.execute("DETACH DATABASE drift")
+
+
 def run_derive(conn, config: Config, now: datetime | None = None) -> None:
     """Run regime/risk/coherence derivation (expensive — call less often than scan)."""
     if now is None:
@@ -522,4 +580,11 @@ def run_derive(conn, config: Config, now: datetime | None = None) -> None:
     _run_derive_pass(conn, config, now)
     _update_coverage_columns(conn, config, now)
     _cleanup_ingest_outcomes(conn, now)
+
+    if config.driftwatch_facts_path:
+        try:
+            _sync_driftwatch_facts(conn, config)
+        except Exception as exc:
+            _log.warning("driftwatch facts sync failed: %s", exc)
+
     conn.commit()

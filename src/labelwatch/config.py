@@ -64,6 +64,8 @@ class Config:
     coverage_window_minutes: int = 30
     coverage_threshold: float = 0.5
 
+    driftwatch_facts_path: str = ""  # path to facts.sqlite, empty = disabled
+
     def to_receipt_dict(self) -> dict:
         return {
             "window_minutes": self.window_minutes,

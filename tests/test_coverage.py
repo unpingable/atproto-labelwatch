@@ -283,7 +283,7 @@ def test_schema_v9_migration():
     assert "last_ingest_attempt_ts" in cols
 
     # Verify schema version
-    assert db.get_schema_version(conn) == 9
+    assert db.get_schema_version(conn) == db.SCHEMA_VERSION
 
 
 # --- 9. Batch coverage cache ---
