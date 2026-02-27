@@ -52,6 +52,45 @@ def _fetch_hourly_counts(conn, ts_7d: str) -> dict:
     return result
 
 
+def _fetch_interarrival_secs(conn, ts_7d: str) -> dict[str, list[float]]:
+    """One query: per-labeler inter-arrival times (seconds) from 7d event timestamps.
+
+    Fetches ordered timestamps per labeler, computes consecutive deltas in Python.
+    Capped at 5000 events per labeler to bound memory.
+    """
+    rows = conn.execute(
+        """SELECT labeler_did, ts FROM label_events
+           WHERE ts >= ?
+           ORDER BY labeler_did, ts""",
+        (ts_7d,),
+    ).fetchall()
+
+    # Group timestamps by labeler, cap per labeler
+    per_labeler: dict[str, list[str]] = defaultdict(list)
+    cap = 5000
+    for r in rows:
+        did = r["labeler_did"]
+        if len(per_labeler[did]) < cap:
+            per_labeler[did].append(r["ts"])
+
+    # Compute inter-arrival deltas
+    result: dict[str, list[float]] = {}
+    for did, ts_list in per_labeler.items():
+        if len(ts_list) < 2:
+            result[did] = []
+            continue
+        deltas = []
+        prev = parse_ts(ts_list[0])
+        for t in ts_list[1:]:
+            cur = parse_ts(t)
+            delta = (cur - prev).total_seconds()
+            if delta >= 0:
+                deltas.append(delta)
+            prev = cur
+        result[did] = deltas
+    return result
+
+
 def _fetch_probe_history(conn, ts_7d: str, ts_30d: str) -> dict:
     """One query: per-labeler probe statuses (30d), split into 30d/7d in memory."""
     rows = conn.execute(
@@ -141,9 +180,10 @@ def _build_all_signals(conn, config: Config, now: datetime) -> dict[str, Labeler
     ts_7d = format_ts(now - timedelta(days=7))
     ts_30d = format_ts(now - timedelta(days=30))
 
-    # Batch queries (6 total)
+    # Batch queries (7 total)
     event_stats = _fetch_event_stats(conn, ts_24h, ts_7d, ts_30d)
     hourly_map = _fetch_hourly_counts(conn, ts_7d)
+    interarrival_map = _fetch_interarrival_secs(conn, ts_7d)
     probe_stats = _fetch_probe_history(conn, ts_7d, ts_30d)
     receipt_stats = _fetch_receipt_stats(conn, ts_30d)
     last_regime = _fetch_last_regime_change(conn)
@@ -216,7 +256,7 @@ def _build_all_signals(conn, config: Config, now: datetime) -> dict[str, Labeler
             event_count_7d=ev["cnt_7d"],
             event_count_30d=ev["cnt_30d"],
             hourly_counts_7d=hourly_counts,
-            interarrival_secs_7d=[],
+            interarrival_secs_7d=interarrival_map.get(did, []),
             dormancy_days=dormancy_days,
             probe_count_30d=pr["probe_count_30d"],
             probe_success_ratio_30d=pr["probe_success_ratio_30d"],
