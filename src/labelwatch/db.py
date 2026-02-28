@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -160,6 +160,9 @@ CREATE TABLE IF NOT EXISTS derived_labeler_lag_7d (
     null_rate      REAL NOT NULL,
     p50_lag        INTEGER,
     p90_lag        INTEGER,
+    p95_lag        INTEGER,
+    p99_lag        INTEGER,
+    p90_p50_ratio  REAL,
     neg_rate       REAL NOT NULL,
     updated_epoch  INTEGER NOT NULL
 );
@@ -478,6 +481,12 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         """)
         set_schema_version(conn, 11)
         current = 11
+    if current == 11 and target >= 12:
+        conn.execute("ALTER TABLE derived_labeler_lag_7d ADD COLUMN p95_lag INTEGER")
+        conn.execute("ALTER TABLE derived_labeler_lag_7d ADD COLUMN p99_lag INTEGER")
+        conn.execute("ALTER TABLE derived_labeler_lag_7d ADD COLUMN p90_p50_ratio REAL")
+        set_schema_version(conn, 12)
+        current = 12
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 

@@ -505,6 +505,9 @@ class TestLabelerLag7d:
         assert row["neg_rate"] == 0.0
         assert row["p50_lag"] == 200
         assert row["p90_lag"] == 300
+        assert row["p95_lag"] == 300
+        assert row["p99_lag"] == 300
+        assert row["p90_p50_ratio"] == 1.5
 
     def test_multiple_labelers(self):
         conn = db.connect(":memory:")
@@ -611,13 +614,16 @@ class TestLabelerLag7d:
         assert row["n_total"] == 2
         assert row["p50_lag"] == 500  # sorted [100, 500], idx 1
 
-    def test_schema_v11_migration(self):
+    def test_schema_migration(self):
         conn = db.connect(":memory:")
-        # Simulate v10 by running init_db (which creates at current SCHEMA_VERSION)
-        # then checking the table exists
         db.init_db(conn)
-        assert db.get_schema_version(conn) == 11
+        assert db.get_schema_version(conn) == db.SCHEMA_VERSION
         tables = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}
         assert "derived_labeler_lag_7d" in tables
+        # Verify new columns exist
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(derived_labeler_lag_7d)")}
+        assert "p95_lag" in cols
+        assert "p99_lag" in cols
+        assert "p90_p50_ratio" in cols

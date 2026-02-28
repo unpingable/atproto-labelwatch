@@ -603,13 +603,21 @@ def _compute_labeler_lag_7d(conn) -> None:
             p50 = non_null[len(non_null) // 2]
             p90_idx = min(int(len(non_null) * 0.9), len(non_null) - 1)
             p90 = non_null[p90_idx]
+            p95_idx = min(int(len(non_null) * 0.95), len(non_null) - 1)
+            p95 = non_null[p95_idx]
+            p99_idx = min(int(len(non_null) * 0.99), len(non_null) - 1)
+            p99 = non_null[p99_idx]
+            p90_p50_ratio = round(p90 / p50, 1) if p50 > 0 else None
         else:
             p50 = None
             p90 = None
+            p95 = None
+            p99 = None
+            p90_p50_ratio = None
 
         conn.execute(
-            "INSERT INTO derived_labeler_lag_7d VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (did, n_total, null_rate, p50, p90, neg_rate, now_epoch),
+            "INSERT INTO derived_labeler_lag_7d VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (did, n_total, null_rate, p50, p90, p95, p99, p90_p50_ratio, neg_rate, now_epoch),
         )
 
 
