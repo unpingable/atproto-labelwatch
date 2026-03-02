@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -165,6 +165,22 @@ CREATE TABLE IF NOT EXISTS derived_labeler_lag_7d (
     p90_p50_ratio  REAL,
     neg_rate       REAL NOT NULL,
     updated_epoch  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS derived_labeler_reversal_7d (
+    labeler_did      TEXT PRIMARY KEY,
+    n_apply_events   INTEGER NOT NULL,
+    n_apply_groups   INTEGER NOT NULL,
+    n_reversals      INTEGER NOT NULL,
+    pct_reversed     REAL NOT NULL,
+    p50_dwell        INTEGER,
+    p90_dwell        INTEGER,
+    p95_dwell        INTEGER,
+    p99_dwell        INTEGER,
+    top_val          TEXT,
+    top_val_pct      REAL,
+    truncated        INTEGER NOT NULL DEFAULT 0,
+    updated_epoch    INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_label_events_labeler_ts ON label_events(labeler_did, ts);
@@ -487,6 +503,26 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         conn.execute("ALTER TABLE derived_labeler_lag_7d ADD COLUMN p90_p50_ratio REAL")
         set_schema_version(conn, 12)
         current = 12
+    if current == 12 and target >= 13:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS derived_labeler_reversal_7d (
+                labeler_did      TEXT PRIMARY KEY,
+                n_apply_events   INTEGER NOT NULL,
+                n_apply_groups   INTEGER NOT NULL,
+                n_reversals      INTEGER NOT NULL,
+                pct_reversed     REAL NOT NULL,
+                p50_dwell        INTEGER,
+                p90_dwell        INTEGER,
+                p95_dwell        INTEGER,
+                p99_dwell        INTEGER,
+                top_val          TEXT,
+                top_val_pct      REAL,
+                truncated        INTEGER NOT NULL DEFAULT 0,
+                updated_epoch    INTEGER NOT NULL
+            )
+        """)
+        set_schema_version(conn, 13)
+        current = 13
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 

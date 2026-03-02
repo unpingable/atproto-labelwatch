@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SSH_KEY="/home/jbeck/git/claude/ssh/linode"
-HOST="root@192.46.223.21"
-DEST="/opt/labelwatch/"
+SSH_KEY="${DEPLOY_SSH_KEY:?Set DEPLOY_SSH_KEY to your SSH private key path}"
+HOST="${DEPLOY_HOST:?Set DEPLOY_HOST (e.g. user@host)}"
+DEST="${DEPLOY_DEST:-/opt/labelwatch/}"
 
 echo "==> Syncing code to ${HOST}:${DEST}"
 rsync -az --delete \
@@ -28,7 +28,7 @@ sleep 8
 STATUS=$(ssh -i "${SSH_KEY}" "${HOST}" 'systemctl is-active labelwatch.service')
 if [ "${STATUS}" = "active" ]; then
     echo "==> Service is active"
-    ssh -i "${SSH_KEY}" "${HOST}" "sqlite3 /var/lib/labelwatch/labelwatch.db \"SELECT 'schema_version=' || value FROM meta WHERE key='schema_version';\""
+    ssh -i "${SSH_KEY}" "${HOST}" "sqlite3 ${DEPLOY_DB_PATH:-/var/lib/labelwatch/labelwatch.db} \"SELECT 'schema_version=' || value FROM meta WHERE key='schema_version';\""
 else
     echo "!!! Service status: ${STATUS}"
     echo "==> Recent logs:"

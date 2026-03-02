@@ -23,6 +23,7 @@ from .rules import run_rules
 from .utils import format_ts, now_utc, parse_ts, stable_json
 
 DERIVE_VERSION = "derive_v1"
+REVERSAL_CAP_PER_LABELER = 50_000
 
 
 def _fetch_event_stats(conn, ts_24h: str, ts_7d: str, ts_30d: str) -> dict:
@@ -59,39 +60,50 @@ def _fetch_hourly_counts(conn, ts_7d: str) -> dict:
 def _fetch_interarrival_secs(conn, ts_7d: str) -> dict[str, list[float]]:
     """One query: per-labeler inter-arrival times (seconds) from 7d event timestamps.
 
-    Fetches ordered timestamps per labeler, computes consecutive deltas in Python.
+    Streams rows via cursor (never fetchall) to avoid loading millions of rows
+    into memory. Computes deltas inline since data is ordered by (labeler_did, ts).
     Capped at 5000 events per labeler to bound memory.
     """
-    rows = conn.execute(
+    cursor = conn.execute(
         """SELECT labeler_did, ts FROM label_events
            WHERE ts >= ?
            ORDER BY labeler_did, ts""",
         (ts_7d,),
-    ).fetchall()
+    )
 
-    # Group timestamps by labeler, cap per labeler
-    per_labeler: dict[str, list[str]] = defaultdict(list)
-    cap = 5000
-    for r in rows:
-        did = r["labeler_did"]
-        if len(per_labeler[did]) < cap:
-            per_labeler[did].append(r["ts"])
-
-    # Compute inter-arrival deltas
     result: dict[str, list[float]] = {}
-    for did, ts_list in per_labeler.items():
-        if len(ts_list) < 2:
-            result[did] = []
+    cap = 5000
+    current_did: str | None = None
+    prev_ts = None
+    count = 0
+    deltas: list[float] = []
+
+    for r in cursor:
+        did = r["labeler_did"]
+        if did != current_did:
+            # Flush previous labeler
+            if current_did is not None:
+                result[current_did] = deltas
+            current_did = did
+            prev_ts = parse_ts(r["ts"])
+            count = 1
+            deltas = []
             continue
-        deltas = []
-        prev = parse_ts(ts_list[0])
-        for t in ts_list[1:]:
-            cur = parse_ts(t)
-            delta = (cur - prev).total_seconds()
-            if delta >= 0:
-                deltas.append(delta)
-            prev = cur
-        result[did] = deltas
+
+        count += 1
+        if count > cap:
+            continue
+
+        cur = parse_ts(r["ts"])
+        delta = (cur - prev_ts).total_seconds()
+        if delta >= 0:
+            deltas.append(delta)
+        prev_ts = cur
+
+    # Flush last labeler
+    if current_did is not None:
+        result[current_did] = deltas
+
     return result
 
 
@@ -621,6 +633,104 @@ def _compute_labeler_lag_7d(conn) -> None:
         )
 
 
+def _compute_reversal_stats_7d(conn) -> None:
+    """Compute per-labeler reversal (apply→negate) stats from label_events (last 7 days)."""
+    cutoff_epoch = int(time.time()) - (7 * 86400)
+    # ISO cutoff lets SQLite prune rows before expensive epoch conversion + sort
+    cutoff_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(cutoff_epoch))
+
+    cursor = conn.execute("""
+        WITH e AS (
+            SELECT labeler_did, uri, val, neg,
+                   CAST(strftime('%s', ts) AS INTEGER) AS ts_epoch
+            FROM label_events
+            WHERE uri LIKE 'at://%/app.bsky.feed.post/%'
+              AND ts >= ?
+        )
+        SELECT * FROM e
+        WHERE ts_epoch IS NOT NULL AND ts_epoch >= ?
+        ORDER BY labeler_did, uri, val, ts_epoch
+    """, (cutoff_iso, cutoff_epoch))
+
+    events_by_labeler: dict[str, int] = defaultdict(int)
+    truncated_labelers: set[str] = set()
+    per_labeler: dict[str, dict] = defaultdict(
+        lambda: {"apply_events": 0, "apply_groups": 0, "dwells": [], "val_counts": defaultdict(int)}
+    )
+
+    current_group = None
+    last_apply_epoch = None
+    pair_found = False
+
+    for r in cursor:
+        did = r["labeler_did"]
+        events_by_labeler[did] += 1
+        if events_by_labeler[did] > REVERSAL_CAP_PER_LABELER:
+            truncated_labelers.add(did)
+            continue
+
+        group_key = (did, r["uri"], r["val"])
+        if group_key != current_group:
+            # Count the previous group if it had an apply
+            if current_group is not None and last_apply_epoch is not None:
+                per_labeler[current_group[0]]["apply_groups"] += 1
+            current_group = group_key
+            last_apply_epoch = None
+            pair_found = False
+
+        neg = r["neg"]
+        ts_epoch = r["ts_epoch"]
+
+        if neg == 0:
+            per_labeler[did]["apply_events"] += 1
+            last_apply_epoch = ts_epoch
+        elif neg == 1 and last_apply_epoch is not None and not pair_found:
+            dwell = ts_epoch - last_apply_epoch
+            per_labeler[did]["dwells"].append(dwell)
+            val_key = r["val"] if r["val"] is not None else "<null>"
+            per_labeler[did]["val_counts"][val_key] += 1
+            pair_found = True
+
+    # Don't forget the last group
+    if current_group is not None and last_apply_epoch is not None:
+        per_labeler[current_group[0]]["apply_groups"] += 1
+
+    now_epoch = int(time.time())
+    conn.execute("DELETE FROM derived_labeler_reversal_7d")
+
+    for did, stats in per_labeler.items():
+        n_apply_events = stats["apply_events"]
+        n_apply_groups = stats["apply_groups"]
+        dwells = stats["dwells"]
+        n_reversals = len(dwells)
+        pct_reversed = round(n_reversals / n_apply_groups, 4) if n_apply_groups > 0 else 0.0
+
+        if dwells:
+            dwells.sort()
+            p50 = dwells[len(dwells) // 2]
+            p90 = dwells[min(int(len(dwells) * 0.9), len(dwells) - 1)]
+            p95 = dwells[min(int(len(dwells) * 0.95), len(dwells) - 1)]
+            p99 = dwells[min(int(len(dwells) * 0.99), len(dwells) - 1)]
+        else:
+            p50 = p90 = p95 = p99 = None
+
+        val_counts = stats["val_counts"]
+        if val_counts:
+            top_val = max(val_counts, key=val_counts.get)
+            top_val_pct = round(val_counts[top_val] / n_reversals, 4) if n_reversals > 0 else None
+        else:
+            top_val = None
+            top_val_pct = None
+
+        truncated = 1 if did in truncated_labelers else 0
+
+        conn.execute(
+            "INSERT INTO derived_labeler_reversal_7d VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (did, n_apply_events, n_apply_groups, n_reversals, pct_reversed,
+             p50, p90, p95, p99, top_val, top_val_pct, truncated, now_epoch),
+        )
+
+
 def run_derive(conn, config: Config, now: datetime | None = None) -> None:
     """Run regime/risk/coherence derivation (expensive — call less often than scan)."""
     if now is None:
@@ -639,5 +749,10 @@ def run_derive(conn, config: Config, now: datetime | None = None) -> None:
         _compute_labeler_lag_7d(conn)
     except Exception as exc:
         _log.warning("labeler lag 7d compute failed: %s", exc)
+
+    try:
+        _compute_reversal_stats_7d(conn)
+    except Exception as exc:
+        _log.warning("reversal stats 7d compute failed: %s", exc)
 
     conn.commit()

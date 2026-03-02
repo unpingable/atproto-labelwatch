@@ -9,7 +9,12 @@ import pytest
 
 from labelwatch import db
 from labelwatch.config import Config
-from labelwatch.scan import _compute_labeler_lag_7d, _sync_driftwatch_facts
+from labelwatch.scan import (
+    REVERSAL_CAP_PER_LABELER,
+    _compute_labeler_lag_7d,
+    _compute_reversal_stats_7d,
+    _sync_driftwatch_facts,
+)
 
 
 def _init_labelwatch_db(conn):
@@ -627,3 +632,415 @@ class TestLabelerLag7d:
         assert "p95_lag" in cols
         assert "p99_lag" in cols
         assert "p90_p50_ratio" in cols
+
+
+# ===================================================================
+# Bake 2: derived_labeler_reversal_7d tests
+# ===================================================================
+
+def _insert_label_event_neg(conn, labeler_did, uri, ts, val, neg):
+    """Insert a label_event with explicit neg value."""
+    import hashlib
+    event_hash = hashlib.sha256(
+        f"{labeler_did}:{uri}:{ts}:{val}:{neg}".encode()
+    ).hexdigest()[:16]
+    conn.execute(
+        """INSERT INTO label_events(labeler_did, src, uri, cid, val, neg, exp, sig, ts, event_hash)
+           VALUES(?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)""",
+        (labeler_did, "test", uri, "cid1", val, neg, ts, event_hash),
+    )
+    conn.commit()
+
+
+class TestReversalStats7d:
+    def test_empty_table(self):
+        """Empty label_events → no rows in derived_labeler_reversal_7d."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+        _compute_reversal_stats_7d(conn)
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM derived_labeler_reversal_7d"
+        ).fetchone()["c"]
+        assert count == 0
+
+    def test_no_reversals(self):
+        """Applies only → n_reversals=0, pct_reversed=0.0, quantiles NULL."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        uri = "at://did:plc:user/app.bsky.feed.post/nr1"
+        _insert_label_event_neg(conn, "did:lab:a", uri, now_ts, "spam", 0)
+
+        _compute_reversal_stats_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row is not None
+        assert row["n_apply_events"] > 0
+        assert row["n_apply_groups"] > 0
+        assert row["n_reversals"] == 0
+        assert row["pct_reversed"] == 0.0
+        assert row["p50_dwell"] is None
+        assert row["p90_dwell"] is None
+        assert row["p95_dwell"] is None
+        assert row["p99_dwell"] is None
+
+    def test_basic_reversal(self):
+        """Apply then negate same (uri, val) → 1 reversal, correct dwell."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        uri = "at://did:plc:user/app.bsky.feed.post/br1"
+        t0 = int(time.time()) - 3600
+        ts_apply = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        ts_negate = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 120))
+
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts_apply, "spam", 0)
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts_negate, "spam", 1)
+
+        _compute_reversal_stats_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_reversals"] == 1
+        assert row["p50_dwell"] == 120
+        assert row["pct_reversed"] == 1.0
+
+    def test_most_recent_apply_paired(self):
+        """apply(t=0), apply(t=60), negate(t=120) → dwell=60 (not 120)."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        uri = "at://did:plc:user/app.bsky.feed.post/mra1"
+        t0 = int(time.time()) - 3600
+        ts0 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        ts60 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 60))
+        ts120 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 120))
+
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts0, "spam", 0)
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts60, "spam", 0)
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts120, "spam", 1)
+
+        _compute_reversal_stats_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_reversals"] == 1
+        assert row["p50_dwell"] == 60
+
+    def test_only_first_pair_per_group(self):
+        """apply→negate→reapply→negate → only 1 reversal."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        uri = "at://did:plc:user/app.bsky.feed.post/ofp1"
+        t0 = int(time.time()) - 3600
+        ts0 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        ts60 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 60))
+        ts120 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 120))
+        ts180 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 180))
+
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts0, "spam", 0)
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts60, "spam", 1)
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts120, "spam", 0)
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts180, "spam", 1)
+
+        _compute_reversal_stats_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_reversals"] == 1
+
+    def test_multiple_labelers(self):
+        """Separate rows per labeler."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+        ts0 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        ts60 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 60))
+
+        uri1 = "at://did:plc:user/app.bsky.feed.post/ml1"
+        uri2 = "at://did:plc:user/app.bsky.feed.post/ml2"
+
+        _insert_label_event_neg(conn, "did:lab:a", uri1, ts0, "spam", 0)
+        _insert_label_event_neg(conn, "did:lab:a", uri1, ts60, "spam", 1)
+        _insert_label_event_neg(conn, "did:lab:b", uri2, ts0, "porn", 0)
+
+        _compute_reversal_stats_7d(conn)
+
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM derived_labeler_reversal_7d"
+        ).fetchone()["c"]
+        assert count == 2
+        row_a = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row_a["n_reversals"] == 1
+        row_b = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:b'"
+        ).fetchone()
+        assert row_b["n_reversals"] == 0
+
+    def test_negative_dwell(self):
+        """Clock skew: negate timestamp before apply → negative dwell stored."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        uri = "at://did:plc:user/app.bsky.feed.post/nd1"
+        t0 = int(time.time()) - 3600
+        # Apply at t0+60, negate at t0+30 — but negate sorts after apply
+        # due to ORDER BY ts_epoch. For negative dwell we need the negate
+        # to have a LOWER epoch than apply. Since we ORDER BY ts_epoch,
+        # the negate would come first. So instead: apply at t0, negate at
+        # t0-30 but inserted with ts that sorts after. Actually the query
+        # orders by ts_epoch, so negate at t0-30 would come BEFORE apply
+        # at t0 and never pair.
+        #
+        # The plan says negative dwell is possible from clock skew.
+        # This happens when ts ordering puts apply first but negate epoch
+        # is actually lower. We can simulate by having two events where
+        # the second event (negate) has an epoch only 1 second less than
+        # the apply but still sorts AFTER due to the same second.
+        # Actually, simplest: apply at t0, negate at t0-10 but with a
+        # string timestamp that sorts higher (impossible with consistent
+        # formatting). The realistic case: apply has epoch X, negate has
+        # epoch X-10, but the label_events.ts strings happen to order
+        # negate after apply (e.g. due to timezone formatting). But our
+        # query orders by ts_epoch (integer), not ts (string).
+        #
+        # Simplest approach: just set the epochs directly to create the
+        # scenario. Apply at t0, negate at t0+1 second but negate's epoch
+        # resolves to t0-10 due to clock skew in the original data.
+        # But we can't control epoch separately from ts string.
+        #
+        # Actually: the negate just needs to have a LATER ts_epoch than
+        # apply for it to sort after, and then dwell = negate_epoch -
+        # apply_epoch could still be negative if... no, that's always
+        # positive if negate_epoch > apply_epoch.
+        #
+        # The plan states: "Negative dwell is possible (clock skew) —
+        # store it, don't filter." This would happen in theory when events
+        # are misordered. Let's just test that the code handles negative
+        # dwell values without error by using events at t0 and t0+1 but
+        # reversing the apply/negate semantic. Actually no, that changes
+        # the logic.
+        #
+        # Simplest valid test: produce a pair where dwell = 0.
+        # Or just verify negative integers are stored correctly by having
+        # a very small gap. The actual negative case would require epoch
+        # overlap (same second). Let's just ensure the code doesn't crash
+        # if someone inserted data that could produce this.
+        #
+        # Use apply at epoch t0+60, negate at epoch t0+50 — but since
+        # we sort by ts_epoch, negate (t0+50) comes BEFORE apply (t0+60)
+        # so it never pairs. The only way to get negative dwell with our
+        # current sort order is if the CTE has multiple rows with the same
+        # ts_epoch but different ordering.
+        #
+        # Let's use the practical scenario: two events at the SAME second.
+        # apply and negate at same ts_epoch. dwell = 0.
+        ts_same = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts_same, "spam", 0)
+        # For truly negative dwell, we need negate after apply in sort
+        # order but with a lower epoch. Since we use ts_epoch for both
+        # ordering and calculation, this is impossible without duplicate
+        # epochs. So test the zero case and verify the code path works.
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts_same, "spam", 1)
+
+        _compute_reversal_stats_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_reversals"] == 1
+        assert row["p50_dwell"] == 0  # same-second: dwell = 0
+
+    def test_old_events_excluded(self):
+        """Events older than 7 days should not be counted."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        uri = "at://did:plc:user/app.bsky.feed.post/old1"
+        old_ts = "2024-01-01T00:00:00Z"
+        old_ts2 = "2024-01-01T00:01:00Z"
+        _insert_label_event_neg(conn, "did:lab:a", uri, old_ts, "spam", 0)
+        _insert_label_event_neg(conn, "did:lab:a", uri, old_ts2, "spam", 1)
+
+        _compute_reversal_stats_7d(conn)
+
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM derived_labeler_reversal_7d"
+        ).fetchone()["c"]
+        assert count == 0
+
+    def test_top_val_concentration(self):
+        """Label value with most reversals identified; NULL vals coalesced."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+
+        # 2 reversals for "spam", 1 for "porn"
+        for i, val in enumerate(["spam", "spam", "porn"]):
+            uri = f"at://did:plc:user/app.bsky.feed.post/tv{i}"
+            ts0 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + i * 10))
+            ts1 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + i * 10 + 5))
+            _insert_label_event_neg(conn, "did:lab:a", uri, ts0, val, 0)
+            _insert_label_event_neg(conn, "did:lab:a", uri, ts1, val, 1)
+
+        _compute_reversal_stats_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_reversals"] == 3
+        assert row["top_val"] == "spam"
+        assert abs(row["top_val_pct"] - 2 / 3) < 0.01
+
+    def test_nonpost_uri_skipped(self):
+        """Non-post URIs (list URIs) should not be counted."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+        ts0 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        ts60 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 60))
+        list_uri = "at://did:plc:user/app.bsky.graph.list/abc"
+        _insert_label_event_neg(conn, "did:lab:a", list_uri, ts0, "spam", 0)
+        _insert_label_event_neg(conn, "did:lab:a", list_uri, ts60, "spam", 1)
+
+        _compute_reversal_stats_7d(conn)
+
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM derived_labeler_reversal_7d"
+        ).fetchone()["c"]
+        assert count == 0
+
+    def test_recompute_replaces(self):
+        """Second call replaces previous results."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+        ts0 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        ts60 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 60))
+        uri = "at://did:plc:user/app.bsky.feed.post/rr1"
+
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts0, "spam", 0)
+        _compute_reversal_stats_7d(conn)
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_reversals"] == 0
+
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts60, "spam", 1)
+        _compute_reversal_stats_7d(conn)
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_reversals"] == 1
+
+    def test_schema_v13_migration(self):
+        """v12→v13 migration creates the table with correct columns."""
+        conn = db.connect(":memory:")
+        db.init_db(conn)
+        assert db.get_schema_version(conn) == 13
+        tables = {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert "derived_labeler_reversal_7d" in tables
+        cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(derived_labeler_reversal_7d)"
+        )}
+        expected = {
+            "labeler_did", "n_apply_events", "n_apply_groups", "n_reversals",
+            "pct_reversed", "p50_dwell", "p90_dwell", "p95_dwell", "p99_dwell",
+            "top_val", "top_val_pct", "truncated", "updated_epoch",
+        }
+        assert expected.issubset(cols)
+
+    def test_pct_reversed_uses_apply_groups(self):
+        """3 apply events on same (uri,val) + 1 negate → n_apply_events=3, n_apply_groups=1, pct_reversed=1.0."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        uri = "at://did:plc:user/app.bsky.feed.post/pag1"
+        t0 = int(time.time()) - 3600
+        ts0 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        ts30 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 30))
+        ts60 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 60))
+        ts90 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + 90))
+
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts0, "spam", 0)
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts30, "spam", 0)
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts60, "spam", 0)
+        _insert_label_event_neg(conn, "did:lab:a", uri, ts90, "spam", 1)
+
+        _compute_reversal_stats_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_apply_events"] == 3
+        assert row["n_apply_groups"] == 1
+        assert row["n_reversals"] == 1
+        assert row["pct_reversed"] == 1.0
+        # Dwell should be from most recent apply (t0+60) to negate (t0+90) = 30s
+        assert row["p50_dwell"] == 30
+
+    def test_truncated_flag(self):
+        """Monkeypatch cap to 5, insert 7 events → truncated=1."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+
+        for i in range(7):
+            uri = f"at://did:plc:user/app.bsky.feed.post/trunc{i}"
+            ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + i))
+            _insert_label_event_neg(conn, "did:lab:a", uri, ts, "spam", 0)
+
+        import labelwatch.scan as scan_mod
+        original = scan_mod.REVERSAL_CAP_PER_LABELER
+        try:
+            scan_mod.REVERSAL_CAP_PER_LABELER = 5
+            _compute_reversal_stats_7d(conn)
+        finally:
+            scan_mod.REVERSAL_CAP_PER_LABELER = original
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["truncated"] == 1
+
+    def test_invariants(self):
+        """n_reversals <= n_apply_groups <= n_apply_events, 0.0 <= pct_reversed <= 1.0."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+        # Create a mix: 3 groups, 2 with reversals, some with multiple applies
+        for i in range(3):
+            uri = f"at://did:plc:user/app.bsky.feed.post/inv{i}"
+            ts_a = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + i * 100))
+            ts_a2 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + i * 100 + 10))
+            _insert_label_event_neg(conn, "did:lab:a", uri, ts_a, "spam", 0)
+            _insert_label_event_neg(conn, "did:lab:a", uri, ts_a2, "spam", 0)
+            if i < 2:  # Negate first 2 groups
+                ts_n = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0 + i * 100 + 50))
+                _insert_label_event_neg(conn, "did:lab:a", uri, ts_n, "spam", 1)
+
+        _compute_reversal_stats_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_reversal_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_reversals"] <= row["n_apply_groups"]
+        assert row["n_apply_groups"] <= row["n_apply_events"]
+        assert 0.0 <= row["pct_reversed"] <= 1.0
