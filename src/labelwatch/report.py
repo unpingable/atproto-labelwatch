@@ -165,6 +165,7 @@ pre { background: var(--pre-bg); padding: 0.5rem; border-radius: 4px; overflow-x
 .reference-lane { border: 2px solid var(--ref-border); background: var(--ref-bg); padding: 1rem; border-radius: 6px; margin-bottom: 1.5rem; }
 .reference-lane h2 { margin-top: 0; color: var(--link); }
 .badge-low-conf { background: var(--badge-lowconf-bg); color: var(--badge-lowconf-fg); font-weight: normal; }
+.badge-obs { background: var(--badge-burst-bg); color: var(--badge-burst-fg); font-style: italic; }
 .endpoint-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 0.3rem; vertical-align: middle; }
 .endpoint-ok { background: #28a745; }
 .endpoint-warn { background: #ffc107; }
@@ -430,8 +431,20 @@ def _hourly_counts(conn, labeler_did: str, start: str, end: str, buckets: int = 
     return counts
 
 
+def _data_gap_badge(coverage_ratio: Optional[float]) -> tuple[str, str]:
+    """Return (label, css_class) for a data gap badge based on current coverage.
+
+    Ongoing gap (coverage still low): amber "Obs: gap"
+    Recovered (gap in 7d window but coverage restored): grey "Obs: gap (recovered)"
+    """
+    if coverage_ratio is not None and coverage_ratio < 0.5:
+        return ("Obs: gap", "badge-obs")
+    return ("Obs: gap (recovered)", "badge-low-conf")
+
+
 def _labeler_badges(conn, labeler_did: str, start: str, end: str,
-                    regime_state: Optional[str] = None) -> List[tuple[str, str]]:
+                    regime_state: Optional[str] = None,
+                    coverage_ratio: Optional[float] = None) -> List[tuple[str, str]]:
     if regime_state == "warming_up":
         return [("Warming up", "badge-low-conf")]
     alert_rows = conn.execute(
@@ -449,7 +462,7 @@ def _labeler_badges(conn, labeler_did: str, start: str, end: str,
     if "flip_flop" in rules_fired:
         badges.append(("Reversal-heavy", "badge-flipflop"))
     if "data_gap" in rules_fired:
-        badges.append(("Data gap", "badge-churn"))
+        badges.append(_data_gap_badge(coverage_ratio))
     if not badges:
         badges.append(("Stable", "badge-stable"))
     return badges
@@ -629,6 +642,20 @@ def _badge_explainer_html(summary: dict, latest_alerts_by_rule: Optional[dict] =
     elif tempo == "unknown":
         items.append("<li><strong>Unknown tempo</strong>: Insufficient data to classify.</li>")
 
+    # Data gap explainer (from non-axis badges)
+    if latest_alerts_by_rule and "data_gap" in latest_alerts_by_rule:
+        try:
+            dg_inputs = json.loads(latest_alerts_by_rule["data_gap"].get("inputs_json", "{}"))
+            cov_pct = int(dg_inputs.get("coverage_ratio", 0) * 100)
+            last_ok = dg_inputs.get("last_success_ts")
+            last_ok_str = f" Last successful fetch: {_human_ts(last_ok)}." if last_ok else ""
+            items.append(
+                f"<li><strong>Obs: gap</strong>: Ingest coverage {cov_pct}% "
+                f"(threshold: {int(dg_inputs.get('coverage_threshold', 0.5) * 100)}%).{last_ok_str}</li>"
+            )
+        except (json.JSONDecodeError, AttributeError):
+            items.append("<li><strong>Obs: gap</strong>: Ingest coverage below threshold.</li>")
+
     if not items:
         return ""
 
@@ -640,7 +667,7 @@ def _badge_explainer_html(summary: dict, latest_alerts_by_rule: Optional[dict] =
     )
 
 
-def _non_axis_badges(rules_fired: set) -> List[tuple[str, str]]:
+def _non_axis_badges(rules_fired: set, coverage_ratio: Optional[float] = None) -> List[tuple[str, str]]:
     """Return non-axis badges (target-fixated, high churn, data gap) from rules fired."""
     badges = []
     if "target_concentration" in rules_fired:
@@ -648,12 +675,13 @@ def _non_axis_badges(rules_fired: set) -> List[tuple[str, str]]:
     if "churn_index" in rules_fired:
         badges.append(("High churn", "badge-churn"))
     if "data_gap" in rules_fired:
-        badges.append(("Data gap", "badge-churn"))
+        badges.append(_data_gap_badge(coverage_ratio))
     return badges
 
 
 def _labeler_health_card(conn, labeler_did: str, start_7d: str, now_ts: str, sparkline_counts: List[int],
-                         regime_state: Optional[str] = None) -> str:
+                         regime_state: Optional[str] = None,
+                         coverage_ratio: Optional[float] = None) -> str:
     events_7d = conn.execute(
         "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=? AND ts>=? AND ts<=?",
         (labeler_did, start_7d, now_ts),
@@ -668,7 +696,7 @@ def _labeler_health_card(conn, labeler_did: str, start_7d: str, now_ts: str, spa
     ).fetchone()["c"]
     target_spread = f"{unique_targets}/{events_7d}" if events_7d else "0/0"
     sparkline = _sparkline_svg(sparkline_counts)
-    badges = _labeler_badges(conn, labeler_did, start_7d, now_ts, regime_state=regime_state)
+    badges = _labeler_badges(conn, labeler_did, start_7d, now_ts, regime_state=regime_state, coverage_ratio=coverage_ratio)
 
     return f"""
 <div class="card">
@@ -1136,7 +1164,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         for r in ref_labelers:
             did = r["labeler_did"]
             counts = _hourly_counts(conn, did, start_7d, now_ts)
-            ref_card = _labeler_health_card(conn, did, start_7d, now_ts, counts, regime_state=r["regime_state"])
+            ref_card = _labeler_health_card(conn, did, start_7d, now_ts, counts, regime_state=r["regime_state"], coverage_ratio=r["coverage_ratio"])
             ref_cards += f'<h3>{_labeler_link(did, handles, display_names)}</h3>{ref_card}'
         reference_lane = (
             f'<div class="reference-lane"><h2>Reference labelers</h2>'
@@ -1201,7 +1229,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             if summary["tempo"] != "unknown":
                 axis_badges.append((summary["tempo"].capitalize() if summary["tempo"] != "burst-prone" else "Burst-prone",
                                     summary["tempo_css"]))
-            extra = _non_axis_badges(rules_fired)
+            extra = _non_axis_badges(rules_fired, coverage_ratio=r["coverage_ratio"])
             behavior_html = _badges_html(axis_badges + extra)
             if not axis_badges and not extra:
                 behavior_html = '<span class="small">--</span>'
@@ -1258,7 +1286,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     <tr><td><span class="badge badge-flipflop">Reversal-heavy</span></td><td>Labels things, then unlabels them at unusually high rates</td></tr>
     <tr><td><span class="badge badge-fixated">Target-fixated</span></td><td>Concentrates labels on a small number of accounts</td></tr>
     <tr><td><span class="badge badge-flipflop">Flappy</span></td><td>Rapidly alternates between labeling and unlabeling the same targets</td></tr>
-    <tr><td><span class="badge badge-churn">Data gap</span></td><td>Periods where expected label data is missing</td></tr>
+    <tr><td><span class="badge badge-obs">Obs: gap</span></td><td>We can\u2019t see this labeler clearly right now (ingest failures). <em>Ongoing</em> = still degraded; <em>recovered</em> = gap was in last 7d but coverage restored</td></tr>
   </table>
 </div>
 """
@@ -1332,7 +1360,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         _write_json(os.path.join(tmp_dir, "labeler", f"{slug}.json"), payload)
 
         sparkline_counts = _hourly_counts(conn, did, start_7d, now_ts)
-        health_card = _labeler_health_card(conn, did, start_7d, now_ts, sparkline_counts, regime_state=row["regime_state"])
+        health_card = _labeler_health_card(conn, did, start_7d, now_ts, sparkline_counts, regime_state=row["regime_state"], coverage_ratio=row["coverage_ratio"])
 
         # Data maturity line (below health card)
         maturity_line = _data_maturity_line(row)
@@ -1368,7 +1396,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             if labeler_summary["tempo"] != "unknown":
                 tempo_label = "Burst-prone" if labeler_summary["tempo"] == "burst-prone" else labeler_summary["tempo"].capitalize()
                 axis_badges.append((tempo_label, labeler_summary["tempo_css"]))
-            extra_badges = _non_axis_badges(labeler_rules_fired)
+            extra_badges = _non_axis_badges(labeler_rules_fired, coverage_ratio=row["coverage_ratio"])
             all_badges = axis_badges + extra_badges
             behavior_section = f'<div>{_badges_html(all_badges)}</div>' if all_badges else ''
             if labeler_summary["one_liner"]:
