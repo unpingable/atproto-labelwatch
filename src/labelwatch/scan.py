@@ -628,7 +628,10 @@ def _compute_labeler_lag_7d(conn) -> None:
             p90_p50_ratio = None
 
         conn.execute(
-            "INSERT INTO derived_labeler_lag_7d VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            """INSERT INTO derived_labeler_lag_7d
+               (labeler_did, n_total, null_rate, p50_lag, p90_lag,
+                p95_lag, p99_lag, p90_p50_ratio, neg_rate, updated_epoch)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (did, n_total, null_rate, p50, p90, p95, p99, p90_p50_ratio, neg_rate, now_epoch),
         )
 
