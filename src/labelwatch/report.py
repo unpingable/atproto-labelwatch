@@ -16,6 +16,19 @@ from .receipts import config_hash as config_hash_fn
 from .utils import format_ts, get_git_commit, parse_ts
 
 
+def _human_ts(iso_ts: Optional[str]) -> str:
+    """Format ISO timestamp as human-readable: 'Mar 2, 2:30 PM UTC'."""
+    if not iso_ts:
+        return "never"
+    try:
+        dt = parse_ts(iso_ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.strftime("%-d %b %Y, %-I:%M %p UTC")
+    except Exception:
+        return str(iso_ts)
+
+
 def _did_slug(did: str) -> str:
     """Convert DID to URL-safe slug: did:plc:abc123 → did-plc-abc123."""
     return did.replace(":", "-")
@@ -870,7 +883,7 @@ def _alert_rollups(alerts_list, handles, display_names) -> str:
             f"<td><a href=\"alert/{r['id']}.html\">{r['id']}</a></td>"
             f"<td>{escape(r['rule_id'])}{conf_badge}</td>"
             f"<td>{escape(labeler_cell)}</td>"
-            f"<td>{escape(r['ts'])}</td>"
+            f"<td>{escape(_human_ts(r['ts']))}</td>"
             f"</tr>"
         )
 
@@ -886,7 +899,7 @@ def _alert_rollups(alerts_list, handles, display_names) -> str:
                     f"<td><a href=\"alert/{r['id']}.html\">{r['id']}</a></td>"
                     f"<td>{escape(r['rule_id'])}{conf_badge}</td>"
                     f"<td>{escape(labeler_cell)}</td>"
-                    f"<td>{escape(r['ts'])}</td>"
+                    f"<td>{escape(_human_ts(r['ts']))}</td>"
                     f"</tr>"
                 )
         else:
@@ -899,7 +912,7 @@ def _alert_rollups(alerts_list, handles, display_names) -> str:
                     f"<td><a href=\"alert/{r['id']}.html\">{r['id']}</a></td>"
                     f"<td>{escape(r['rule_id'])}</td>"
                     f"<td>{escape(labeler_cell)}</td>"
-                    f"<td>{escape(r['ts'])}</td>"
+                    f"<td>{escape(_human_ts(r['ts']))}</td>"
                     f"</tr>"
                 )
             html_parts.append(
@@ -1050,14 +1063,16 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     _write_json(os.path.join(tmp_dir, "alerts.json"), alert_rows_json)
 
     # --- Staleness indicators ---
+    alerts_7d_total = sum(alerts_7d.values()) if alerts_7d else 0
+    labelers_with_alerts_7d = len(set(r["labeler_did"] for r in alerts if r["ts"] >= start_7d))
     staleness_cards = f"""
 <div class="grid">
-  <div class="card"><h3>Generated</h3><div>{escape(now_ts)}</div></div>
-  <div class="card"><h3>Last ingest</h3><div>{escape(str(last_ingest or 'never'))}</div></div>
-  <div class="card"><h3>Last scan</h3><div>{escape(str(last_scan or 'never'))}</div></div>
-  <div class="card"><h3>Last discovery</h3><div>{escape(str(last_discovery or 'never'))}</div></div>
-  <div class="card"><h3>Labelers</h3><div>{len(labelers)}</div></div>
-  <div class="card"><h3>Alerts</h3><div>{len(alerts)}</div></div>
+  <div class="card"><h3>Last updated</h3><div>{escape(_human_ts(now_ts))}</div></div>
+  <div class="card"><h3>Last ingest</h3><div>{escape(_human_ts(last_ingest))}</div></div>
+  <div class="card"><h3>Last scan</h3><div>{escape(_human_ts(last_scan))}</div></div>
+  <div class="card"><h3>Last discovery</h3><div>{escape(_human_ts(last_discovery))}</div></div>
+  <div class="card"><h3>Labelers tracked</h3><div>{len(labelers)}</div></div>
+  <div class="card"><h3>Alerts (7d)</h3><div>{alerts_7d_total}</div><div class="small">across {labelers_with_alerts_7d} labeler{"s" if labelers_with_alerts_7d != 1 else ""}</div></div>
 """
     if skew_seconds > 0:
         staleness_cards += f'  <div class="card"><h3>Clock skew</h3><div>{skew_seconds}s</div></div>'
@@ -1123,7 +1138,12 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             counts = _hourly_counts(conn, did, start_7d, now_ts)
             ref_card = _labeler_health_card(conn, did, start_7d, now_ts, counts, regime_state=r["regime_state"])
             ref_cards += f'<h3>{_labeler_link(did, handles, display_names)}</h3>{ref_card}'
-        reference_lane = f'<div class="reference-lane"><h2>Reference labelers</h2>{ref_cards}</div>'
+        reference_lane = (
+            f'<div class="reference-lane"><h2>Reference labelers</h2>'
+            f'<p class="labeler-context">These are the highest-volume or most structurally important labelers on the network. '
+            f'Their behavioral patterns are worth tracking because they affect the most users.</p>'
+            f'{ref_cards}</div>'
+        )
 
     # --- Triage view with tabs ---
     # Pre-compute per-labeler data attributes
@@ -1194,8 +1214,8 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             f'<td>{_labeler_link(did, handles, display_names)}</td>'
             f'<td>{_visibility_badge(vis_class)}</td>'
             f'<td>{_endpoint_dot(ep_status)}</td>'
-            f'<td>{escape(str(r["first_seen"]))}</td>'
-            f'<td>{escape(str(r["last_seen"]))}</td>'
+            f'<td>{escape(_human_ts(r["first_seen"]))}</td>'
+            f'<td>{escape(_human_ts(r["last_seen"]))}</td>'
             f'<td>{spark}</td>'
             f'<td>{behavior_html}</td>'
             f'</tr>'
@@ -1212,14 +1232,34 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     if naive_count > 0:
         naive_banner = f"<p class=\"small\">Note: {naive_count} timestamps lacked timezone info and were assumed UTC.</p>"
 
-    explainer_html = """
+    explainer_html = f"""
 <div class="explainer">
-  <p><strong>Labelwatch</strong> tracks labeler services on the Bluesky network.</p>
-  <p>A <dfn>labeler</dfn> is a third-party service that attaches tags to posts or accounts.
-  Your Bluesky app decides what to do with those tags \u2014 ignore, warn, or hide.
-  Most labelers are topical or curational (yes, including K-pop). Some are moderation/safety.</p>
-  <p>This page shows what labelers exist, what they\u2019re emitting, and when behavior changes.
-  It observes \u2014 it doesn\u2019t moderate anything by itself.</p>
+  <p>Bluesky doesn\u2019t have a single moderation team deciding what you see.
+  Instead, it has <dfn>labelers</dfn> \u2014 independent services that tag posts and accounts
+  with metadata. Your app then decides what to do with those tags: show them, warn you,
+  or hide them. It\u2019s moderation as a protocol, not a policy.</p>
+  <p>That\u2019s a genuinely new architecture. It also means nobody\u2019s watching the watchers.
+  There are currently {len(labelers)} labelers on the network. Some do safety moderation.
+  Some tag K-pop stans. Some are test instances someone spun up and forgot about.
+  A few show behavioral patterns \u2014 rapid label-then-unlabel cycles, burst targeting of
+  specific accounts, unexplained gaps in coverage \u2014 that are worth paying attention to
+  whether they\u2019re bugs or policy.</p>
+  <p>Labelwatch observes this layer. It doesn\u2019t moderate anything. It ingests label events
+  from every declared labeler on the network, runs anomaly detection, and surfaces behavioral
+  patterns so you can decide what they mean. Think of it as an audit log for the governance
+  layer itself.</p>
+</div>
+<div class="explainer" style="margin-top:0.75rem;">
+  <p style="margin-bottom:0.5rem;"><strong>Behavioral tags at a glance</strong></p>
+  <table style="font-size:0.9rem;margin:0;">
+    <tr><td><span class="badge badge-stable">Stable</span></td><td>Consistent labeling pattern, no anomalous regime changes</td></tr>
+    <tr><td><span class="badge badge-burst">Burst-prone</span></td><td>Issues many labels in short spikes rather than steadily</td></tr>
+    <tr><td><span class="badge badge-churn">High churn</span></td><td>Frequently adds then removes labels (high turnover rate)</td></tr>
+    <tr><td><span class="badge badge-flipflop">Reversal-heavy</span></td><td>Labels things, then unlabels them at unusually high rates</td></tr>
+    <tr><td><span class="badge badge-fixated">Target-fixated</span></td><td>Concentrates labels on a small number of accounts</td></tr>
+    <tr><td><span class="badge badge-flipflop">Flappy</span></td><td>Rapidly alternates between labeling and unlabeling the same targets</td></tr>
+    <tr><td><span class="badge badge-churn">Data gap</span></td><td>Periods where expected label data is missing</td></tr>
+  </table>
 </div>
 """
 
@@ -1251,7 +1291,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             census_body += f'<div class="census-card"><div class="value">{cnt}</div><div class="label">{escape(val)}</div></div>'
         census_body += '</div>'
 
-    census_body += f'<p class="small">Last census: {escape(now_ts)}</p>'
+    census_body += f'<p class="small">Last census: {escape(_human_ts(now_ts))}</p>'
     census_body += '<p><a href="index.html">Back to overview</a></p>'
     census_html = _layout("Labelwatch Census", census_body)
     _write(os.path.join(tmp_dir, "census.html"), census_html)
@@ -1382,8 +1422,8 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
   <div class="card"><h3>Reachability</h3><div>{ep_dot} {escape(reach_state)}</div></div>
   <div class="card"><h3>Auditability</h3><div>{escape(audit)}</div></div>
   <div class="card"><h3>Class</h3><div>{escape(class_label)}</div></div>
-  <div class="card"><h3>First seen</h3><div>{escape(str(row['first_seen']))}</div></div>
-  <div class="card"><h3>Last seen</h3><div>{escape(str(row['last_seen']))}</div></div>
+  <div class="card"><h3>First seen</h3><div>{escape(_human_ts(row['first_seen']))}</div></div>
+  <div class="card"><h3>Last seen</h3><div>{escape(_human_ts(row['last_seen']))}</div></div>
   <div class="card"><h3>Events (24h)</h3><div>{events_24h}</div></div>
   <div class="card"><h3>Events (7d)</h3><div>{events_7d}</div></div>
   <div class="card"><h3>Alerts</h3><div>{len(alerts_rows)}</div></div>
@@ -1410,7 +1450,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             audit_band = row["auditability_risk_band"] or ""
             inf_band = row["inference_risk_band"] or ""
             coh_band = row["temporal_coherence_band"] or ""
-            derived_ts = f' <span class="small">as of {escape(derived_at)}</span>' if derived_at else ""
+            derived_ts = f' <span class="small">as of {escape(_human_ts(derived_at))}</span>' if derived_at else ""
             scores_card = f"""
 <h2>Derived scores{derived_ts}</h2>
 <div class="grid">
@@ -1437,7 +1477,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             probe_rows = []
             for p in probe_history:
                 probe_rows.append([
-                    escape(p["ts"]),
+                    escape(_human_ts(p["ts"])),
                     escape(p["normalized_status"]),
                     str(p["http_status"] or ""),
                     str(p["latency_ms"] or "") + ("ms" if p["latency_ms"] else ""),
@@ -1455,7 +1495,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
                 f"<tr{row_class}>"
                 f"<td><a href=\"../alert/{r['id']}.html\">{r['id']}</a></td>"
                 f"<td>{escape(r['rule_id'])}</td>"
-                f"<td>{escape(r['ts'])}</td>"
+                f"<td>{escape(_human_ts(r['ts']))}</td>"
                 f"</tr>"
             )
         alert_head = "<tr><th>id</th><th>rule_id</th><th>ts</th></tr>"
@@ -1488,7 +1528,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
             ["field", "value"],
             [["rule_id", escape(row["rule_id"])],
              ["labeler_did", escape(row["labeler_did"])],
-             ["ts", escape(row["ts"])],
+             ["ts", escape(_human_ts(row["ts"]))],
              ["config_hash", f"<code>{escape(row['config_hash'])}</code>"],
              ["receipt_hash", f"<code>{escape(row['receipt_hash'])}</code>"],
              ["inputs", f"<pre>{escape(row['inputs_json'])}</pre>"],
