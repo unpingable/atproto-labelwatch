@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -180,6 +180,19 @@ CREATE TABLE IF NOT EXISTS derived_labeler_reversal_7d (
     top_val          TEXT,
     top_val_pct      REAL,
     truncated        INTEGER NOT NULL DEFAULT 0,
+    updated_epoch    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS derived_labeler_boundary_load_7d (
+    labeler_did      TEXT PRIMARY KEY,
+    n_matched        INTEGER NOT NULL,
+    n_negative       INTEGER NOT NULL,
+    n_sub_1s         INTEGER NOT NULL,
+    n_sub_5s         INTEGER NOT NULL,
+    n_sub_30s        INTEGER NOT NULL,
+    n_sub_60s        INTEGER NOT NULL,
+    p5_lag           INTEGER,
+    p10_lag          INTEGER,
     updated_epoch    INTEGER NOT NULL
 );
 
@@ -523,6 +536,23 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         """)
         set_schema_version(conn, 13)
         current = 13
+    if current == 13 and target >= 14:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS derived_labeler_boundary_load_7d (
+                labeler_did      TEXT PRIMARY KEY,
+                n_matched        INTEGER NOT NULL,
+                n_negative       INTEGER NOT NULL,
+                n_sub_1s         INTEGER NOT NULL,
+                n_sub_5s         INTEGER NOT NULL,
+                n_sub_30s        INTEGER NOT NULL,
+                n_sub_60s        INTEGER NOT NULL,
+                p5_lag           INTEGER,
+                p10_lag          INTEGER,
+                updated_epoch    INTEGER NOT NULL
+            )
+        """)
+        set_schema_version(conn, 14)
+        current = 14
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 

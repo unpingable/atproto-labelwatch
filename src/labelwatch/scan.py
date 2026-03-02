@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
+from bisect import bisect_left
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -734,6 +736,78 @@ def _compute_reversal_stats_7d(conn) -> None:
         )
 
 
+def _nearest_rank(sorted_vals, p):
+    """Nearest-rank percentile on a pre-sorted list."""
+    n = len(sorted_vals)
+    if n == 0:
+        return None
+    idx = max(0, math.ceil(p * n) - 1)
+    return sorted_vals[idx]
+
+
+def _compute_boundary_load_7d(conn) -> None:
+    """Compute per-labeler boundary load stats from derived_label_fp (last 7 days).
+
+    Boundary load σ counts labels applied faster than verification thresholds.
+    Uses bisect on sorted non-negative lags for cumulative bucket counts.
+    """
+    cutoff_epoch = int(time.time()) - (7 * 86400)
+
+    rows = conn.execute("""
+        SELECT labeler_did, lag_sec_claimed
+        FROM derived_label_fp
+        WHERE lag_sec_claimed IS NOT NULL
+          AND CAST(strftime('%s', label_ts) AS INTEGER) >= ?
+    """, (cutoff_epoch,)).fetchall()
+    # fetchall() fine — derived_label_fp is ~25K rows
+
+    per_labeler: dict[str, list[int]] = defaultdict(list)
+    for r in rows:
+        per_labeler[r["labeler_did"]].append(r["lag_sec_claimed"])
+
+    now_epoch = int(time.time())
+
+    # Atomic: temp table + swap inside transaction
+    conn.execute("DROP TABLE IF EXISTS tmp_boundary_load")
+    conn.execute("""CREATE TEMP TABLE tmp_boundary_load (
+        labeler_did TEXT PRIMARY KEY, n_matched INTEGER NOT NULL,
+        n_negative INTEGER NOT NULL, n_sub_1s INTEGER NOT NULL,
+        n_sub_5s INTEGER NOT NULL, n_sub_30s INTEGER NOT NULL,
+        n_sub_60s INTEGER NOT NULL, p5_lag INTEGER, p10_lag INTEGER,
+        updated_epoch INTEGER NOT NULL
+    )""")
+
+    for did, lags in per_labeler.items():
+        n_matched = len(lags)
+        n_negative = sum(1 for l in lags if l < 0)
+        non_negative = sorted(l for l in lags if l >= 0)
+
+        # Bucket counts via bisect (cumulative: sub_1s <= sub_5s <= sub_30s <= sub_60s)
+        n_sub_1s = bisect_left(non_negative, 1)
+        n_sub_5s = bisect_left(non_negative, 5)
+        n_sub_30s = bisect_left(non_negative, 30)
+        n_sub_60s = bisect_left(non_negative, 60)
+
+        # Fast-tail percentiles on non-negative lags only
+        p5 = _nearest_rank(non_negative, 0.05)
+        p10 = _nearest_rank(non_negative, 0.10)
+
+        conn.execute(
+            """INSERT INTO tmp_boundary_load
+               (labeler_did, n_matched, n_negative, n_sub_1s, n_sub_5s,
+                n_sub_30s, n_sub_60s, p5_lag, p10_lag, updated_epoch)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (did, n_matched, n_negative, n_sub_1s, n_sub_5s,
+             n_sub_30s, n_sub_60s, p5, p10, now_epoch),
+        )
+
+    # Swap: old data survives if we crashed before this point
+    conn.execute("DELETE FROM derived_labeler_boundary_load_7d")
+    conn.execute("""INSERT INTO derived_labeler_boundary_load_7d
+                    SELECT * FROM tmp_boundary_load""")
+    conn.execute("DROP TABLE IF EXISTS tmp_boundary_load")
+
+
 def run_derive(conn, config: Config, now: datetime | None = None) -> None:
     """Run regime/risk/coherence derivation (expensive — call less often than scan)."""
     if now is None:
@@ -757,5 +831,10 @@ def run_derive(conn, config: Config, now: datetime | None = None) -> None:
         _compute_reversal_stats_7d(conn)
     except Exception as exc:
         _log.warning("reversal stats 7d compute failed: %s", exc)
+
+    try:
+        _compute_boundary_load_7d(conn)
+    except Exception as exc:
+        _log.warning("boundary load 7d compute failed: %s", exc)
 
     conn.commit()
