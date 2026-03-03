@@ -12,9 +12,12 @@ from labelwatch.config import Config
 from labelwatch.scan import (
     REVERSAL_CAP_PER_LABELER,
     _compute_boundary_load_7d,
+    _compute_entropy_7d,
     _compute_labeler_lag_7d,
     _compute_reversal_stats_7d,
+    _shannon_entropy,
     _sync_driftwatch_facts,
+    _update_val_dist_day,
 )
 
 
@@ -951,7 +954,7 @@ class TestReversalStats7d:
         """v12→v13 migration creates the table with correct columns."""
         conn = db.connect(":memory:")
         db.init_db(conn)
-        assert db.get_schema_version(conn) == 14
+        assert db.get_schema_version(conn) == 15
         tables = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}
@@ -1210,7 +1213,7 @@ class TestBoundaryLoad7d:
         """v13→v14 migration creates the table with correct columns."""
         conn = db.connect(":memory:")
         db.init_db(conn)
-        assert db.get_schema_version(conn) == 14
+        assert db.get_schema_version(conn) == 15
         tables = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}
@@ -1312,3 +1315,490 @@ class TestBoundaryLoad7d:
         assert row["n_negative"] + row["n_sub_60s"] <= row["n_matched"]
         assert row["n_matched"] >= 0
         assert row["n_negative"] >= 0
+
+
+# ===================================================================
+# Bake 4: derived_val_dist_day tests
+# ===================================================================
+
+class TestValDistDay:
+    def test_empty_table(self):
+        """Empty label_events → no rows in derived_val_dist_day."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+        _update_val_dist_day(conn)
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM derived_val_dist_day"
+        ).fetchone()["c"]
+        assert count == 0
+
+    def test_basic_aggregation(self):
+        """3 events same day, same val → n=3."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        for i in range(3):
+            uri = f"at://did:plc:user/app.bsky.feed.post/agg{i}"
+            _insert_label_event(conn, "did:lab:a", uri, ts, val="spam")
+
+        _update_val_dist_day(conn)
+
+        rows = conn.execute(
+            "SELECT * FROM derived_val_dist_day WHERE labeler_did='did:lab:a'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["n"] == 3
+        assert rows[0]["val"] == "spam"
+
+    def test_multiple_vals(self):
+        """Events with different vals → separate rows."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        _insert_label_event(conn, "did:lab:a", "at://u/app.bsky.feed.post/mv1", ts, val="spam")
+        _insert_label_event(conn, "did:lab:a", "at://u/app.bsky.feed.post/mv2", ts, val="porn")
+
+        _update_val_dist_day(conn)
+
+        rows = conn.execute(
+            "SELECT val, n FROM derived_val_dist_day WHERE labeler_did='did:lab:a' ORDER BY val"
+        ).fetchall()
+        assert len(rows) == 2
+        vals = {r["val"]: r["n"] for r in rows}
+        assert vals["porn"] == 1
+        assert vals["spam"] == 1
+
+    def test_multiple_days(self):
+        """Events on different days → separate day_epoch rows."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+        t1 = t0 - 86400  # yesterday
+        ts0 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        ts1 = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t1))
+        _insert_label_event(conn, "did:lab:a", "at://u/app.bsky.feed.post/md1", ts0, val="spam")
+        _insert_label_event(conn, "did:lab:a", "at://u/app.bsky.feed.post/md2", ts1, val="spam")
+
+        _update_val_dist_day(conn)
+
+        rows = conn.execute(
+            "SELECT DISTINCT day_epoch FROM derived_val_dist_day WHERE labeler_did='did:lab:a'"
+        ).fetchall()
+        assert len(rows) == 2
+
+    def test_neg_events_excluded(self):
+        """neg=1 events not counted."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        _insert_label_event(conn, "did:lab:a", "at://u/app.bsky.feed.post/ne1", ts, val="spam")
+        _insert_label_event_neg(conn, "did:lab:a", "at://u/app.bsky.feed.post/ne2", ts, "spam", 1)
+
+        _update_val_dist_day(conn)
+
+        rows = conn.execute(
+            "SELECT * FROM derived_val_dist_day WHERE labeler_did='did:lab:a'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["n"] == 1
+
+    def test_nonpost_uri_excluded(self):
+        """Non-post URIs not counted."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        _insert_label_event(conn, "did:lab:a", "at://u/app.bsky.graph.list/abc", ts, val="spam")
+
+        _update_val_dist_day(conn)
+
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM derived_val_dist_day"
+        ).fetchone()["c"]
+        assert count == 0
+
+    def test_recompute_replaces_7d_window(self):
+        """Second call updates last 7 days."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        _insert_label_event(conn, "did:lab:a", "at://u/app.bsky.feed.post/rc1", ts, val="spam")
+
+        _update_val_dist_day(conn)
+        row = conn.execute(
+            "SELECT n FROM derived_val_dist_day WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n"] == 1
+
+        _insert_label_event(conn, "did:lab:a", "at://u/app.bsky.feed.post/rc2", ts, val="spam")
+        _update_val_dist_day(conn)
+
+        row = conn.execute(
+            "SELECT n FROM derived_val_dist_day WHERE labeler_did='did:lab:a' AND val='spam'"
+        ).fetchone()
+        assert row["n"] == 2
+
+    def test_retention_prune(self):
+        """Rows older than 60 days deleted."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        # Manually insert an old row
+        old_day_epoch = ((int(time.time()) // 86400) - 65) * 86400
+        conn.execute(
+            "INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+            ("did:lab:a", old_day_epoch, "spam", 10),
+        )
+        conn.commit()
+
+        _update_val_dist_day(conn)
+
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM derived_val_dist_day WHERE day_epoch = ?",
+            (old_day_epoch,),
+        ).fetchone()["c"]
+        assert count == 0
+
+    def test_val_stored_as_is(self):
+        """Label values are stored directly in derived_val_dist_day."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        t0 = int(time.time()) - 3600
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0))
+        _insert_label_event(conn, "did:lab:a", "at://u/app.bsky.feed.post/vs1", ts, val="spam")
+
+        _update_val_dist_day(conn)
+
+        rows = conn.execute(
+            "SELECT * FROM derived_val_dist_day WHERE labeler_did='did:lab:a'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["val"] == "spam"
+        assert rows[0]["n"] == 1
+
+
+# ===================================================================
+# Bake 4: derived_labeler_entropy_7d tests
+# ===================================================================
+
+class TestEntropy7d:
+    def test_empty_dist(self):
+        """No rows in derived_val_dist_day → no rows in entropy table."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+        _compute_entropy_7d(conn)
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM derived_labeler_entropy_7d"
+        ).fetchone()["c"]
+        assert count == 0
+
+    def test_single_value_labeler(self):
+        """k=1 → entropy=0, h_norm=NULL, n_eff=1.0."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        day_epoch = (int(time.time()) // 86400) * 86400
+        conn.execute(
+            "INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+            ("did:lab:a", day_epoch, "spam", 500),
+        )
+        conn.commit()
+
+        _compute_entropy_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_entropy_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row is not None
+        assert row["n_events_7d"] == 500
+        assert row["k_vals_7d"] == 1
+        assert row["entropy_7d"] == 0.0
+        assert row["h_norm_7d"] is None
+        assert row["n_eff_7d"] == 1.0
+
+    def test_uniform_distribution(self):
+        """4 values each 25% → entropy=2.0, h_norm=1.0, n_eff=4.0."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        day_epoch = (int(time.time()) // 86400) * 86400
+        for val in ["a", "b", "c", "d"]:
+            conn.execute(
+                "INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                ("did:lab:a", day_epoch, val, 100),
+            )
+        conn.commit()
+
+        _compute_entropy_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_entropy_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_events_7d"] == 400
+        assert row["k_vals_7d"] == 4
+        assert abs(row["entropy_7d"] - 2.0) < 0.001
+        assert abs(row["h_norm_7d"] - 1.0) < 0.001
+        assert abs(row["n_eff_7d"] - 4.0) < 0.001
+
+    def test_concentrated_distribution(self):
+        """90% one value, 10% another → h_norm near 0.47, top1_share=0.9."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        day_epoch = (int(time.time()) // 86400) * 86400
+        conn.execute(
+            "INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+            ("did:lab:a", day_epoch, "spam", 900),
+        )
+        conn.execute(
+            "INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+            ("did:lab:a", day_epoch, "porn", 100),
+        )
+        conn.commit()
+
+        _compute_entropy_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_entropy_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert abs(row["top1_share"] - 0.9) < 0.001
+        assert abs(row["h_norm_7d"] - 0.469) < 0.01
+
+    def test_top1_and_top2_share(self):
+        """Verify top1 and top2 share values."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        day_epoch = (int(time.time()) // 86400) * 86400
+        conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                      ("did:lab:a", day_epoch, "spam", 50))
+        conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                      ("did:lab:a", day_epoch, "porn", 30))
+        conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                      ("did:lab:a", day_epoch, "other", 20))
+        conn.commit()
+
+        _compute_entropy_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_entropy_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["top1_val"] == "spam"
+        assert abs(row["top1_share"] - 0.5) < 0.001
+        assert abs(row["top2_share"] - 0.8) < 0.001  # (50+30)/100
+
+    def test_7d_vs_30d_windows(self):
+        """Different distributions in 7d vs 30d → delta_h_norm computed."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        now_epoch = int(time.time())
+        today_epoch = (now_epoch // 86400) * 86400
+        old_day_epoch = today_epoch - 20 * 86400  # 20 days ago (in 30d, not in 7d)
+
+        # 7d: concentrated (k=2, one dominates)
+        conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                      ("did:lab:a", today_epoch, "spam", 900))
+        conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                      ("did:lab:a", today_epoch, "porn", 100))
+
+        # 30d-only: uniform adds to make 30d more uniform overall
+        for val in ["spam", "porn", "hate", "violence"]:
+            conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                          ("did:lab:a", old_day_epoch, val, 250))
+        conn.commit()
+
+        _compute_entropy_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_entropy_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["delta_h_norm"] is not None
+        # 7d is more concentrated than 30d → delta should be negative
+        assert row["delta_h_norm"] < 0
+
+    def test_negative_delta_means_collapse(self):
+        """7d more concentrated than 30d → delta_h_norm < 0."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        now_epoch = int(time.time())
+        today_epoch = (now_epoch // 86400) * 86400
+        old_day_epoch = today_epoch - 15 * 86400
+
+        # 7d: only one value (entropy=0, h_norm=NULL) → delta will be NULL since h_norm_7d is NULL
+        # Let's use k=2 with heavy concentration instead
+        conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                      ("did:lab:a", today_epoch, "spam", 990))
+        conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                      ("did:lab:a", today_epoch, "porn", 10))
+
+        # 30d: more uniform
+        for val in ["spam", "porn", "hate"]:
+            conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                          ("did:lab:a", old_day_epoch, val, 300))
+        conn.commit()
+
+        _compute_entropy_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_entropy_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["delta_h_norm"] is not None
+        assert row["delta_h_norm"] < 0
+
+    def test_multiple_labelers(self):
+        """Separate rows per labeler."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        day_epoch = (int(time.time()) // 86400) * 86400
+        conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                      ("did:lab:a", day_epoch, "spam", 100))
+        conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                      ("did:lab:b", day_epoch, "porn", 200))
+        conn.commit()
+
+        _compute_entropy_7d(conn)
+
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM derived_labeler_entropy_7d"
+        ).fetchone()["c"]
+        assert count == 2
+
+    def test_insufficient_30d_data(self):
+        """n_events_30d < 200 → delta_h_norm = NULL."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        day_epoch = (int(time.time()) // 86400) * 86400
+        # Only 50 events total
+        conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                      ("did:lab:a", day_epoch, "spam", 30))
+        conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                      ("did:lab:a", day_epoch, "porn", 20))
+        conn.commit()
+
+        _compute_entropy_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_entropy_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_events_30d"] == 50
+        assert row["delta_h_norm"] is None
+
+    def test_recompute_replaces(self):
+        """Second call replaces previous results."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        day_epoch = (int(time.time()) // 86400) * 86400
+        conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                      ("did:lab:a", day_epoch, "spam", 100))
+        conn.commit()
+
+        _compute_entropy_7d(conn)
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_entropy_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_events_7d"] == 100
+
+        # Add more data
+        conn.execute(
+            "UPDATE derived_val_dist_day SET n = 200 WHERE labeler_did='did:lab:a'"
+        )
+        conn.commit()
+
+        _compute_entropy_7d(conn)
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_entropy_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["n_events_7d"] == 200
+
+    def test_schema_v15_migration(self):
+        """Both tables created with correct columns at v15."""
+        conn = db.connect(":memory:")
+        db.init_db(conn)
+        assert db.get_schema_version(conn) == 15
+        tables = {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        assert "derived_val_dist_day" in tables
+        assert "derived_labeler_entropy_7d" in tables
+
+        # Check columns
+        vdd_cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(derived_val_dist_day)"
+        )}
+        assert {"labeler_did", "day_epoch", "val", "n"}.issubset(vdd_cols)
+
+        ent_cols = {r[1] for r in conn.execute(
+            "PRAGMA table_info(derived_labeler_entropy_7d)"
+        )}
+        expected = {
+            "labeler_did", "n_events_7d", "k_vals_7d", "entropy_7d", "h_norm_7d",
+            "n_eff_7d", "top1_val", "top1_share", "top2_share",
+            "n_events_30d", "k_vals_30d", "entropy_30d", "h_norm_30d", "n_eff_30d",
+            "delta_h_norm", "updated_epoch",
+        }
+        assert expected.issubset(ent_cols)
+
+    def test_invariants(self):
+        """Verify entropy invariants across a mixed distribution."""
+        conn = db.connect(":memory:")
+        _init_labelwatch_db(conn)
+
+        day_epoch = (int(time.time()) // 86400) * 86400
+        # 5 values with varying counts
+        for val, n in [("a", 500), ("b", 200), ("c", 150), ("d", 100), ("e", 50)]:
+            conn.execute("INSERT INTO derived_val_dist_day VALUES (?, ?, ?, ?)",
+                          ("did:lab:a", day_epoch, val, n))
+        conn.commit()
+
+        _compute_entropy_7d(conn)
+
+        row = conn.execute(
+            "SELECT * FROM derived_labeler_entropy_7d WHERE labeler_did='did:lab:a'"
+        ).fetchone()
+        assert row["entropy_7d"] >= 0
+        assert 0 <= row["h_norm_7d"] <= 1.0
+        assert 1.0 <= row["n_eff_7d"] <= row["k_vals_7d"]
+        assert 0 <= row["top1_share"] <= 1.0
+        assert row["top1_share"] <= row["top2_share"] <= 1.0
+
+    def test_shannon_entropy_helper(self):
+        """Direct test of _shannon_entropy helper."""
+        # Empty
+        h, h_norm, n_eff = _shannon_entropy([])
+        assert h == 0.0
+        assert h_norm is None
+        assert n_eff == 0.0
+
+        # Single value
+        h, h_norm, n_eff = _shannon_entropy([100])
+        assert h == 0.0
+        assert h_norm is None
+        assert n_eff == 1.0
+
+        # Uniform 2 values
+        h, h_norm, n_eff = _shannon_entropy([50, 50])
+        assert abs(h - 1.0) < 0.001
+        assert abs(h_norm - 1.0) < 0.001
+        assert abs(n_eff - 2.0) < 0.001
+
+        # Uniform 4 values
+        h, h_norm, n_eff = _shannon_entropy([25, 25, 25, 25])
+        assert abs(h - 2.0) < 0.001
+        assert abs(h_norm - 1.0) < 0.001
+        assert abs(n_eff - 4.0) < 0.001

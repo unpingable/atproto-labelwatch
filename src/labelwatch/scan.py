@@ -745,6 +745,167 @@ def _nearest_rank(sorted_vals, p):
     return sorted_vals[idx]
 
 
+def _shannon_entropy(counts: list[int]) -> tuple[float, float | None, float]:
+    """Return (H_bits, H_norm, N_eff) from a list of value counts."""
+    total = sum(counts)
+    if total == 0:
+        return (0.0, None, 0.0)
+    k = len(counts)
+    h = 0.0
+    for c in counts:
+        if c > 0:
+            p = c / total
+            h -= p * math.log2(p)
+    h_norm = h / math.log2(k) if k >= 2 else None
+    n_eff = 2 ** h
+    return (h, h_norm, n_eff)
+
+
+def _update_val_dist_day(conn) -> None:
+    """Incrementally update derived_val_dist_day from label_events.
+
+    Recomputes the last 7 days (covers late-arriving self-reported timestamps).
+    Prunes rows older than 60 days.
+    """
+    now_epoch = int(time.time())
+    start_day_epoch = ((now_epoch // 86400) - 6) * 86400  # 7 days back
+    cutoff_iso = time.strftime("%Y-%m-%dT00:00:00.000000Z", time.gmtime(start_day_epoch))
+    retention_cutoff_day_epoch = ((now_epoch // 86400) - 60) * 86400
+
+    # Delete recompute window
+    conn.execute(
+        "DELETE FROM derived_val_dist_day WHERE day_epoch >= ?",
+        (start_day_epoch,),
+    )
+
+    # Reinsert from label_events
+    conn.execute("""
+        INSERT OR REPLACE INTO derived_val_dist_day (labeler_did, day_epoch, val, n)
+        SELECT  le.labeler_did,
+                (CAST(strftime('%s', le.ts) AS INTEGER) / 86400) * 86400 AS day_epoch,
+                COALESCE(le.val, '<null>') AS val,
+                COUNT(*) AS n
+        FROM label_events le
+        WHERE le.neg = 0
+          AND le.uri LIKE 'at://%/app.bsky.feed.post/%'
+          AND le.ts >= :cutoff_iso
+        GROUP BY le.labeler_did, day_epoch, COALESCE(le.val, '<null>')
+    """, {"cutoff_iso": cutoff_iso})
+
+    # Prune old rows
+    conn.execute(
+        "DELETE FROM derived_val_dist_day WHERE day_epoch < ?",
+        (retention_cutoff_day_epoch,),
+    )
+
+
+def _compute_entropy_7d(conn) -> None:
+    """Compute per-labeler entropy summary from derived_val_dist_day."""
+    now_epoch = int(time.time())
+    cutoff_7d = ((now_epoch // 86400) - 6) * 86400
+    cutoff_30d = ((now_epoch // 86400) - 29) * 86400
+
+    # 7d window
+    rows_7d = conn.execute("""
+        SELECT labeler_did, val, SUM(n) AS n
+        FROM derived_val_dist_day
+        WHERE day_epoch >= ?
+        GROUP BY labeler_did, val
+    """, (cutoff_7d,)).fetchall()
+
+    # 30d window
+    rows_30d = conn.execute("""
+        SELECT labeler_did, val, SUM(n) AS n
+        FROM derived_val_dist_day
+        WHERE day_epoch >= ?
+        GROUP BY labeler_did, val
+    """, (cutoff_30d,)).fetchall()
+
+    # Build per-labeler dicts
+    data_7d: dict[str, dict[str, int]] = defaultdict(dict)
+    for r in rows_7d:
+        data_7d[r["labeler_did"]][r["val"]] = r["n"]
+
+    data_30d: dict[str, dict[str, int]] = defaultdict(dict)
+    for r in rows_30d:
+        data_30d[r["labeler_did"]][r["val"]] = r["n"]
+
+    # All labelers seen in either window
+    all_dids = set(data_7d.keys()) | set(data_30d.keys())
+
+    # Atomic: temp table + swap
+    conn.execute("DROP TABLE IF EXISTS tmp_entropy")
+    conn.execute("""CREATE TEMP TABLE tmp_entropy (
+        labeler_did    TEXT PRIMARY KEY,
+        n_events_7d    INTEGER NOT NULL,
+        k_vals_7d      INTEGER NOT NULL,
+        entropy_7d     REAL,
+        h_norm_7d      REAL,
+        n_eff_7d       REAL,
+        top1_val       TEXT,
+        top1_share     REAL,
+        top2_share     REAL,
+        n_events_30d   INTEGER NOT NULL,
+        k_vals_30d     INTEGER NOT NULL,
+        entropy_30d    REAL,
+        h_norm_30d     REAL,
+        n_eff_30d      REAL,
+        delta_h_norm   REAL,
+        updated_epoch  INTEGER NOT NULL
+    )""")
+
+    for did in all_dids:
+        vc_7d = data_7d.get(did, {})
+        vc_30d = data_30d.get(did, {})
+
+        counts_7d = list(vc_7d.values())
+        counts_30d = list(vc_30d.values())
+
+        n_events_7d = sum(counts_7d)
+        k_vals_7d = len(counts_7d)
+        n_events_30d = sum(counts_30d)
+        k_vals_30d = len(counts_30d)
+
+        h_7d, h_norm_7d, n_eff_7d = _shannon_entropy(counts_7d)
+        h_30d, h_norm_30d, n_eff_30d = _shannon_entropy(counts_30d)
+
+        # Top1 and top2 share (from 7d)
+        if counts_7d:
+            sorted_vals = sorted(vc_7d.items(), key=lambda x: x[1], reverse=True)
+            top1_val = sorted_vals[0][0]
+            top1_share = sorted_vals[0][1] / n_events_7d
+            top2_n = sorted_vals[0][1] + (sorted_vals[1][1] if len(sorted_vals) > 1 else 0)
+            top2_share = top2_n / n_events_7d
+        else:
+            top1_val = None
+            top1_share = None
+            top2_share = None
+
+        # Delta: only if 30d has enough data
+        if h_norm_7d is not None and h_norm_30d is not None and n_events_30d >= 200:
+            delta_h_norm = h_norm_7d - h_norm_30d
+        else:
+            delta_h_norm = None
+
+        conn.execute(
+            """INSERT INTO tmp_entropy
+               (labeler_did, n_events_7d, k_vals_7d, entropy_7d, h_norm_7d, n_eff_7d,
+                top1_val, top1_share, top2_share,
+                n_events_30d, k_vals_30d, entropy_30d, h_norm_30d, n_eff_30d,
+                delta_h_norm, updated_epoch)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (did, n_events_7d, k_vals_7d, h_7d, h_norm_7d, n_eff_7d,
+             top1_val, top1_share, top2_share,
+             n_events_30d, k_vals_30d, h_30d, h_norm_30d, n_eff_30d,
+             delta_h_norm, now_epoch),
+        )
+
+    # Swap
+    conn.execute("DELETE FROM derived_labeler_entropy_7d")
+    conn.execute("INSERT INTO derived_labeler_entropy_7d SELECT * FROM tmp_entropy")
+    conn.execute("DROP TABLE IF EXISTS tmp_entropy")
+
+
 def _compute_boundary_load_7d(conn) -> None:
     """Compute per-labeler boundary load stats from derived_label_fp (last 7 days).
 
@@ -836,5 +997,15 @@ def run_derive(conn, config: Config, now: datetime | None = None) -> None:
         _compute_boundary_load_7d(conn)
     except Exception as exc:
         _log.warning("boundary load 7d compute failed: %s", exc)
+
+    try:
+        _update_val_dist_day(conn)
+    except Exception as exc:
+        _log.warning("val dist day update failed: %s", exc)
+
+    try:
+        _compute_entropy_7d(conn)
+    except Exception as exc:
+        _log.warning("entropy 7d compute failed: %s", exc)
 
     conn.commit()

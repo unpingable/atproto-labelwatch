@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -194,6 +194,33 @@ CREATE TABLE IF NOT EXISTS derived_labeler_boundary_load_7d (
     p5_lag           INTEGER,
     p10_lag          INTEGER,
     updated_epoch    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS derived_val_dist_day (
+    labeler_did  TEXT NOT NULL,
+    day_epoch    INTEGER NOT NULL,
+    val          TEXT NOT NULL,
+    n            INTEGER NOT NULL,
+    PRIMARY KEY (labeler_did, day_epoch, val)
+);
+
+CREATE TABLE IF NOT EXISTS derived_labeler_entropy_7d (
+    labeler_did    TEXT PRIMARY KEY,
+    n_events_7d    INTEGER NOT NULL,
+    k_vals_7d      INTEGER NOT NULL,
+    entropy_7d     REAL,
+    h_norm_7d      REAL,
+    n_eff_7d       REAL,
+    top1_val       TEXT,
+    top1_share     REAL,
+    top2_share     REAL,
+    n_events_30d   INTEGER NOT NULL,
+    k_vals_30d     INTEGER NOT NULL,
+    entropy_30d    REAL,
+    h_norm_30d     REAL,
+    n_eff_30d      REAL,
+    delta_h_norm   REAL,
+    updated_epoch  INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_label_events_labeler_ts ON label_events(labeler_did, ts);
@@ -553,6 +580,38 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         """)
         set_schema_version(conn, 14)
         current = 14
+    if current == 14 and target >= 15:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS derived_val_dist_day (
+                labeler_did  TEXT NOT NULL,
+                day_epoch    INTEGER NOT NULL,
+                val          TEXT NOT NULL,
+                n            INTEGER NOT NULL,
+                PRIMARY KEY (labeler_did, day_epoch, val)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS derived_labeler_entropy_7d (
+                labeler_did    TEXT PRIMARY KEY,
+                n_events_7d    INTEGER NOT NULL,
+                k_vals_7d      INTEGER NOT NULL,
+                entropy_7d     REAL,
+                h_norm_7d      REAL,
+                n_eff_7d       REAL,
+                top1_val       TEXT,
+                top1_share     REAL,
+                top2_share     REAL,
+                n_events_30d   INTEGER NOT NULL,
+                k_vals_30d     INTEGER NOT NULL,
+                entropy_30d    REAL,
+                h_norm_30d     REAL,
+                n_eff_30d      REAL,
+                delta_h_norm   REAL,
+                updated_epoch  INTEGER NOT NULL
+            )
+        """)
+        set_schema_version(conn, 15)
+        current = 15
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
