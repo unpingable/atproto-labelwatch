@@ -35,8 +35,7 @@
 
 **Near-term (adds signal):**
 - Per-rule activation budgets (cap alerts per window, quarantine on overshoot)
-- Composition detectors: lead/lag, mirroring, rate synchrony across labelers
-- Contradiction network mapping (labelers disagreeing on same subjects)
+- **Milestone: Boundary Instability (B.3 synthesis)** — cross-labeler disagreement, lead/lag, JSD divergence, churn deltas, assembled into BoundaryFightCard compound signal. Two phases: primitives first, synthesis second. See [`docs/MILESTONE_BOUNDARY_INSTABILITY.md`](docs/MILESTONE_BOUNDARY_INSTABILITY.md).
 
 **Seams / spec work:**
 - Align receipt hash canonicalization with PCAR-D profile (sorted keys, no whitespace, ASCII)
