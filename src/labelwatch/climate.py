@@ -389,6 +389,7 @@ def _render_html(payload: Dict[str, Any], target_did: str,
 
     if payload.get("empty"):
         body = (
+            f'<p class="small">What\'s being done to your posts? — last {window_days} days</p>'
             '<div class="card">'
             f'<p>{html.escape(payload.get("message", "No label activity found."))}</p>'
             '</div>'
@@ -399,6 +400,11 @@ def _render_html(payload: Dict[str, Any], target_did: str,
     week = payload["week_deltas"]
     sections: List[str] = []
 
+    # Subtitle
+    sections.append(
+        f'<p class="small">What\'s being done to your posts? — last {window_days} days</p>'
+    )
+
     # --- Summary cards ---
     daily = payload.get("daily_series", [])
     spark_vals = [d["events"] for d in daily]
@@ -407,30 +413,30 @@ def _render_html(payload: Dict[str, Any], target_did: str,
 
     cards = f"""
     <div class="grid">
-      <div class="health-metric">
-        <div class="metric-label">Label Actions</div>
-        <div class="metric-value">{summary["label_actions"]}</div>
+      <div class="card health-metric">
+        <div class="label">Label Actions</div>
+        <div class="value">{summary["label_actions"]:,}</div>
         <div>{spark} {events_delta} vs prev 7d</div>
       </div>
-      <div class="health-metric">
-        <div class="metric-label">Unique Posts Labeled</div>
-        <div class="metric-value">{summary["unique_posts"]}</div>
+      <div class="card health-metric">
+        <div class="label">Unique Posts Labeled</div>
+        <div class="value">{summary["unique_posts"]:,}</div>
       </div>
-      <div class="health-metric">
-        <div class="metric-label">Applies</div>
-        <div class="metric-value">{summary["applies"]}</div>
+      <div class="card health-metric">
+        <div class="label">Applies</div>
+        <div class="value">{summary["applies"]:,}</div>
       </div>
-      <div class="health-metric">
-        <div class="metric-label">Removes</div>
-        <div class="metric-value">{summary["removes"]}</div>
+      <div class="card health-metric">
+        <div class="label">Removes</div>
+        <div class="value">{summary["removes"]:,}</div>
       </div>
-      <div class="health-metric">
-        <div class="metric-label">Labelers</div>
-        <div class="metric-value">{summary["labelers"]}</div>
+      <div class="card health-metric">
+        <div class="label">Labelers</div>
+        <div class="value">{summary["labelers"]:,}</div>
       </div>
-      <div class="health-metric">
-        <div class="metric-label">Label Values</div>
-        <div class="metric-value">{summary["label_values"]}</div>
+      <div class="card health-metric">
+        <div class="label">Label Values</div>
+        <div class="value">{summary["label_values"]:,}</div>
       </div>
     </div>
     """
@@ -472,17 +478,28 @@ def _render_html(payload: Dict[str, Any], target_did: str,
     # --- Daily Activity ---
     if daily:
         wide_spark = _sparkline_svg(spark_vals, width=400, height=60)
+        first_date = html.escape(daily[0]["date"])
+        last_date = html.escape(daily[-1]["date"])
         sections.append(
             '<h2>Daily Activity</h2>'
-            f'<div class="card">{wide_spark}</div>'
+            f'<div class="card">{wide_spark}'
+            f'<div class="small" style="margin-top:0.3rem">{first_date} — {last_date}</div>'
+            f'</div>'
         )
 
     # --- Recent Receipts ---
     if payload.get("recent_receipts"):
+        # Build handle lookup from top_labelers
+        handle_map = {}
+        for l in payload.get("top_labelers", []):
+            if l.get("handle"):
+                handle_map[l["labeler_did"]] = l["handle"]
+
         rows = []
         for r in payload["recent_receipts"]:
             ts_str = html.escape(r["ts"][:19].replace("T", " "))
-            labeler_str = html.escape(r["labeler_did"])
+            labeler_handle = handle_map.get(r["labeler_did"])
+            labeler_str = html.escape(labeler_handle or r["labeler_did"])
             uri_link = _at_uri_to_bsky_link(r["uri"])
             val_str = html.escape(r["val"])
             type_str = html.escape(r["type"])
