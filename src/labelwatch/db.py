@@ -390,22 +390,35 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate(conn, current, SCHEMA_VERSION)
         conn.commit()
 
-    # Update query planner statistics so grouped queries use indexes.
-    # ANALYZE can be slow on large DBs and may hit busy_timeout if another
-    # process holds a write lock — it's an optimization, not required.
-    try:
-        conn.execute("ANALYZE")
-    except sqlite3.OperationalError as e:
-        if "locked" in str(e):
-            _log.warning("ANALYZE skipped (database locked) — query planner stats may be stale")
-        else:
-            raise
-
     set_meta(conn, "code_schema_version_seen", str(SCHEMA_VERSION))
     git_commit = get_git_commit()
     if git_commit:
         set_meta(conn, "code_build_seen", git_commit)
     conn.commit()
+
+
+def optimize_db(conn: sqlite3.Connection) -> dict:
+    """Run query planner optimization. Maintenance, not boot.
+
+    Returns summary of what was done.
+    """
+    result: dict = {}
+    # PRAGMA optimize: lightweight, lets SQLite decide which tables need ANALYZE
+    conn.execute("PRAGMA optimize")
+    result["pragma_optimize"] = True
+
+    # Targeted ANALYZE on tables that change frequently
+    for table in ("label_events", "labelers", "alerts", "discovery_events",
+                  "labeler_evidence", "ingest_outcomes"):
+        try:
+            conn.execute(f"ANALYZE {table}")
+        except sqlite3.OperationalError:
+            pass  # table may not exist on older schemas
+    result["targeted_analyze"] = True
+
+    conn.commit()
+    _log.info("optimize_db: done")
+    return result
 
 
 def get_schema_version(conn: sqlite3.Connection) -> int | None:

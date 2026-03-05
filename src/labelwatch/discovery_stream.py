@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import signal
 import sqlite3
 import sys
@@ -349,30 +350,31 @@ async def _backstop_loop(conn, interval_hours: int, lock: asyncio.Lock):
 async def run(db_path: str, backstop_interval_hours: int = 6):
     """Main entry point for discovery stream daemon."""
     conn = db.connect(db_path)
-    conn.execute("PRAGMA busy_timeout=30000")
-    # Skip full init_db — it runs ANALYZE on the entire DB which can OOM
-    # on large DBs within our memory budget.  The main labelwatch process
-    # owns schema migrations; we just verify the version is sufficient.
+    conn.execute("PRAGMA busy_timeout=120000")  # 120s — generous for sensor daemon
+    # Skip full init_db on large DBs. The main process owns schema migrations;
+    # we just verify the version is sufficient.
     schema_ver = db.get_schema_version(conn)
     if schema_ver is None or schema_ver < 17:
-        # Fall back to full init if schema needs migration (first deploy)
         db.init_db(conn)
     else:
-        log.info("Schema v%d OK, skipping ANALYZE", schema_ver)
+        log.info("Schema v%d OK, skipping init", schema_ver)
 
     known_labelers = _load_known_labelers(conn)
     log.info("Loaded %d known labelers", len(known_labelers))
 
-    # Record startup — retry if main process holds a write lock during ingest
-    for _attempt in range(6):
+    # Record startup — exponential backoff + jitter if main process holds
+    # a write lock during batch ingest. Bounded: fail hard after ~60s total
+    # rather than limp half-initialized.
+    for _attempt in range(7):
         try:
             db.set_meta(conn, "jetstream_discovery_started_at", format_ts(now_utc()))
             conn.commit()
             break
         except sqlite3.OperationalError as e:
-            if "locked" in str(e) and _attempt < 5:
-                log.warning("DB locked during startup meta write, retrying in 10s (%d/5)", _attempt + 1)
-                await asyncio.sleep(10)
+            if "locked" in str(e) and _attempt < 6:
+                delay = min(0.5 * (2 ** _attempt), 16) + random.uniform(0, 1)
+                log.warning("DB locked during startup, retrying in %.1fs (%d/6)", delay, _attempt + 1)
+                await asyncio.sleep(delay)
             else:
                 raise
 

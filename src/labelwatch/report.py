@@ -1154,6 +1154,18 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
 
     staleness_cards += f'  <div class="card"><h3>Record changes (7d)</h3><div>{mutations_count}</div></div>'
 
+    # Coverage delta: upstream vs registered (stored by run_discovery)
+    _upstream_count = db.get_meta(conn, "discovery_upstream_count")
+    _missing_count = db.get_meta(conn, "discovery_missing_count")
+    if _upstream_count is not None and _missing_count is not None:
+        missing_n = int(_missing_count)
+        missing_style = ' style="color:var(--amber,#c90)"' if missing_n > 0 else ""
+        staleness_cards += (
+            f'  <div class="card"><h3>Coverage delta</h3>'
+            f'<div{missing_style}>{missing_n} missing</div>'
+            f'<div class="small">{_upstream_count} upstream</div></div>'
+        )
+
     staleness_cards += "</div>"
 
     # --- My Label Climate lookup ---

@@ -360,6 +360,26 @@ def cmd_reclassify(args) -> None:
     print(json.dumps(output, indent=2))
 
 
+def cmd_coverage_delta(args) -> None:
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    conn = db.connect(cfg.db_path)
+    db.init_db(conn)
+    result = discover.coverage_delta(conn)
+    print(json.dumps(result, indent=2))
+
+
+def cmd_db_optimize(args) -> None:
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    conn = db.connect(cfg.db_path)
+    db.init_db(conn)
+    result = db.optimize_db(conn)
+    print(json.dumps(result, indent=2))
+
+
 def main(argv: Optional[list] = None) -> None:
     parser = argparse.ArgumentParser(prog="labelwatch")
     parser.add_argument("--config", help="Path to config.toml")
@@ -431,6 +451,13 @@ def main(argv: Optional[list] = None) -> None:
     p_serve.add_argument("--max-concurrent", type=int, default=2)
     p_serve.add_argument("--rate-limit", type=int, default=30, help="Max requests/min")
     p_serve.set_defaults(func=cmd_serve)
+
+    p_covdelta = sub.add_parser("coverage-delta",
+                                help="Compare upstream labeler list vs registry")
+    p_covdelta.set_defaults(func=cmd_coverage_delta)
+
+    p_dbopt = sub.add_parser("db-optimize", help="Run ANALYZE and query planner optimization")
+    p_dbopt.set_defaults(func=cmd_db_optimize)
 
     p_run = sub.add_parser("run", help="Run ingest/scan loop")
     p_run.add_argument("--ingest-interval", type=int, default=120, help="Seconds between ingest runs")

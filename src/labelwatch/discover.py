@@ -319,10 +319,19 @@ def run_discovery(conn, config: Config, did_workers: int = 10,
     conn.commit()
 
     db.set_meta(conn, "last_discovery_ts", format_ts(now_utc()))
+
+    # Store coverage delta for report cards (cheap — we already have dids + registered set)
+    registered = {r["labeler_did"] for r in conn.execute("SELECT labeler_did FROM labelers").fetchall()}
+    upstream_set = set(dids)
+    missing = upstream_set - registered
+    db.set_meta(conn, "discovery_upstream_count", str(len(upstream_set)))
+    db.set_meta(conn, "discovery_missing_count", str(len(missing)))
     conn.commit()
 
     elapsed = time.monotonic() - t0
     summary["elapsed_seconds"] = round(elapsed, 1)
+    summary["upstream_count"] = len(upstream_set)
+    summary["missing_count"] = len(missing)
     log.info("Discovery complete in %.1fs: %s", elapsed, summary)
     return summary
 
@@ -570,3 +579,35 @@ def backstop_from_lists(conn, timeout: int = 10, max_members: int = 500) -> dict
 
     log.info("Backstop complete: %s", summary)
     return summary
+
+
+def coverage_delta(conn) -> dict:
+    """Compare upstream labeler DIDs against our registry.
+
+    Returns {upstream_count, registered_count, missing_count, missing_dids}.
+    This is the "silently going blind" alarm — catches labelers that exist
+    upstream but we've never discovered.
+    """
+    try:
+        upstream_dids = set(list_labeler_dids(max_pages=50, timeout=30))
+    except Exception:
+        log.warning("coverage_delta: failed to enumerate upstream", exc_info=True)
+        return {"error": "upstream_fetch_failed"}
+
+    registered = {r["labeler_did"] for r in conn.execute("SELECT labeler_did FROM labelers").fetchall()}
+
+    missing = upstream_dids - registered
+    extra = registered - upstream_dids  # we know about but upstream doesn't list (observed_only, deleted, etc)
+
+    result = {
+        "upstream_count": len(upstream_dids),
+        "registered_count": len(registered),
+        "missing_count": len(missing),
+        "missing_dids": sorted(missing)[:50],  # cap output
+        "extra_count": len(extra),
+    }
+    if missing:
+        log.warning("coverage_delta: %d labelers exist upstream but not in registry", len(missing))
+    else:
+        log.info("coverage_delta: registry covers all %d upstream labelers", len(upstream_dids))
+    return result
