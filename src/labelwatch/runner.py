@@ -4,6 +4,7 @@ import ctypes
 import gc
 import logging
 import time
+import urllib.error
 from typing import Optional
 
 from . import db, discover, ingest, report as report_mod, resolve, scan
@@ -50,6 +51,7 @@ def run_loop(
     last_discovery = 0.0
     discovery_interval = cfg.discovery_interval_hours * 3600
     derive_interval = cfg.derive_interval_minutes * 60
+    primary_ingest_disabled = False
 
     while True:
         now_mono = time.monotonic()
@@ -65,21 +67,37 @@ def run_loop(
 
         # Ingest pass
         if ingest_interval > 0 and now_mono - last_ingest >= ingest_interval:
-            try:
-                if not cfg.labeler_dids:
-                    raise SystemExit("labeler_dids must be configured for ingest")
-                ingest.ingest_from_service(conn, cfg)
+            if not cfg.labeler_dids and not cfg.discovery_enabled:
+                raise SystemExit("labeler_dids must be configured for ingest")
 
-                # Multi-source ingest from discovered labelers
-                if cfg.discovery_enabled:
+            # Primary ingest (queryLabels via bsky.social aggregator)
+            if cfg.labeler_dids and not primary_ingest_disabled:
+                try:
+                    ingest.ingest_from_service(conn, cfg)
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 401:
+                        log.warning(
+                            "Primary ingest returned 401 — endpoint requires auth. "
+                            "Disabling; multi-ingest will handle all labelers."
+                        )
+                        primary_ingest_disabled = True
+                    else:
+                        log.error("Primary ingest failed", exc_info=True)
+                except Exception:
+                    log.error("Primary ingest failed", exc_info=True)
+
+            # Multi-source ingest from discovered labelers (runs even if primary fails)
+            if cfg.discovery_enabled:
+                try:
                     ingest.ingest_multi(conn, cfg)
+                except Exception:
+                    log.error("Multi-ingest failed", exc_info=True)
 
+            try:
                 resolve.resolve_handles_for_labelers(conn)
                 _heartbeat(conn, "last_ingest_ok_ts")
-            except SystemExit:
-                raise
             except Exception:
-                log.error("Ingest failed", exc_info=True)
+                log.error("Resolve/heartbeat failed", exc_info=True)
             _release_memory(conn)
             last_ingest = now_mono
 
