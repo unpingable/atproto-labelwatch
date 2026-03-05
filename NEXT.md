@@ -35,6 +35,7 @@
 
 **Near-term (adds signal):**
 - Per-rule activation budgets (cap alerts per window, quarantine on overshoot)
+- **Milestone: My Label Climate** — per-author "what labelers are doing to your posts" dashboard. Schema v16 author pivot, daily rollups, CLI artifact generator, share cards. Self-only, receipt-backed, no content ingestion. See [`docs/MILESTONE_MY_LABEL_CLIMATE.md`](docs/MILESTONE_MY_LABEL_CLIMATE.md).
 - **Milestone: Boundary Instability (B.3 synthesis)** — cross-labeler disagreement, lead/lag, JSD divergence, churn deltas, assembled into BoundaryFightCard compound signal. Two phases: primitives first, synthesis second. See [`docs/MILESTONE_BOUNDARY_INSTABILITY.md`](docs/MILESTONE_BOUNDARY_INSTABILITY.md).
 
 **Seams / spec work:**
