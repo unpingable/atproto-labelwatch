@@ -1172,7 +1172,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     climate_card = """
 <div class="card" style="margin-top:1rem;">
   <h3>My Label Climate</h3>
-  <p class="small">Look up labeling activity targeting any DID's posts.</p>
+  <p class="small">Look up labeling activity targeting any DID's posts. Find yours at <a href="https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=yourhandle.bsky.social" target="_blank" rel="noopener" style="color:var(--accent,#2980b9);">resolveHandle</a>.</p>
   <form id="climate-form" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:end;">
     <div style="flex:1;min-width:200px;">
       <label for="climate-did" class="small">DID</label>
