@@ -8,7 +8,7 @@ from .utils import get_git_commit
 
 _log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # SCHEMA_TABLES: all CREATE TABLE statements. Safe to run against pre-existing
 # tables (IF NOT EXISTS is a no-op). Used by v0→v1 bootstrap where the table
@@ -245,6 +245,21 @@ CREATE TABLE IF NOT EXISTS derived_author_labeler_day (
     targets      INTEGER NOT NULL,
     PRIMARY KEY (author_did, day_epoch, labeler_did)
 );
+
+CREATE TABLE IF NOT EXISTS discovery_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    labeler_did TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    source TEXT NOT NULL,
+    time_us INTEGER,
+    commit_cid TEXT,
+    commit_rev TEXT,
+    record_json TEXT,
+    record_sha256 TEXT,
+    resolved_endpoint TEXT,
+    discovered_at TEXT NOT NULL,
+    UNIQUE(labeler_did, commit_rev, operation)
+);
 """
 
 # SCHEMA_INDEXES: all CREATE INDEX statements. Separated from tables because
@@ -264,6 +279,8 @@ CREATE INDEX IF NOT EXISTS idx_label_events_ts ON label_events(ts);
 CREATE INDEX IF NOT EXISTS idx_alerts_rule_ts ON alerts(rule_id, ts);
 CREATE INDEX IF NOT EXISTS idx_labeler_evidence_did ON labeler_evidence(labeler_did, evidence_type);
 CREATE INDEX IF NOT EXISTS idx_probe_history_did_ts ON labeler_probe_history(labeler_did, ts);
+CREATE INDEX IF NOT EXISTS idx_discovery_events_did ON discovery_events(labeler_did);
+CREATE INDEX IF NOT EXISTS idx_discovery_events_ts ON discovery_events(discovered_at);
 """
 
 # Full schema = tables + indexes. Used for fresh DB init.
@@ -755,6 +772,33 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
 
         set_schema_version(conn, 16)
         current = 16
+    if current == 16 and target >= 17:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS discovery_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                labeler_did TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                source TEXT NOT NULL,
+                time_us INTEGER,
+                commit_cid TEXT,
+                commit_rev TEXT,
+                record_json TEXT,
+                record_sha256 TEXT,
+                resolved_endpoint TEXT,
+                discovered_at TEXT NOT NULL,
+                UNIQUE(labeler_did, commit_rev, operation)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_discovery_events_did
+            ON discovery_events(labeler_did)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_discovery_events_ts
+            ON discovery_events(discovered_at)
+        """)
+        set_schema_version(conn, 17)
+        current = 17
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
@@ -835,6 +879,27 @@ def insert_probe_history(conn: sqlite3.Connection, labeler_did: str, ts: str,
         """,
         (labeler_did, ts, endpoint, http_status, normalized_status,
          latency_ms, failure_type, error),
+    )
+
+
+def insert_discovery_event(conn: sqlite3.Connection, labeler_did: str,
+                           operation: str, source: str,
+                           discovered_at: str,
+                           time_us: Optional[int] = None,
+                           commit_cid: Optional[str] = None,
+                           commit_rev: Optional[str] = None,
+                           record_json: Optional[str] = None,
+                           record_sha256: Optional[str] = None,
+                           resolved_endpoint: Optional[str] = None) -> None:
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO discovery_events(
+            labeler_did, operation, source, time_us, commit_cid, commit_rev,
+            record_json, record_sha256, resolved_endpoint, discovered_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (labeler_did, operation, source, time_us, commit_cid, commit_rev,
+         record_json, record_sha256, resolved_endpoint, discovered_at),
     )
 
 

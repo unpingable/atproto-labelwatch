@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import os
 from datetime import datetime, timedelta, timezone
 import sys
 from typing import Optional
 
 from . import climate as climate_mod
 from . import db, discover, ingest, scan
+from . import discovery_stream
 from . import report as report_mod
 from . import runner
+from . import server as server_mod
 from .classify import EvidenceDict, classify_labeler, CLASSIFIER_VERSION
 from .config import load_config
 from .utils import format_ts, now_utc, parse_ts
@@ -189,8 +193,26 @@ def cmd_discover(args) -> None:
         cfg.db_path = args.db_path
     conn = db.connect(cfg.db_path)
     db.init_db(conn)
-    summary = discover.run_discovery(conn, cfg)
+    if args.backstop:
+        summary = discover.backstop_from_lists(conn)
+    else:
+        summary = discover.run_discovery(conn, cfg)
     print(json.dumps(summary, indent=2))
+
+
+def cmd_discover_stream(args) -> None:
+    import asyncio
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    if not os.path.exists(cfg.db_path):
+        raise SystemExit(f"Database not found: {cfg.db_path}")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stderr,
+    )
+    asyncio.run(discovery_stream.run(cfg.db_path, args.backstop_interval))
 
 
 def cmd_labelers(args) -> None:
@@ -255,6 +277,22 @@ def cmd_climate(args) -> None:
     )
     if args.out_format == "json":
         print(json.dumps(payload, indent=2))
+
+
+def cmd_serve(args) -> None:
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    if not os.path.exists(cfg.db_path):
+        raise SystemExit(f"Database not found: {cfg.db_path}")
+    server_mod.run_server(
+        db_path=cfg.db_path,
+        port=args.port,
+        cache_dir=args.cache_dir,
+        max_concurrent=args.max_concurrent,
+        rate_limit=args.rate_limit,
+        bind=args.bind,
+    )
 
 
 def cmd_reclassify(args) -> None:
@@ -356,7 +394,14 @@ def main(argv: Optional[list] = None) -> None:
     p_export.set_defaults(func=cmd_export)
 
     p_discover = sub.add_parser("discover", help="Run labeler discovery")
+    p_discover.add_argument("--backstop", action="store_true",
+                            help="Run backstop discovery from labeler-lists")
     p_discover.set_defaults(func=cmd_discover)
+
+    p_ds = sub.add_parser("discover-stream", help="Run Jetstream discovery listener")
+    p_ds.add_argument("--backstop-interval", type=int, default=6,
+                      help="Hours between labeler-lists backstop checks")
+    p_ds.set_defaults(func=cmd_discover_stream)
 
     p_labelers = sub.add_parser("labelers", help="List discovered labelers")
     p_labelers.add_argument("--visibility-class", choices=["declared", "protocol_public", "observed_only", "unresolved"],
@@ -378,6 +423,14 @@ def main(argv: Optional[list] = None) -> None:
     p_reclass = sub.add_parser("reclassify", help="Recompute classifications from evidence")
     p_reclass.add_argument("--dry-run", action="store_true", help="Show diff without writing")
     p_reclass.set_defaults(func=cmd_reclassify)
+
+    p_serve = sub.add_parser("serve", help="Run climate HTTP server")
+    p_serve.add_argument("--port", type=int, default=8423)
+    p_serve.add_argument("--bind", default="127.0.0.1", help="Bind address (default: loopback)")
+    p_serve.add_argument("--cache-dir", default="cache")
+    p_serve.add_argument("--max-concurrent", type=int, default=2)
+    p_serve.add_argument("--rate-limit", type=int, default=30, help="Max requests/min")
+    p_serve.set_defaults(func=cmd_serve)
 
     p_run = sub.add_parser("run", help="Run ingest/scan loop")
     p_run.add_argument("--ingest-interval", type=int, default=120, help="Seconds between ingest runs")

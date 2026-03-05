@@ -20,6 +20,12 @@
 
 9. **Warmup UI suppression** — scores card and alert-based badges suppressed during warmup. Legacy warmup alerts quarantined via `warmup_alert` column (schema v8).
 
+10. **My Label Climate Phase 1** — schema v16: `target_did` column + backfill, `derived_author_day` and `derived_author_labeler_day` rollup tables, rollups wired into derive loop.
+
+11. **My Label Climate Phase 3** — CLI `labelwatch climate --did <did>` generates JSON + standalone HTML climate reports from rollup tables. Summary cards, top labelers, top values, daily sparkline, recent receipts.
+
+12. **My Label Climate Phase 2** — HTTP query layer. `server.py` with `GET /v1/climate/{did}` (json/html) and `GET /health`. Token bucket rate limiter, disk cache (atomic writes), concurrency semaphore, generation timeout, kill switch (`CLIMATE_API_DISABLED`). Public payload whitelist strips `recent_receipts`. Loopback-only bind. `labelwatch serve` CLI subcommand. Systemd unit (`labelwatch-api.service`). Climate lookup form on index page. Tier-0 hardening pass with `docs/HARDENING.md`.
+
 ## Schema history
 
 | Version | What changed |
@@ -34,9 +40,16 @@
 ## Up next
 
 **Near-term (adds signal):**
+- **Jetstream discovery + governance sensors** — replace HTTP-polling discovery with Jetstream firehose listener for `app.bsky.labeler.service/self` records. Two meta-observability sensors: "labeler registry freshness" (last discovery event) and "unknown DID sightings" (label from unregistered source = discovery gap alarm). Belt-and-suspenders: Jetstream live + community labeler-lists account as periodic backstop + optional authed queryLabels.
 - Per-rule activation budgets (cap alerts per window, quarantine on overshoot)
-- **Milestone: My Label Climate** — per-author "what labelers are doing to your posts" dashboard. Schema v16 author pivot, daily rollups, CLI artifact generator, share cards. Self-only, receipt-backed, no content ingestion. See [`docs/MILESTONE_MY_LABEL_CLIMATE.md`](docs/MILESTONE_MY_LABEL_CLIMATE.md).
 - **Milestone: Boundary Instability (B.3 synthesis)** — cross-labeler disagreement, lead/lag, JSD divergence, churn deltas, assembled into BoundaryFightCard compound signal. Two phases: primitives first, synthesis second. See [`docs/MILESTONE_BOUNDARY_INSTABILITY.md`](docs/MILESTONE_BOUNDARY_INSTABILITY.md).
+
+**My Label Climate (done):**
+- ~~Phase 1: schema v16, target_did, rollup tables~~
+- ~~Phase 3: CLI + JSON + HTML generation~~
+- ~~Phase 2: HTTP query layer, hardening~~
+- Phase 4: share card template (screenshot-ready)
+- Phase 5: proof-of-control for private detail views (Tier-1 hardening)
 
 **Seams / spec work:**
 - Align receipt hash canonicalization with PCAR-D profile (sorted keys, no whitespace, ASCII)
@@ -46,5 +59,5 @@
 **Later:**
 - Cross-project receipt verification with driftwatch
 - Casefile / annotation ledger for human review notes
-- Jetstream streaming (replace HTTP polling for real-time ingestion)
-- Web inspection endpoint (`/health`, `/recent-alerts`)
+- Caddy-level rate limiting for `/v1/climate/*`
+- CSP headers (requires moving inline JS out of HTML templates)

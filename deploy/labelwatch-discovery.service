@@ -1,0 +1,25 @@
+[Unit]
+Description=labelwatch-discovery - Jetstream labeler discovery
+After=network.target
+
+[Service]
+Type=simple
+User=labelwatch
+Group=labelwatch
+WorkingDirectory=/opt/labelwatch
+ExecStart=/opt/labelwatch/.venv/bin/labelwatch \
+    --db /var/lib/labelwatch/labelwatch.db \
+    discover-stream --backstop-interval 6
+Restart=on-failure
+RestartSec=10
+Environment=JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe
+MemoryMax=256M
+CPUQuota=10%
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/labelwatch
+ProtectHome=true
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

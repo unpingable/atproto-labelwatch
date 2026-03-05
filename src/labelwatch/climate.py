@@ -30,6 +30,18 @@ from .report import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+_PUBLIC_KEYS = frozenset({
+    "empty", "target_did", "window_days", "message",
+    "summary", "week_deltas", "top_labelers", "top_values",
+    "daily_series", "generated_at",
+})
+
+
+def public_climate_payload(payload: dict) -> dict:
+    """Reconstruct payload with only public-safe fields."""
+    return {k: v for k, v in payload.items() if k in _PUBLIC_KEYS}
+
+
 def _regime_badge(state: Optional[str]) -> str:
     """Render a small regime-state badge."""
     if not state:
@@ -384,8 +396,8 @@ def _atomic_write_html(out_dir: str, payload: Dict[str, Any],
 def _render_html(payload: Dict[str, Any], target_did: str,
                  window_days: int) -> str:
     """Render the climate payload as a standalone HTML page."""
-    escaped_did = html.escape(target_did)
-    title = f"Label Climate — {escaped_did}"
+    # _layout() escapes title, so pass raw DID here (no double-escape)
+    title = f"Label Climate — {target_did}"
 
     if payload.get("empty"):
         body = (

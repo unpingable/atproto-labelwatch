@@ -289,104 +289,21 @@ def run_discovery(conn, config: Config, did_workers: int = 10,
         else:
             summary["down"] += 1
 
-        # Check existing row for sticky fields
-        existing = conn.execute(
-            "SELECT observed_as_src, has_labeler_service, has_label_key, declared_record FROM labelers WHERE labeler_did=?",
-            (did,),
-        ).fetchone()
-        existing_observed_src = existing["observed_as_src"] if existing else 0
-        existing_has_service = existing["has_labeler_service"] if existing else 0
-        existing_has_lk = existing["has_label_key"] if existing else 0
-
-        # Build evidence for classifier
-        evidence = EvidenceDict(
-            declared_record_present=True,  # All from listReposByCollection
-            did_doc_labeler_service_present=has_service or bool(existing_has_service),
-            did_doc_label_key_present=has_lk or bool(existing_has_lk),
-            observed_label_src=bool(existing_observed_src),
-            probe_result=status if status != "unknown" else None,
-        )
-
-        classification = classify_labeler(evidence)
-        test_dev = detect_test_dev(handle, display_name) if config.noise_policy_enabled else False
-
-        # Write evidence records (dedupe within this run)
-        ev_key = (did, "declared_record", "true")
-        if ev_key not in evidence_seen:
-            db.insert_evidence(conn, did, "declared_record", "true", seen_ts, "discovery")
-            evidence_seen.add(ev_key)
-
-        if has_service:
-            ev_key = (did, "did_doc_labeler_service", endpoint)
-            if ev_key not in evidence_seen:
-                db.insert_evidence(conn, did, "did_doc_labeler_service", endpoint, seen_ts, "discovery")
-                evidence_seen.add(ev_key)
-
-        if has_lk:
-            ev_key = (did, "did_doc_label_key", "true")
-            if ev_key not in evidence_seen:
-                db.insert_evidence(conn, did, "did_doc_label_key", "true", seen_ts, "discovery")
-                evidence_seen.add(ev_key)
-
-        if probe:
-            ev_key = (did, "probe_result", probe.normalized_status)
-            if ev_key not in evidence_seen:
-                db.insert_evidence(conn, did, "probe_result", probe.normalized_status, seen_ts, "discovery")
-                evidence_seen.add(ev_key)
-            # Write probe history
-            db.insert_probe_history(
-                conn, did, seen_ts, endpoint or "",
-                probe.http_status, probe.normalized_status,
-                probe.latency_ms, probe.failure_type, probe.error,
-            )
-
-        # Sticky fields: only upgrade, never downgrade
-        sticky_has_service = max(int(has_service), int(existing_has_service))
-        sticky_has_lk = max(int(has_lk), int(existing_has_lk))
-        sticky_observed_src = int(existing_observed_src)  # Can't learn this from discovery
-
-        conn.execute(
-            """
-            INSERT INTO labelers(labeler_did, handle, display_name, service_endpoint,
-                                 labeler_class, is_reference, endpoint_status, last_probed,
-                                 first_seen, last_seen,
-                                 visibility_class, reachability_state,
-                                 classification_confidence, classification_reason,
-                                 classification_version, classified_at, auditability,
-                                 observed_as_src, has_labeler_service, has_label_key,
-                                 declared_record, likely_test_dev)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                   ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(labeler_did) DO UPDATE SET
-                handle=COALESCE(excluded.handle, labelers.handle),
-                display_name=COALESCE(excluded.display_name, labelers.display_name),
-                service_endpoint=COALESCE(excluded.service_endpoint, labelers.service_endpoint),
-                labeler_class=excluded.labeler_class,
-                is_reference=excluded.is_reference,
-                endpoint_status=excluded.endpoint_status,
-                last_probed=excluded.last_probed,
-                last_seen=excluded.last_seen,
-                visibility_class=excluded.visibility_class,
-                reachability_state=excluded.reachability_state,
-                classification_confidence=excluded.classification_confidence,
-                classification_reason=excluded.classification_reason,
-                classification_version=excluded.classification_version,
-                classified_at=excluded.classified_at,
-                auditability=excluded.auditability,
-                observed_as_src=MAX(labelers.observed_as_src, excluded.observed_as_src),
-                has_labeler_service=MAX(labelers.has_labeler_service, excluded.has_labeler_service),
-                has_label_key=MAX(labelers.has_label_key, excluded.has_label_key),
-                declared_record=MAX(labelers.declared_record, excluded.declared_record),
-                likely_test_dev=excluded.likely_test_dev
-            """,
-            (did, handle, display_name, endpoint,
-             labeler_class, is_reference, status, seen_ts,
-             seen_ts, seen_ts,
-             classification.visibility_class, classification.reachability_state,
-             classification.classification_confidence, classification.reason,
-             classification.version, seen_ts, classification.auditability,
-             sticky_observed_src, sticky_has_service, sticky_has_lk,
-             1, int(test_dev)),
+        upsert_discovered_labeler(
+            conn, did,
+            handle=handle,
+            display_name=display_name,
+            endpoint=endpoint,
+            has_service=has_service,
+            has_label_key=has_lk,
+            declared_record=True,
+            probe=probe,
+            labeler_class=labeler_class,
+            is_reference=is_reference,
+            test_dev=detect_test_dev(handle, display_name) if config.noise_policy_enabled else False,
+            seen_ts=seen_ts,
+            evidence_source="discovery",
+            evidence_seen=evidence_seen,
         )
     conn.commit()
 
@@ -407,4 +324,249 @@ def run_discovery(conn, config: Config, did_workers: int = 10,
     elapsed = time.monotonic() - t0
     summary["elapsed_seconds"] = round(elapsed, 1)
     log.info("Discovery complete in %.1fs: %s", elapsed, summary)
+    return summary
+
+
+def upsert_discovered_labeler(
+    conn,
+    did: str,
+    *,
+    handle: Optional[str] = None,
+    display_name: Optional[str] = None,
+    endpoint: Optional[str] = None,
+    has_service: bool = False,
+    has_label_key: bool = False,
+    declared_record: bool = False,
+    probe: Optional[ProbeResult] = None,
+    labeler_class: str = "third_party",
+    is_reference: int = 0,
+    test_dev: bool = False,
+    seen_ts: Optional[str] = None,
+    evidence_source: str = "discovery",
+    evidence_seen: Optional[set] = None,
+) -> None:
+    """Shared labeler upsert with sticky fields and evidence logging.
+
+    Used by batch discovery, Jetstream stream discovery, and backstop.
+    """
+    if seen_ts is None:
+        seen_ts = format_ts(now_utc())
+    if evidence_seen is None:
+        evidence_seen = set()
+
+    status = probe.normalized_status if probe else "unknown"
+
+    # Check existing row for sticky fields
+    existing = conn.execute(
+        "SELECT observed_as_src, has_labeler_service, has_label_key, declared_record FROM labelers WHERE labeler_did=?",
+        (did,),
+    ).fetchone()
+    existing_observed_src = existing["observed_as_src"] if existing else 0
+    existing_has_service = existing["has_labeler_service"] if existing else 0
+    existing_has_lk = existing["has_label_key"] if existing else 0
+
+    # Build evidence for classifier
+    evidence = EvidenceDict(
+        declared_record_present=declared_record,
+        did_doc_labeler_service_present=has_service or bool(existing_has_service),
+        did_doc_label_key_present=has_label_key or bool(existing_has_lk),
+        observed_label_src=bool(existing_observed_src),
+        probe_result=status if status != "unknown" else None,
+    )
+
+    classification = classify_labeler(evidence)
+
+    # Write evidence records (dedupe within this run)
+    if declared_record:
+        ev_key = (did, "declared_record", "true")
+        if ev_key not in evidence_seen:
+            db.insert_evidence(conn, did, "declared_record", "true", seen_ts, evidence_source)
+            evidence_seen.add(ev_key)
+
+    if has_service:
+        ev_key = (did, "did_doc_labeler_service", endpoint)
+        if ev_key not in evidence_seen:
+            db.insert_evidence(conn, did, "did_doc_labeler_service", endpoint, seen_ts, evidence_source)
+            evidence_seen.add(ev_key)
+
+    if has_label_key:
+        ev_key = (did, "did_doc_label_key", "true")
+        if ev_key not in evidence_seen:
+            db.insert_evidence(conn, did, "did_doc_label_key", "true", seen_ts, evidence_source)
+            evidence_seen.add(ev_key)
+
+    if probe:
+        ev_key = (did, "probe_result", probe.normalized_status)
+        if ev_key not in evidence_seen:
+            db.insert_evidence(conn, did, "probe_result", probe.normalized_status, seen_ts, evidence_source)
+            evidence_seen.add(ev_key)
+        db.insert_probe_history(
+            conn, did, seen_ts, endpoint or "",
+            probe.http_status, probe.normalized_status,
+            probe.latency_ms, probe.failure_type, probe.error,
+        )
+
+    # Sticky fields: only upgrade, never downgrade
+    sticky_has_service = max(int(has_service), int(existing_has_service))
+    sticky_has_lk = max(int(has_label_key), int(existing_has_lk))
+    sticky_observed_src = int(existing_observed_src)
+
+    conn.execute(
+        """
+        INSERT INTO labelers(labeler_did, handle, display_name, service_endpoint,
+                             labeler_class, is_reference, endpoint_status, last_probed,
+                             first_seen, last_seen,
+                             visibility_class, reachability_state,
+                             classification_confidence, classification_reason,
+                             classification_version, classified_at, auditability,
+                             observed_as_src, has_labeler_service, has_label_key,
+                             declared_record, likely_test_dev)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(labeler_did) DO UPDATE SET
+            handle=COALESCE(excluded.handle, labelers.handle),
+            display_name=COALESCE(excluded.display_name, labelers.display_name),
+            service_endpoint=COALESCE(excluded.service_endpoint, labelers.service_endpoint),
+            labeler_class=excluded.labeler_class,
+            is_reference=excluded.is_reference,
+            endpoint_status=excluded.endpoint_status,
+            last_probed=excluded.last_probed,
+            last_seen=excluded.last_seen,
+            visibility_class=excluded.visibility_class,
+            reachability_state=excluded.reachability_state,
+            classification_confidence=excluded.classification_confidence,
+            classification_reason=excluded.classification_reason,
+            classification_version=excluded.classification_version,
+            classified_at=excluded.classified_at,
+            auditability=excluded.auditability,
+            observed_as_src=MAX(labelers.observed_as_src, excluded.observed_as_src),
+            has_labeler_service=MAX(labelers.has_labeler_service, excluded.has_labeler_service),
+            has_label_key=MAX(labelers.has_label_key, excluded.has_label_key),
+            declared_record=MAX(labelers.declared_record, excluded.declared_record),
+            likely_test_dev=excluded.likely_test_dev
+        """,
+        (did, handle, display_name, endpoint,
+         labeler_class, is_reference, status, seen_ts,
+         seen_ts, seen_ts,
+         classification.visibility_class, classification.reachability_state,
+         classification.classification_confidence, classification.reason,
+         classification.version, seen_ts, classification.auditability,
+         sticky_observed_src, sticky_has_service, sticky_has_lk,
+         int(declared_record), int(test_dev)),
+    )
+
+
+LABELER_LISTS_ACTOR = "labeler-lists.bsky.social"
+BSKY_PUBLIC_API = "https://public.api.bsky.app/xrpc"
+
+
+def backstop_from_lists(conn, timeout: int = 10, max_members: int = 500) -> dict:
+    """Scrape labeler-lists.bsky.social as belt-and-suspenders discovery.
+
+    Returns summary dict with counts.
+    """
+    seen_ts = format_ts(now_utc())
+    summary = {"lists_fetched": 0, "members_seen": 0, "new_labelers": 0, "errors": 0}
+    deadline = time.monotonic() + 600  # 10 minute budget
+
+    # Fetch lists for the actor
+    try:
+        url = f"{BSKY_PUBLIC_API}/app.bsky.graph.getLists?actor={LABELER_LISTS_ACTOR}&limit=50"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        log.warning("Failed to fetch lists for %s", LABELER_LISTS_ACTOR, exc_info=True)
+        summary["errors"] += 1
+        return summary
+
+    lists = data.get("lists", [])
+    known_dids = {r["labeler_did"] for r in conn.execute("SELECT labeler_did FROM labelers").fetchall()}
+    evidence_seen: set = set()
+    total_members = 0
+
+    for lst in lists:
+        if time.monotonic() > deadline:
+            log.warning("Backstop hit 10min budget, stopping")
+            break
+
+        list_uri = lst.get("uri")
+        if not list_uri:
+            continue
+
+        summary["lists_fetched"] += 1
+        cursor = None
+
+        while total_members < max_members:
+            if time.monotonic() > deadline:
+                break
+            try:
+                list_url = (
+                    f"{BSKY_PUBLIC_API}/app.bsky.graph.getList"
+                    f"?list={urllib.parse.quote(list_uri, safe='')}&limit=100"
+                )
+                if cursor:
+                    list_url += f"&cursor={urllib.parse.quote(cursor, safe='')}"
+                req = urllib.request.Request(list_url, headers={"Accept": "application/json"})
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    list_data = json.loads(resp.read().decode("utf-8"))
+            except Exception:
+                log.debug("Failed to fetch list %s", list_uri, exc_info=True)
+                summary["errors"] += 1
+                break
+
+            items = list_data.get("items", [])
+            if not items:
+                break
+
+            for item in items:
+                total_members += 1
+                subject = item.get("subject", {})
+                member_did = subject.get("did")
+                if not member_did:
+                    continue
+                summary["members_seen"] += 1
+
+                if member_did in known_dids:
+                    continue
+
+                # New DID — resolve and upsert
+                did_doc = fetch_did_doc(member_did, timeout=timeout)
+                if did_doc is None:
+                    continue
+
+                endpoint = resolve_service_endpoint(did_doc)
+                has_lk = resolve_label_key(did_doc)
+                handle = None
+                for aka in did_doc.get("alsoKnownAs", []):
+                    if aka.startswith("at://"):
+                        handle = aka[len("at://"):]
+                        break
+
+                upsert_discovered_labeler(
+                    conn, member_did,
+                    handle=handle,
+                    endpoint=endpoint,
+                    has_service=endpoint is not None,
+                    has_label_key=has_lk,
+                    declared_record=False,
+                    seen_ts=seen_ts,
+                    evidence_source="backstop",
+                    evidence_seen=evidence_seen,
+                )
+                db.insert_discovery_event(
+                    conn, member_did, "create", "backstop",
+                    discovered_at=seen_ts,
+                    resolved_endpoint=endpoint,
+                )
+                conn.commit()
+                known_dids.add(member_did)
+                summary["new_labelers"] += 1
+                log.info("BACKSTOP discovered %s handle=%s", member_did, handle)
+
+            cursor = list_data.get("cursor")
+            if not cursor:
+                break
+
+    log.info("Backstop complete: %s", summary)
     return summary

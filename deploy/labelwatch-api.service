@@ -1,0 +1,37 @@
+[Unit]
+Description=labelwatch-api - Climate HTTP server
+After=network.target
+
+[Service]
+Type=simple
+User=labelwatch
+Group=labelwatch
+WorkingDirectory=/opt/labelwatch
+ExecStart=/opt/labelwatch/.venv/bin/labelwatch \
+    --db /var/lib/labelwatch/labelwatch.db \
+    serve \
+    --port 8423 \
+    --cache-dir /var/lib/labelwatch/cache
+Restart=always
+RestartSec=5
+OOMPolicy=restart
+TimeoutStopSec=15
+
+# Explicit environment — don't inherit weirdness
+Environment=CLIMATE_API_DISABLED=0
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=25%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+# Cache dir only — DB is opened readonly, no write access needed to DB dir
+ReadWritePaths=/var/lib/labelwatch/cache
+ReadOnlyPaths=/var/lib/labelwatch/labelwatch.db
+ProtectHome=true
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

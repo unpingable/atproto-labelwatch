@@ -360,6 +360,8 @@ THEME_TOGGLE_JS = """
 
 
 def _layout(title: str, body: str, canonical: str = "") -> str:
+    """Wrap body in a full HTML page. Title and canonical are escaped here.
+    Body is injected raw — callers must pre-escape all untrusted content."""
     canonical_tag = f'\n<link rel="canonical" href="{escape(canonical)}" />' if canonical else ""
     return f"""<!doctype html>
 <html lang="en">
@@ -386,6 +388,8 @@ def _layout(title: str, body: str, canonical: str = "") -> str:
 
 
 def _table(headers: List[str], rows: List[List[str]]) -> str:
+    """Build an HTML table. Headers are escaped. Cell values are NOT escaped —
+    callers must pre-escape all untrusted content (html.escape) before passing."""
     head = "".join(f"<th>{escape(h)}</th>" for h in headers)
     body = "".join("<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in rows)
     return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
@@ -1104,7 +1108,85 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
 """
     if skew_seconds > 0:
         staleness_cards += f'  <div class="card"><h3>Clock skew</h3><div>{skew_seconds}s</div></div>'
+
+    # --- Discovery health cards ---
+    stream_last_msg = db.get_meta(conn, "jetstream_discovery_last_msg_at")
+    if stream_last_msg:
+        stream_label = escape(_human_ts(stream_last_msg))
+        try:
+            from .utils import parse_ts as _pts
+            stream_dt = _pts(stream_last_msg)
+            if now and (now - stream_dt).total_seconds() > 300:
+                stream_label += ' <span style="color:var(--amber,#c90)">stale</span>'
+        except Exception:
+            pass
+    else:
+        stream_label = "Not configured"
+    staleness_cards += f'  <div class="card"><h3>Stream liveness</h3><div>{stream_label}</div></div>'
+
+    # discovery_events may not exist on older schemas
+    _has_discovery_events = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='discovery_events'"
+    ).fetchone()
+
+    last_js_discovery = None
+    mutations_count = 0
+    if _has_discovery_events:
+        last_js_discovery_row = conn.execute(
+            "SELECT MAX(discovered_at) AS ts FROM discovery_events WHERE source='jetstream'"
+        ).fetchone()
+        last_js_discovery = last_js_discovery_row["ts"] if last_js_discovery_row else None
+
+        mutations_row = conn.execute(
+            "SELECT COUNT(DISTINCT labeler_did) AS c FROM discovery_events WHERE operation='update' AND discovered_at >= ?",
+            (start_7d,),
+        ).fetchone()
+        mutations_count = mutations_row["c"] if mutations_row else 0
+
+    staleness_cards += f'  <div class="card"><h3>Last stream discovery</h3><div>{escape(_human_ts(last_js_discovery))}</div></div>'
+
+    unknown_did_row = conn.execute(
+        "SELECT COUNT(*) AS c FROM labelers WHERE visibility_class='observed_only' AND declared_record=0"
+    ).fetchone()
+    unknown_did_count = unknown_did_row["c"] if unknown_did_row else 0
+    unknown_style = ' style="color:var(--amber,#c90)"' if unknown_did_count > 0 else ""
+    staleness_cards += f'  <div class="card"><h3>Unknown DIDs</h3><div{unknown_style}>{unknown_did_count}</div></div>'
+
+    staleness_cards += f'  <div class="card"><h3>Record changes (7d)</h3><div>{mutations_count}</div></div>'
+
     staleness_cards += "</div>"
+
+    # --- My Label Climate lookup ---
+    climate_card = """
+<div class="card" style="margin-top:1rem;">
+  <h3>My Label Climate</h3>
+  <p class="small">Look up labeling activity targeting any DID's posts.</p>
+  <form id="climate-form" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:end;">
+    <div style="flex:1;min-width:200px;">
+      <label for="climate-did" class="small">DID</label>
+      <input id="climate-did" type="text" placeholder="did:plc:..." style="width:100%;padding:0.3rem 0.5rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--bg,#fff);color:var(--fg,#111);">
+    </div>
+    <div>
+      <label for="climate-window" class="small">Window</label>
+      <select id="climate-window" style="padding:0.3rem 0.5rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--bg,#fff);color:var(--fg,#111);">
+        <option value="7">7 days</option>
+        <option value="30" selected>30 days</option>
+        <option value="60">60 days</option>
+      </select>
+    </div>
+    <button type="submit" style="padding:0.3rem 1rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--accent,#2980b9);color:#fff;cursor:pointer;">Look up</button>
+  </form>
+</div>
+<script>
+document.getElementById('climate-form').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var did = document.getElementById('climate-did').value.trim();
+  var w = document.getElementById('climate-window').value;
+  if (!did) return;
+  window.location.href = '/v1/climate/' + encodeURIComponent(did) + '?window=' + w + '&format=html';
+});
+</script>
+"""
 
     # --- Warm-up banner ---
     warmup_banner = ""
@@ -1293,7 +1375,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
 
     overview_html = _layout(
         "Labelwatch overview",
-        explainer_html + staleness_cards + naive_banner + warmup_banner + coverage_card + reference_lane +
+        explainer_html + staleness_cards + climate_card + naive_banner + warmup_banner + coverage_card + reference_lane +
         build_table + overview_tables + labeler_section + alert_links + METHODS_HTML + TRIAGE_JS,
     )
     _write(os.path.join(tmp_dir, "index.html"), overview_html)

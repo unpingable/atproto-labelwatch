@@ -189,7 +189,7 @@ def test_backfill_from_v15():
 
     db.init_db(conn)
 
-    assert db.get_schema_version(conn) == 16
+    assert db.get_schema_version(conn) == db.SCHEMA_VERSION
 
     # Check backfill
     row1 = conn.execute("SELECT target_did FROM label_events WHERE event_hash='hash1'").fetchone()
@@ -206,11 +206,11 @@ def test_backfill_from_v15():
 def test_migration_idempotent():
     conn = _make_v15_db()
     db.init_db(conn)
-    assert db.get_schema_version(conn) == 16
+    assert db.get_schema_version(conn) == db.SCHEMA_VERSION
 
     # Run again — should not error
     db.init_db(conn)
-    assert db.get_schema_version(conn) == 16
+    assert db.get_schema_version(conn) == db.SCHEMA_VERSION
 
 
 def test_insert_with_target_did():

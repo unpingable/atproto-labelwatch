@@ -12,6 +12,7 @@ license = {text = "MIT OR Apache-2.0"}
 authors = [{name = "Labelwatch"}]
 dependencies = [
     "tomli>=2; python_version < '3.11'",
+    "websockets>=10",
 ]
 
 [project.scripts]
