@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from . import db
 from .config import Config
+from .db import parse_target_did
 from .utils import format_ts, hash_sha256, now_utc, sqlite_safe_text, stable_json
 
 log = logging.getLogger(__name__)
@@ -194,6 +195,7 @@ def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int =
                         event.sig,
                         event.ts,
                         event.event_hash,
+                        parse_target_did(event.uri),
                     )
                 )
                 seen_dids.add(event.labeler_did)
@@ -257,6 +259,7 @@ def ingest_from_iter(conn, items: Iterable[Dict]) -> int:
                 event.sig,
                 event.ts,
                 event.event_hash,
+                parse_target_did(event.uri),
             )
         )
         db.upsert_labeler(conn, event.labeler_did, event.ts)
@@ -321,7 +324,7 @@ def ingest_multi(conn, config: Config, timeout: int | None = None,
                     event_rows.append((
                         event.labeler_did, event.src, event.uri, event.cid,
                         event.val, event.neg, event.exp, event.sig,
-                        event.ts, event.event_hash,
+                        event.ts, event.event_hash, parse_target_did(event.uri),
                     ))
                     db.upsert_labeler(conn, event.labeler_did, event.ts)
                     src_did = event.src or event.labeler_did

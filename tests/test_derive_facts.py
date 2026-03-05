@@ -954,7 +954,7 @@ class TestReversalStats7d:
         """v12→v13 migration creates the table with correct columns."""
         conn = db.connect(":memory:")
         db.init_db(conn)
-        assert db.get_schema_version(conn) == 15
+        assert db.get_schema_version(conn) == 16
         tables = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}
@@ -1213,7 +1213,7 @@ class TestBoundaryLoad7d:
         """v13→v14 migration creates the table with correct columns."""
         conn = db.connect(":memory:")
         db.init_db(conn)
-        assert db.get_schema_version(conn) == 15
+        assert db.get_schema_version(conn) == 16
         tables = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}
@@ -1730,7 +1730,7 @@ class TestEntropy7d:
         """Both tables created with correct columns at v15."""
         conn = db.connect(":memory:")
         db.init_db(conn)
-        assert db.get_schema_version(conn) == 15
+        assert db.get_schema_version(conn) == 16
         tables = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
 
-SCHEMA_VERSION = 15
+_log = logging.getLogger(__name__)
 
-SCHEMA = """
+SCHEMA_VERSION = 16
+
+# SCHEMA_TABLES: all CREATE TABLE statements. Safe to run against pre-existing
+# tables (IF NOT EXISTS is a no-op). Used by v0→v1 bootstrap where the table
+# may already exist with fewer columns — later migrations add columns via ALTER.
+SCHEMA_TABLES = """
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -24,7 +30,8 @@ CREATE TABLE IF NOT EXISTS label_events (
     exp TEXT,
     sig TEXT,
     ts TEXT NOT NULL,
-    event_hash TEXT NOT NULL UNIQUE
+    event_hash TEXT NOT NULL UNIQUE,
+    target_did TEXT
 );
 
 CREATE TABLE IF NOT EXISTS labelers (
@@ -123,8 +130,6 @@ CREATE TABLE IF NOT EXISTS derived_receipts (
     reason_codes_json TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_derived_receipts_did_type ON derived_receipts(labeler_did, receipt_type, ts);
-
 CREATE TABLE IF NOT EXISTS ingest_outcomes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     labeler_did TEXT NOT NULL,
@@ -139,8 +144,6 @@ CREATE TABLE IF NOT EXISTS ingest_outcomes (
     source TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_ingest_outcomes_did_ts ON ingest_outcomes(labeler_did, ts);
-
 CREATE TABLE IF NOT EXISTS derived_label_fp (
     label_event_id    INTEGER PRIMARY KEY,
     labeler_did       TEXT NOT NULL,
@@ -150,9 +153,6 @@ CREATE TABLE IF NOT EXISTS derived_label_fp (
     post_created_ts   TEXT,
     lag_sec_claimed   INTEGER
 );
-
-CREATE INDEX IF NOT EXISTS idx_derived_label_fp_labeler ON derived_label_fp(labeler_did);
-CREATE INDEX IF NOT EXISTS idx_derived_label_fp_fp ON derived_label_fp(claim_fingerprint);
 
 CREATE TABLE IF NOT EXISTS derived_labeler_lag_7d (
     labeler_did    TEXT PRIMARY KEY,
@@ -223,12 +223,108 @@ CREATE TABLE IF NOT EXISTS derived_labeler_entropy_7d (
     updated_epoch  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS derived_author_day (
+    author_did   TEXT NOT NULL,
+    day_epoch    INTEGER NOT NULL,
+    events       INTEGER NOT NULL,
+    applies      INTEGER NOT NULL,
+    removes      INTEGER NOT NULL,
+    labelers     INTEGER NOT NULL,
+    targets      INTEGER NOT NULL,
+    vals         INTEGER NOT NULL,
+    PRIMARY KEY (author_did, day_epoch)
+);
+
+CREATE TABLE IF NOT EXISTS derived_author_labeler_day (
+    author_did   TEXT NOT NULL,
+    day_epoch    INTEGER NOT NULL,
+    labeler_did  TEXT NOT NULL,
+    events       INTEGER NOT NULL,
+    applies      INTEGER NOT NULL,
+    removes      INTEGER NOT NULL,
+    targets      INTEGER NOT NULL,
+    PRIMARY KEY (author_did, day_epoch, labeler_did)
+);
+"""
+
+# SCHEMA_INDEXES: all CREATE INDEX statements. Separated from tables because
+# the v0→v1 bootstrap may encounter pre-existing tables missing columns added
+# by later migrations. Indexes referencing those columns would fail. Each
+# migration creates its own indexes at the right time; fresh DBs run both.
+SCHEMA_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_derived_receipts_did_type ON derived_receipts(labeler_did, receipt_type, ts);
+CREATE INDEX IF NOT EXISTS idx_ingest_outcomes_did_ts ON ingest_outcomes(labeler_did, ts);
+CREATE INDEX IF NOT EXISTS idx_derived_label_fp_labeler ON derived_label_fp(labeler_did);
+CREATE INDEX IF NOT EXISTS idx_derived_label_fp_fp ON derived_label_fp(claim_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_derived_author_labeler_day_author ON derived_author_labeler_day(author_did);
 CREATE INDEX IF NOT EXISTS idx_label_events_labeler_ts ON label_events(labeler_did, ts);
 CREATE INDEX IF NOT EXISTS idx_label_events_uri_ts ON label_events(uri, ts);
+CREATE INDEX IF NOT EXISTS idx_label_events_target_did_ts ON label_events(target_did, ts);
+CREATE INDEX IF NOT EXISTS idx_label_events_ts ON label_events(ts);
 CREATE INDEX IF NOT EXISTS idx_alerts_rule_ts ON alerts(rule_id, ts);
 CREATE INDEX IF NOT EXISTS idx_labeler_evidence_did ON labeler_evidence(labeler_did, evidence_type);
 CREATE INDEX IF NOT EXISTS idx_probe_history_did_ts ON labeler_probe_history(labeler_did, ts);
 """
+
+# Full schema = tables + indexes. Used for fresh DB init.
+SCHEMA = SCHEMA_TABLES + SCHEMA_INDEXES
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str,
+                    columns: list[tuple[str, str]]) -> None:
+    """Add columns to a table if they don't already exist.
+
+    Each entry in columns is (column_name, type_and_default), e.g.
+    ("handle", "TEXT") or ("scan_count", "INTEGER DEFAULT 0").
+    Uses PRAGMA table_info guard so it's safe to call on tables that
+    already have the columns (idempotent across fresh-init and migration).
+    """
+    existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for col, typedef in columns:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
+
+
+def parse_target_did(uri: str | None) -> str | None:
+    """Extract the target DID from an AT URI (at://did:plc:xxx/...).
+
+    Returns None for non-AT URIs, bare DIDs, or malformed input.
+    """
+    if not uri:
+        return None
+    uri = uri.strip()
+    if not uri.startswith("at://"):
+        return None
+    parts = uri[5:].split("/", 1)
+    did = parts[0]
+    if did.startswith("did:plc:") or did.startswith("did:web:"):
+        return did
+    return None
+
+
+def _backfill_target_did(conn: sqlite3.Connection) -> None:
+    """Batch-update target_did from existing URIs. Called during v15→v16 migration."""
+    total = 0
+    while True:
+        rows = conn.execute(
+            "SELECT id, uri FROM label_events "
+            "WHERE target_did IS NULL AND uri LIKE 'at://%' "
+            "LIMIT 10000"
+        ).fetchall()
+        if not rows:
+            break
+        for r in rows:
+            did = parse_target_did(r["uri"])
+            if did:
+                conn.execute(
+                    "UPDATE label_events SET target_did = ? WHERE id = ?",
+                    (did, r["id"]),
+                )
+        conn.commit()
+        total += len(rows)
+        _log.info("backfill_target_did: %d rows updated (running total: %d)", len(rows), total)
+    if total > 0:
+        _log.info("backfill_target_did: complete, %d rows total", total)
 
 
 def connect(db_path: str, readonly: bool = False) -> sqlite3.Connection:
@@ -253,10 +349,24 @@ def connect(db_path: str, readonly: bool = False) -> sqlite3.Connection:
 def init_db(conn: sqlite3.Connection) -> None:
     current = get_schema_version(conn)
     if current is None:
-        conn.executescript(SCHEMA)
-        set_schema_version(conn, SCHEMA_VERSION)
-        conn.commit()
-        current = SCHEMA_VERSION
+        # Check whether core tables already exist (v0 DB: tables present, no meta).
+        # Check multiple tables to avoid misclassifying a partial/unrelated DB.
+        has_tables = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name IN ('label_events', 'labelers')"
+        ).fetchone()
+        if has_tables:
+            # v0 DB — create meta, set version 0, let migrate() walk the chain.
+            conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            set_schema_version(conn, 0)
+            conn.commit()
+            current = 0
+        else:
+            # Truly fresh DB — run full schema (tables + indexes).
+            conn.executescript(SCHEMA)
+            set_schema_version(conn, SCHEMA_VERSION)
+            conn.commit()
+            current = SCHEMA_VERSION
     if current > SCHEMA_VERSION:
         raise RuntimeError(f"DB schema version {current} is newer than code {SCHEMA_VERSION}")
     if current < SCHEMA_VERSION:
@@ -307,33 +417,28 @@ def set_schema_version(conn: sqlite3.Connection, version: int) -> None:
 def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
     if current == 0 and target >= 1:
         conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        conn.executescript(SCHEMA)
+        # Tables only — indexes may reference columns added by later migrations.
+        # Each migration creates its own indexes; the full chain will cover them.
+        conn.executescript(SCHEMA_TABLES)
         set_schema_version(conn, 1)
         current = 1
     if current == 1 and target >= 2:
-        # Add handle column to labelers
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
-        if "handle" not in cols:
-            conn.execute("ALTER TABLE labelers ADD COLUMN handle TEXT")
+        _ensure_columns(conn, "labelers", [("handle", "TEXT")])
         set_schema_version(conn, 2)
         current = 2
     if current == 2 and target >= 3:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
-        for col, typedef in [
+        _ensure_columns(conn, "labelers", [
             ("display_name", "TEXT"),
             ("service_endpoint", "TEXT"),
             ("labeler_class", "TEXT DEFAULT 'third_party'"),
             ("is_reference", "INTEGER DEFAULT 0"),
             ("endpoint_status", "TEXT DEFAULT 'unknown'"),
             ("last_probed", "TEXT"),
-        ]:
-            if col not in cols:
-                conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
+        ])
         set_schema_version(conn, 3)
         current = 3
     if current == 3 and target >= 4:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
-        for col, typedef in [
+        _ensure_columns(conn, "labelers", [
             ("visibility_class", "TEXT DEFAULT 'unresolved'"),
             ("reachability_state", "TEXT DEFAULT 'unknown'"),
             ("classification_confidence", "TEXT DEFAULT 'low'"),
@@ -347,9 +452,7 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
             ("declared_record", "INTEGER DEFAULT 0"),
             ("likely_test_dev", "INTEGER DEFAULT 0"),
             ("scan_count", "INTEGER DEFAULT 0"),
-        ]:
-            if col not in cols:
-                conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
+        ])
 
         # Create new tables
         conn.execute("""
@@ -400,8 +503,7 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         set_schema_version(conn, 4)
         current = 4
     if current == 4 and target >= 5:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
-        for col, typedef in [
+        _ensure_columns(conn, "labelers", [
             ("regime_state", "TEXT"),
             ("regime_reason_codes", "TEXT"),
             ("auditability_risk", "INTEGER"),
@@ -415,9 +517,7 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
             ("temporal_coherence_reasons", "TEXT"),
             ("derive_version", "TEXT"),
             ("derived_at", "TEXT"),
-        ]:
-            if col not in cols:
-                conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
+        ])
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS derived_receipts (
@@ -441,28 +541,22 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         set_schema_version(conn, 5)
         current = 5
     if current == 5 and target >= 6:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
-        for col, typedef in [
+        _ensure_columns(conn, "labelers", [
             ("regime_pending", "TEXT"),
             ("regime_pending_count", "INTEGER DEFAULT 0"),
-        ]:
-            if col not in cols:
-                conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
+        ])
         set_schema_version(conn, 6)
         current = 6
     if current == 6 and target >= 7:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
-        for col, typedef in [
+        _ensure_columns(conn, "labelers", [
             ("auditability_risk_prev", "INTEGER"),
             ("inference_risk_prev", "INTEGER"),
             ("temporal_coherence_prev", "INTEGER"),
-        ]:
-            if col not in cols:
-                conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
+        ])
         set_schema_version(conn, 7)
         current = 7
     if current == 7 and target >= 8:
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()]
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(alerts)").fetchall()}
         if "warmup_alert" not in cols:
             conn.execute("ALTER TABLE alerts ADD COLUMN warmup_alert INTEGER DEFAULT 0")
             # Mark all existing alerts as warmup (system was in warmup when they were created)
@@ -489,16 +583,13 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
             CREATE INDEX IF NOT EXISTS idx_ingest_outcomes_did_ts
             ON ingest_outcomes(labeler_did, ts)
         """)
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(labelers)").fetchall()]
-        for col, typedef in [
+        _ensure_columns(conn, "labelers", [
             ("coverage_ratio", "REAL"),
             ("coverage_window_successes", "INTEGER DEFAULT 0"),
             ("coverage_window_attempts", "INTEGER DEFAULT 0"),
             ("last_ingest_success_ts", "TEXT"),
             ("last_ingest_attempt_ts", "TEXT"),
-        ]:
-            if col not in cols:
-                conn.execute(f"ALTER TABLE labelers ADD COLUMN {col} {typedef}")
+        ])
         set_schema_version(conn, 9)
         current = 9
     if current == 9 and target >= 10:
@@ -538,9 +629,11 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         set_schema_version(conn, 11)
         current = 11
     if current == 11 and target >= 12:
-        conn.execute("ALTER TABLE derived_labeler_lag_7d ADD COLUMN p95_lag INTEGER")
-        conn.execute("ALTER TABLE derived_labeler_lag_7d ADD COLUMN p99_lag INTEGER")
-        conn.execute("ALTER TABLE derived_labeler_lag_7d ADD COLUMN p90_p50_ratio REAL")
+        _ensure_columns(conn, "derived_labeler_lag_7d", [
+            ("p95_lag", "INTEGER"),
+            ("p99_lag", "INTEGER"),
+            ("p90_p50_ratio", "REAL"),
+        ])
         set_schema_version(conn, 12)
         current = 12
     if current == 12 and target >= 13:
@@ -612,6 +705,56 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         """)
         set_schema_version(conn, 15)
         current = 15
+    if current == 15 and target >= 16:
+        _ensure_columns(conn, "label_events", [("target_did", "TEXT")])
+        conn.commit()  # Release DDL lock before long DML
+
+        # Backfill target_did from existing URIs
+        _backfill_target_did(conn)
+
+        # Indexes (after backfill to avoid index maintenance during bulk update)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_label_events_target_did_ts
+            ON label_events(target_did, ts)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_label_events_ts
+            ON label_events(ts)
+        """)
+
+        # Rollup tables
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS derived_author_day (
+                author_did   TEXT NOT NULL,
+                day_epoch    INTEGER NOT NULL,
+                events       INTEGER NOT NULL,
+                applies      INTEGER NOT NULL,
+                removes      INTEGER NOT NULL,
+                labelers     INTEGER NOT NULL,
+                targets      INTEGER NOT NULL,
+                vals         INTEGER NOT NULL,
+                PRIMARY KEY (author_did, day_epoch)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS derived_author_labeler_day (
+                author_did   TEXT NOT NULL,
+                day_epoch    INTEGER NOT NULL,
+                labeler_did  TEXT NOT NULL,
+                events       INTEGER NOT NULL,
+                applies      INTEGER NOT NULL,
+                removes      INTEGER NOT NULL,
+                targets      INTEGER NOT NULL,
+                PRIMARY KEY (author_did, day_epoch, labeler_did)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_derived_author_labeler_day_author
+            ON derived_author_labeler_day(author_did)
+        """)
+
+        set_schema_version(conn, 16)
+        current = 16
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
@@ -633,8 +776,8 @@ def insert_label_events(conn: sqlite3.Connection, rows: Iterable[tuple]) -> int:
     cur = conn.executemany(
         """
         INSERT OR IGNORE INTO label_events(
-            labeler_did, src, uri, cid, val, neg, exp, sig, ts, event_hash
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            labeler_did, src, uri, cid, val, neg, exp, sig, ts, event_hash, target_did
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )

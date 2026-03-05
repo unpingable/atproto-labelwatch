@@ -16,7 +16,7 @@ def _insert_events(conn, labeler: str, targets: list[tuple[str, int]], base_hour
             canonical = f'{{"labeler_did":"{labeler}","src":"{labeler}","uri":"{uri}","val":"test","neg":0,"ts":"{ts}"}}'
             from labelwatch.utils import hash_sha256
             eh = hash_sha256(canonical + str(i))
-            rows.append((labeler, labeler, uri, None, "test", 0, None, None, ts, eh))
+            rows.append((labeler, labeler, uri, None, "test", 0, None, None, ts, eh, None))
             db.upsert_labeler(conn, labeler, ts)
             i += 1
     db.insert_label_events(conn, rows)

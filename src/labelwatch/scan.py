@@ -799,6 +799,92 @@ def _update_val_dist_day(conn) -> None:
     )
 
 
+def _update_author_day(conn) -> None:
+    """Incrementally update derived_author_day from label_events.
+
+    Recomputes the last 7 days (covers late-arriving timestamps).
+    Prunes rows older than 60 days.
+    Only counts labels on posts (uri LIKE 'at://%/app.bsky.feed.post/%').
+    """
+    now_epoch = int(time.time())
+    start_day_epoch = ((now_epoch // 86400) - 6) * 86400  # 7 days back
+    cutoff_iso = time.strftime("%Y-%m-%dT00:00:00.000000Z", time.gmtime(start_day_epoch))
+    retention_cutoff_day_epoch = ((now_epoch // 86400) - 60) * 86400
+
+    # Delete recompute window
+    conn.execute(
+        "DELETE FROM derived_author_day WHERE day_epoch >= ?",
+        (start_day_epoch,),
+    )
+
+    # Reinsert from label_events
+    conn.execute("""
+        INSERT OR REPLACE INTO derived_author_day
+            (author_did, day_epoch, events, applies, removes, labelers, targets, vals)
+        SELECT  le.target_did AS author_did,
+                (CAST(strftime('%s', le.ts) AS INTEGER) / 86400) * 86400 AS day_epoch,
+                COUNT(*) AS events,
+                SUM(CASE WHEN le.neg = 0 THEN 1 ELSE 0 END) AS applies,
+                SUM(CASE WHEN le.neg = 1 THEN 1 ELSE 0 END) AS removes,
+                COUNT(DISTINCT le.labeler_did) AS labelers,
+                COUNT(DISTINCT le.uri) AS targets,
+                COUNT(DISTINCT le.val) AS vals
+        FROM label_events le
+        WHERE le.target_did IS NOT NULL
+          AND le.uri LIKE 'at://%/app.bsky.feed.post/%'
+          AND le.ts >= :cutoff_iso
+        GROUP BY le.target_did, day_epoch
+    """, {"cutoff_iso": cutoff_iso})
+
+    # Prune old rows
+    conn.execute(
+        "DELETE FROM derived_author_day WHERE day_epoch < ?",
+        (retention_cutoff_day_epoch,),
+    )
+
+
+def _update_author_labeler_day(conn) -> None:
+    """Incrementally update derived_author_labeler_day from label_events.
+
+    Recomputes the last 7 days. Prunes rows older than 60 days.
+    Only counts labels on posts (uri LIKE 'at://%/app.bsky.feed.post/%').
+    """
+    now_epoch = int(time.time())
+    start_day_epoch = ((now_epoch // 86400) - 6) * 86400
+    cutoff_iso = time.strftime("%Y-%m-%dT00:00:00.000000Z", time.gmtime(start_day_epoch))
+    retention_cutoff_day_epoch = ((now_epoch // 86400) - 60) * 86400
+
+    # Delete recompute window
+    conn.execute(
+        "DELETE FROM derived_author_labeler_day WHERE day_epoch >= ?",
+        (start_day_epoch,),
+    )
+
+    # Reinsert from label_events
+    conn.execute("""
+        INSERT OR REPLACE INTO derived_author_labeler_day
+            (author_did, day_epoch, labeler_did, events, applies, removes, targets)
+        SELECT  le.target_did AS author_did,
+                (CAST(strftime('%s', le.ts) AS INTEGER) / 86400) * 86400 AS day_epoch,
+                le.labeler_did,
+                COUNT(*) AS events,
+                SUM(CASE WHEN le.neg = 0 THEN 1 ELSE 0 END) AS applies,
+                SUM(CASE WHEN le.neg = 1 THEN 1 ELSE 0 END) AS removes,
+                COUNT(DISTINCT le.uri) AS targets
+        FROM label_events le
+        WHERE le.target_did IS NOT NULL
+          AND le.uri LIKE 'at://%/app.bsky.feed.post/%'
+          AND le.ts >= :cutoff_iso
+        GROUP BY le.target_did, day_epoch, le.labeler_did
+    """, {"cutoff_iso": cutoff_iso})
+
+    # Prune old rows
+    conn.execute(
+        "DELETE FROM derived_author_labeler_day WHERE day_epoch < ?",
+        (retention_cutoff_day_epoch,),
+    )
+
+
 def _compute_entropy_7d(conn) -> None:
     """Compute per-labeler entropy summary from derived_val_dist_day."""
     now_epoch = int(time.time())
@@ -1007,5 +1093,15 @@ def run_derive(conn, config: Config, now: datetime | None = None) -> None:
         _compute_entropy_7d(conn)
     except Exception as exc:
         _log.warning("entropy 7d compute failed: %s", exc)
+
+    try:
+        _update_author_day(conn)
+    except Exception as exc:
+        _log.warning("author day rollup failed: %s", exc)
+
+    try:
+        _update_author_labeler_day(conn)
+    except Exception as exc:
+        _log.warning("author labeler day rollup failed: %s", exc)
 
     conn.commit()

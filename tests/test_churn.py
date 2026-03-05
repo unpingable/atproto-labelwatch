@@ -14,7 +14,7 @@ def _insert_events_at(conn, labeler: str, uris: list[str], hour: int):
         ts = f"2024-01-01T{hour:02d}:{i % 60:02d}:00Z"
         canonical = f'{{"labeler_did":"{labeler}","uri":"{uri}","hour":{hour},"i":{i}}}'
         eh = hash_sha256(canonical)
-        rows.append((labeler, labeler, uri, None, "test", 0, None, None, ts, eh))
+        rows.append((labeler, labeler, uri, None, "test", 0, None, None, ts, eh, None))
         db.upsert_labeler(conn, labeler, ts)
     db.insert_label_events(conn, rows)
     conn.commit()
