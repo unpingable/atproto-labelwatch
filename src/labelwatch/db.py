@@ -390,8 +390,16 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate(conn, current, SCHEMA_VERSION)
         conn.commit()
 
-    # Update query planner statistics so grouped queries use indexes
-    conn.execute("ANALYZE")
+    # Update query planner statistics so grouped queries use indexes.
+    # ANALYZE can be slow on large DBs and may hit busy_timeout if another
+    # process holds a write lock — it's an optimization, not required.
+    try:
+        conn.execute("ANALYZE")
+    except sqlite3.OperationalError as e:
+        if "locked" in str(e):
+            _log.warning("ANALYZE skipped (database locked) — query planner stats may be stale")
+        else:
+            raise
 
     set_meta(conn, "code_schema_version_seen", str(SCHEMA_VERSION))
     git_commit = get_git_commit()
