@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import sys
 from typing import Optional
 
+from . import climate as climate_mod
 from . import db, discover, ingest, scan
 from . import report as report_mod
 from . import runner
@@ -242,6 +243,20 @@ def cmd_census(args) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_climate(args) -> None:
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    conn = db.connect(cfg.db_path)
+    db.init_db(conn)
+    payload = climate_mod.generate_climate(
+        conn, target_did=args.did, window_days=args.window,
+        out_dir=args.out, fmt=args.out_format,
+    )
+    if args.out_format == "json":
+        print(json.dumps(payload, indent=2))
+
+
 def cmd_reclassify(args) -> None:
     cfg = load_config(args.config)
     if args.db_path:
@@ -351,6 +366,14 @@ def main(argv: Optional[list] = None) -> None:
 
     p_census = sub.add_parser("census", help="Show labeler classification census")
     p_census.set_defaults(func=cmd_census)
+
+    p_climate = sub.add_parser("climate", help="Generate label climate for a DID")
+    p_climate.add_argument("--did", required=True, help="Target DID")
+    p_climate.add_argument("--window", type=int, default=30, help="Window in days (max 60)")
+    p_climate.add_argument("--out", default=".", help="Output directory")
+    p_climate.add_argument("--format", choices=["json", "html", "both"], default="both",
+                           dest="out_format", help="Output format")
+    p_climate.set_defaults(func=cmd_climate)
 
     p_reclass = sub.add_parser("reclassify", help="Recompute classifications from evidence")
     p_reclass.add_argument("--dry-run", action="store_true", help="Show diff without writing")
