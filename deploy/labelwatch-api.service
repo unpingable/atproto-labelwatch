@@ -27,9 +27,8 @@ CPUQuota=25%
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-# Cache dir only — DB is opened readonly, no write access needed to DB dir
 ReadWritePaths=/var/lib/labelwatch/cache
-ReadOnlyPaths=/var/lib/labelwatch/labelwatch.db
+ReadOnlyPaths=/var/lib/labelwatch /opt/labelwatch
 ProtectHome=true
 PrivateTmp=yes
 
