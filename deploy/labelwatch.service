@@ -25,7 +25,7 @@ CPUQuota=50%
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/labelwatch /var/www/labelwatch
+ReadWritePaths=/var/lib/labelwatch /var/www
 ProtectHome=true
 
 [Install]
