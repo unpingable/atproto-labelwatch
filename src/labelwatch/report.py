@@ -1174,11 +1174,11 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
   <h3>My Label Climate</h3>
   <p class="small">Look up labeling activity targeting any account.</p>
   <form id="climate-form" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:end;">
-    <div style="min-width:200px;max-width:400px;">
+    <div style="flex:1 1 200px;max-width:400px;">
       <label for="climate-did" class="small">Handle or DID</label>
-      <input id="climate-did" type="text" placeholder="@handle.bsky.social or did:plc:..." style="width:100%;padding:0.3rem 0.5rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--bg,#fff);color:var(--fg,#111);">
+      <input id="climate-did" type="text" placeholder="@handle.bsky.social or did:plc:..." style="width:100%;padding:0.3rem 0.5rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--bg,#fff);color:var(--fg,#111);box-sizing:border-box;">
     </div>
-    <div style="flex-shrink:0;">
+    <div style="flex:0 0 auto;">
       <label for="climate-window" class="small">Window</label>
       <select id="climate-window" style="padding:0.3rem 0.5rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--bg,#fff);color:var(--fg,#111);">
         <option value="7">7 days</option>
@@ -1186,7 +1186,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         <option value="60">60 days</option>
       </select>
     </div>
-    <button id="climate-submit" type="submit" style="flex-shrink:0;padding:0.3rem 1rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--accent,#2980b9);color:#fff;cursor:pointer;">Look up</button>
+    <button id="climate-submit" type="submit" style="flex:0 0 auto;padding:0.3rem 1rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--accent,#2980b9);color:#fff;cursor:pointer;">Look up</button>
   </form>
   <p id="climate-error" class="small" style="color:var(--red,#c0392b);margin-top:0.3rem;display:none;"></p>
 </div>

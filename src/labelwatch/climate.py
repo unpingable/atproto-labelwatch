@@ -322,7 +322,7 @@ def generate_climate(conn, target_did: str, window_days: int = 30,
             "empty": True,
             "target_did": target_did,
             "window_days": window_days,
-            "message": f"No label activity found for {target_did} in the last {window_days} days.",
+            "message": f"No label activity found in the last {window_days} days.",
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
         if fmt in ("json", "both"):
@@ -404,11 +404,22 @@ def _render_html(payload: Dict[str, Any], target_did: str,
         title = f"Label Climate — {target_did}"
         subtitle_who = html.escape(target_did)
 
+    nav = '<p class="small" style="margin-bottom:0.5rem;"><a href="/">&larr; Back to dashboard</a></p>'
+
     if payload.get("empty"):
+        other_windows = [w for w in (7, 30, 60) if w != window_days]
+        try_links = " ".join(
+            f'<a href="/v1/climate/{html.escape(target_did)}?window={w}&format=html'
+            f'{"&handle=" + html.escape(handle) if handle else ""}">{w} days</a>'
+            for w in other_windows
+        )
         body = (
-            f'<p class="small">{subtitle_who} — last {window_days} days</p>'
-            '<div class="card">'
-            f'<p>{html.escape(payload.get("message", "No label activity found."))}</p>'
+            nav
+            + f'<p class="small">{subtitle_who} — last {window_days} days</p>'
+            '<div class="card" style="text-align:center;padding:2rem;">'
+            '<p style="font-size:1.3rem;margin-bottom:0.5rem;">No label activity found</p>'
+            f'<p class="small">No labelers have applied labels to posts by this account in the last {window_days} days.</p>'
+            f'<p class="small" style="margin-top:1rem;">Try a different window: {try_links}</p>'
             '</div>'
         )
         return _layout(title, body)
@@ -417,7 +428,8 @@ def _render_html(payload: Dict[str, Any], target_did: str,
     week = payload["week_deltas"]
     sections: List[str] = []
 
-    # Subtitle
+    # Nav + subtitle
+    sections.append(nav)
     sections.append(
         f'<p class="small">{subtitle_who} — last {window_days} days</p>'
     )
