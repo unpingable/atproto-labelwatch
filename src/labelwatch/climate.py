@@ -396,12 +396,17 @@ def _atomic_write_html(out_dir: str, payload: Dict[str, Any],
 def _render_html(payload: Dict[str, Any], target_did: str,
                  window_days: int) -> str:
     """Render the climate payload as a standalone HTML page."""
-    # _layout() escapes title, so pass raw DID here (no double-escape)
-    title = f"Label Climate — {target_did}"
+    handle = payload.get("target_handle")
+    if handle:
+        title = f"Label Climate — @{handle}"
+        subtitle_who = f'@{html.escape(handle)} <span class="small" style="opacity:0.6;">({html.escape(target_did)})</span>'
+    else:
+        title = f"Label Climate — {target_did}"
+        subtitle_who = html.escape(target_did)
 
     if payload.get("empty"):
         body = (
-            f'<p class="small">What\'s being done to your posts? — last {window_days} days</p>'
+            f'<p class="small">{subtitle_who} — last {window_days} days</p>'
             '<div class="card">'
             f'<p>{html.escape(payload.get("message", "No label activity found."))}</p>'
             '</div>'
@@ -414,7 +419,7 @@ def _render_html(payload: Dict[str, Any], target_did: str,
 
     # Subtitle
     sections.append(
-        f'<p class="small">What\'s being done to your posts? — last {window_days} days</p>'
+        f'<p class="small">{subtitle_who} — last {window_days} days</p>'
     )
 
     # --- Summary cards ---

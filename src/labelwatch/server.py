@@ -326,13 +326,16 @@ class ClimateHandler(BaseHTTPRequestHandler):
             self._send_error(503, "Server busy")
             return
 
+        handle = query.get("handle", [None])[0]
+
         try:
-            self._generate_and_respond(did, window, fmt)
+            self._generate_and_respond(did, window, fmt, handle=handle)
         finally:
             if self.semaphore:
                 self.semaphore.release()
 
-    def _generate_and_respond(self, did: str, window: int, fmt: str):
+    def _generate_and_respond(self, did: str, window: int, fmt: str,
+                              handle: str = None):
         # Generation with timeout
         result: Dict[str, Any] = {}
         error = [None]
@@ -375,6 +378,8 @@ class ClimateHandler(BaseHTTPRequestHandler):
 
         payload = result["payload"]
         public = public_climate_payload(payload)
+        if handle:
+            public["target_handle"] = handle
 
         headers = {"Cache-Control": "private, max-age=300"}
 
