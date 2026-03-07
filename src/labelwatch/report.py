@@ -1172,11 +1172,11 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     climate_card = """
 <div class="card" style="margin-top:1rem;">
   <h3>My Label Climate</h3>
-  <p class="small">Look up labeling activity targeting any DID's posts. Find yours at <a href="https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=yourhandle.bsky.social" target="_blank" rel="noopener" style="color:var(--accent,#2980b9);">resolveHandle</a>.</p>
+  <p class="small">Look up labeling activity targeting any account.</p>
   <form id="climate-form" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:end;">
-    <div style="flex:1;min-width:200px;">
-      <label for="climate-did" class="small">DID</label>
-      <input id="climate-did" type="text" placeholder="did:plc:..." style="width:100%;padding:0.3rem 0.5rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--bg,#fff);color:var(--fg,#111);">
+    <div style="flex:1;min-width:200px;max-width:400px;">
+      <label for="climate-did" class="small">Handle or DID</label>
+      <input id="climate-did" type="text" placeholder="@handle.bsky.social or did:plc:..." style="width:100%;padding:0.3rem 0.5rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--bg,#fff);color:var(--fg,#111);">
     </div>
     <div>
       <label for="climate-window" class="small">Window</label>
@@ -1186,16 +1186,48 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         <option value="60">60 days</option>
       </select>
     </div>
-    <button type="submit" style="padding:0.3rem 1rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--accent,#2980b9);color:#fff;cursor:pointer;">Look up</button>
+    <button id="climate-submit" type="submit" style="padding:0.3rem 1rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--accent,#2980b9);color:#fff;cursor:pointer;">Look up</button>
   </form>
+  <p id="climate-error" class="small" style="color:var(--red,#c0392b);margin-top:0.3rem;display:none;"></p>
 </div>
 <script>
 document.getElementById('climate-form').addEventListener('submit', function(e) {
   e.preventDefault();
-  var did = document.getElementById('climate-did').value.trim();
+  var raw = document.getElementById('climate-did').value.trim();
   var w = document.getElementById('climate-window').value;
-  if (!did) return;
-  window.location.href = '/v1/climate/' + encodeURIComponent(did) + '?window=' + w + '&format=html';
+  var errEl = document.getElementById('climate-error');
+  var btn = document.getElementById('climate-submit');
+  errEl.style.display = 'none';
+  if (!raw) return;
+
+  function go(did) {
+    window.location.href = '/v1/climate/' + encodeURIComponent(did) + '?window=' + w + '&format=html';
+  }
+
+  // Already a DID — go directly
+  if (raw.startsWith('did:')) { go(raw); return; }
+
+  // Strip leading @ if present
+  var handle = raw.replace(/^@/, '');
+
+  // Resolve handle to DID
+  btn.disabled = true;
+  btn.textContent = 'Resolving\u2026';
+  fetch('https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=' + encodeURIComponent(handle))
+    .then(function(r) {
+      if (!r.ok) throw new Error(r.status);
+      return r.json();
+    })
+    .then(function(data) {
+      if (data.did) { go(data.did); }
+      else { throw new Error('no DID'); }
+    })
+    .catch(function() {
+      errEl.textContent = 'Could not resolve handle "' + handle + '"';
+      errEl.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Look up';
+    });
 });
 </script>
 """
