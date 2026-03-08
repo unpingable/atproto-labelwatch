@@ -61,12 +61,12 @@
 - ~~Climate empty state + back link~~ (done — centered layout, try-other-window links, nav link)
 - **Milestone: Boundary Instability (B.3 synthesis)** — cross-labeler disagreement, lead/lag, JSD divergence, churn deltas, assembled into BoundaryFightCard compound signal. Two phases: primitives first, synthesis second. See [`docs/MILESTONE_BOUNDARY_INSTABILITY.md`](docs/MILESTONE_BOUNDARY_INSTABILITY.md).
 
-**UI polish (from audit):**
-- Tables not responsive on mobile — Top Labelers (6 cols) overflows on narrow screens. Wrap in `overflow-x: auto` or stack.
-- Sparkline SVGs lack `aria-label` / `role="img"` — invisible to screen readers
-- Dark mode missing `--accent` CSS variable — button uses hardcoded `#2980b9`, too saturated on dark bg
-- Color contrast: `opacity:0.6` on DID text in climate subtitle may fail WCAG AA
-- Summary cards: "Applies" and "Removes" could merge into one card to reduce clutter
+**UI polish (from audit):** all done
+- ~~Tables responsive~~ (overflow-x:auto wrapper)
+- ~~Sparkline a11y~~ (role="img" + aria-label)
+- ~~Dark mode --accent~~ (#3498db)
+- ~~DID contrast~~ (opacity 0.6 → 0.75)
+- ~~Merge Applies/Removes card~~
 
 **My Label Climate:**
 - ~~Phase 1: schema v16, target_did, rollup tables~~
