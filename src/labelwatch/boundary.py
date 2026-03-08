@@ -472,13 +472,17 @@ def run_boundary_pass(conn, config: Config, now: datetime) -> dict:
         max_targets=config.boundary_max_targets,
     )
     if not shared:
-        return {
+        empty_stats = {
             "shared_targets": 0,
             "contradiction_edges": 0,
             "lead_lag_edges": 0,
             "edges_stored": 0,
             "summaries_stored": 0,
         }
+        from . import db as _db
+        _db.set_meta(conn, "boundary_last_run_at", computed_at)
+        _db.set_meta(conn, "boundary_last_counts_json", stable_json(empty_stats))
+        return empty_stats
 
     uris = [t["uri"] for t in shared]
 
@@ -525,4 +529,10 @@ def run_boundary_pass(conn, config: Config, now: datetime) -> dict:
         stats["shared_targets"], stats["contradiction_edges"],
         stats["lead_lag_edges"], stats["summaries_stored"],
     )
+
+    # Write bake-visibility meta keys
+    from . import db as _db
+    _db.set_meta(conn, "boundary_last_run_at", computed_at)
+    _db.set_meta(conn, "boundary_last_counts_json", stable_json(stats))
+
     return stats
