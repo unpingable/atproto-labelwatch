@@ -55,7 +55,7 @@
 ## Up next
 
 **Near-term (adds signal):**
-- Per-rule activation budgets (cap alerts per window, quarantine on overshoot)
+- ~~Per-rule activation budgets~~ (done — 10 alerts per rule/labeler per 24h, gate at insertion)
 - ~~Handle-to-DID resolution in Climate lookup~~ (done — resolve client-side, pass handle to renderer)
 - ~~Climate form layout bug~~ (done — Firefox flex shorthand fix)
 - ~~Climate empty state + back link~~ (done — centered layout, try-other-window links, nav link)
