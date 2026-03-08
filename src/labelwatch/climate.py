@@ -592,6 +592,8 @@ def _render_html(payload: Dict[str, Any], target_did: str,
         f'(derived_author_day, derived_author_labeler_day) and raw label_events. '
         f'Window: {window_days} days. Post-only filter (app.bsky.feed.post). '
         f'Generated: {gen_at}.</p>'
+        '<p>Want to explore the actual posts behind these labels? '
+        'See <a href="https://github.com/unpingable/atproto-stats">atproto-stats</a>.</p>'
         '</div>'
     )
 

@@ -26,18 +26,9 @@
 
 12. **My Label Climate Phase 2** — HTTP query layer. `server.py` with `GET /v1/climate/{did}` (json/html) and `GET /health`. Token bucket rate limiter, disk cache (atomic writes), concurrency semaphore, generation timeout, kill switch (`CLIMATE_API_DISABLED`). Public payload whitelist strips `recent_receipts`. Loopback-only bind. `labelwatch serve` CLI subcommand. Systemd unit (`labelwatch-api.service`). Climate lookup form on index page. Tier-0 hardening pass with `docs/HARDENING.md`.
 
-## Schema history
-
-| Version | What changed |
-|---------|--------------|
-| v1-v3 | Initial schema through early iterations |
-| v4 | Evidence-based classification, labeler_evidence table, probe_history table |
-| v5 | Derive module: regime_state, risk scores, temporal_coherence, derived_receipts table |
-| v6 | Regime hysteresis: regime_pending, regime_pending_count columns |
-| v7 | Score deltas: auditability_risk_prev, inference_risk_prev, temporal_coherence_prev |
-| v8 | Warmup alert quarantine: warmup_alert column on alerts table |
-
 13. **Jetstream discovery + governance sensors** — sidecar process (`discovery_stream.py`) listens to Jetstream for `app.bsky.labeler.service/self` records. Schema v17: `discovery_events` audit trail. Shared `upsert_discovered_labeler()` helper. Backstop scrape of `labeler-lists.bsky.social` on timer. Five report health cards: stream liveness, last discovery, unknown DIDs, record mutations, coverage delta. `labelwatch discover-stream` CLI, systemd unit, `labelwatch coverage-delta` and `db-optimize` commands.
+
+14. **Climate deep links + report memory fix** — Examples column in Top Labelers and Top Values tables (3 clickable bsky.app links per row). Report: replaced `SELECT * FROM alerts` fetchall (44k-row allocation bomb) with targeted queries + streaming JSON writer. Per-alert pages capped to recent 200. RSS monitoring in runner (`_rss_mb()` logged after each `_release_memory()`).
 
 ## Schema history
 
@@ -88,7 +79,30 @@
 **Later:**
 - **Silence Adjudicator v0** — regime classifier for labeler silence. Not "is it quiet?" (timestamp comparison) but "why is it quiet?" (regime taxonomy: normal silence, burst gap, upstream PDS issue, labeler death, behavioral drift, firehose issue, local ingest issue, unresolved). Cadence sketches (rolling inter-event intervals → behavioral classes: metronomic/bursty/sparse/dormant), peer comparison by PDS/hosting, governor-constrained probes, receipt trail with ground truth hooks for retrospective learning. Sidecar process, own SQLite, read-only against labelwatch DB. Spec pinned at `docs/SILENCE_ADJUDICATOR_V0.md`. Build when you find yourself staring at timestamps wishing for a better answer.
 - **Monitoring / alerting** — something lightweight for service health (labelwatch, labelwatch-discovery, labelwatch-api). Uptime checks, restart detection, disk/memory. TBD what tool — not Prometheus, not Zabbix. Maybe just a simple healthcheck script + webhook, or a hosted service.
+- **List membership tracking** — ATProto has no inverse "what lists am I on?" query. `app.bsky.graph.listitem` records live in the *list owner's* repo. Only way to build a subject-centric index: Jetstream sidecar with `wantedCollections=app.bsky.graph.listitem`, filter locally by `record.subject == target_did`. Same pattern as discovery_stream.py. Could share the process with a multi-collection filter. Not retroactive without third-party backfill (clearsky-style). See [atproto-stats](https://github.com/unpingable/atproto-stats) for post-level analysis.
 - Cross-project receipt verification with driftwatch
 - Casefile / annotation ledger for human review notes
 - Caddy-level rate limiting for `/v1/climate/*`
 - CSP headers (requires moving inline JS out of HTML templates)
+
+## Conceptual threads (cross-project)
+
+These ideas span labelwatch, driftwatch, and atproto-stats. Captured here for reference; implementation lives in the appropriate project.
+
+**Legitimacy Gradient** (driftwatch / atproto-stats territory):
+- Per-post "demand minus receipts" score. Demand = rhetorical authority operators (consensus conjuring, authority laundering, moral blackmail, silence inversion, epistemic quarantine). Receipts = attribution, scope markers, specificity, falsifiability.
+- No ML needed — pattern families + counters. Same approach as spam filtering.
+- Key insight: "no free legitimacy tokens" — scope requirements for amplification, not existence.
+- Operator taxonomy: consensus conjuring ("everyone knows"), silence inversion ("why isn't media covering"), preemptive delegitimation ("if you disagree you're X"), authority laundering ("experts say" without cite), moral blackmail ("you must" without concrete action), epistemic quarantine ("do your own research"), certainty theater ("100% guaranteed").
+- Receipt classes: URLs/named sources, scope qualifiers, dates/counts/specifics, counterevidence acknowledgment.
+
+**Campaign detector** (bridge between driftwatch discourse + labelwatch enforcement):
+- Correlated anomalies across three planes: discourse (legitimacy gradient spikes), attention (volume + resharing), enforcement (labeler co-movement on same targets).
+- Lead/lag attribution: `corr(L(t), E(t+τ))` — did rhetoric push enforcement, or did a label event trigger pile-on?
+- Campaign types: brigade/pile-on (moral blackmail → labeler response), list push (enforcement first, discourse weak), narrative injection (authority laundering, targets are claims not people), jurisdiction war (labelers diverge, discourse attacks labelers themselves).
+- Labelwatch already has the enforcement-side primitives: boundary edges, cross-labeler overlap, convergence bursts, regime shifts.
+
+**Labeler jurisdiction drift** (labelwatch):
+- Treat labelers as competing jurisdictions with regime fingerprints (vocabulary profile, targeting shape, cadence, churn, cross-labeler coupling).
+- Regime shift taxonomy: automation toggle, upstream list update, policy rewrite, campaign pressure, ops degradation.
+- Boundary Phase 1 first-cook finding: JSD=1.0 everywhere = orthogonality (novelty vs novelty badge labelers), not semantic conflict. Phase 2 needs domain tags on families (moderation|novelty|metadata|political) to separate real conflict from ontology differences.
