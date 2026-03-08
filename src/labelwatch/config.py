@@ -64,6 +64,9 @@ class Config:
     coverage_window_minutes: int = 30
     coverage_threshold: float = 0.5
 
+    alert_budget_per_rule: int = 10  # max alerts per (rule, labeler) per window
+    alert_budget_window_hours: int = 24  # budget window size
+
     driftwatch_facts_path: str = ""  # path to facts.sqlite, empty = disabled
 
     def to_receipt_dict(self) -> dict:
@@ -85,6 +88,8 @@ class Config:
             "spike_min_count_default": self.spike_min_count_default,
             "confidence_min_events": self.confidence_min_events,
             "confidence_min_age_hours": self.confidence_min_age_hours,
+            "alert_budget_per_rule": self.alert_budget_per_rule,
+            "alert_budget_window_hours": self.alert_budget_window_hours,
         }
 
 

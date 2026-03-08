@@ -432,13 +432,34 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
         )
 
 
+def _build_budget_counts(conn, budget_cutoff: str) -> dict[tuple[str, str], int]:
+    """Count existing alerts per (rule_id, labeler_did) in the budget window."""
+    rows = conn.execute(
+        "SELECT rule_id, labeler_did, COUNT(*) AS c FROM alerts WHERE ts >= ? GROUP BY rule_id, labeler_did",
+        (budget_cutoff,),
+    ).fetchall()
+    return {(r["rule_id"], r["labeler_did"]): r["c"] for r in rows}
+
+
 def run_scan(conn, config: Config, now: datetime | None = None) -> int:
     if now is None:
         now = now_utc()
     alerts = run_rules(conn, config, now)
     cfg_hash = config_hash(config.to_receipt_dict())
 
+    # Budget gate: count existing alerts per (rule, labeler) in window
+    budget = config.alert_budget_per_rule
+    budget_cutoff = format_ts(now - timedelta(hours=config.alert_budget_window_hours))
+    budget_counts = _build_budget_counts(conn, budget_cutoff)
+    budget_suppressed = 0
+
     for alert in alerts:
+        key = (alert["rule_id"], alert["labeler_did"])
+        current = budget_counts.get(key, 0)
+        if current >= budget:
+            budget_suppressed += 1
+            continue
+
         inputs_json = stable_json(alert["inputs"])
         evidence_json = json.dumps(alert["evidence_hashes"], sort_keys=True)
         receipt = receipt_hash(
@@ -466,12 +487,17 @@ def run_scan(conn, config: Config, now: datetime | None = None) -> int:
                 is_warmup,
             ),
         )
+        budget_counts[key] = current + 1
+
+    if budget_suppressed:
+        _log.info("Budget suppressed %d alerts (limit %d per rule/labeler per %dh)",
+                   budget_suppressed, budget, config.alert_budget_window_hours)
 
     # Batch increment scan_count for all labelers (1 query instead of N)
     conn.execute("UPDATE labelers SET scan_count = scan_count + 1")
 
     conn.commit()
-    return len(alerts)
+    return len(alerts) - budget_suppressed
 
 
 def _update_coverage_columns(conn, config: Config, now: datetime) -> None:
