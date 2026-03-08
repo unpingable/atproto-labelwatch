@@ -399,7 +399,7 @@ def _render_html(payload: Dict[str, Any], target_did: str,
     handle = payload.get("target_handle")
     if handle:
         title = f"Label Climate — @{handle}"
-        subtitle_who = f'@{html.escape(handle)} <span class="small" style="opacity:0.6;">({html.escape(target_did)})</span>'
+        subtitle_who = f'@{html.escape(handle)} <span class="small" style="opacity:0.75;">({html.escape(target_did)})</span>'
     else:
         title = f"Label Climate — {target_did}"
         subtitle_who = html.escape(target_did)
@@ -452,12 +452,8 @@ def _render_html(payload: Dict[str, Any], target_did: str,
         <div class="value">{summary["unique_posts"]:,}</div>
       </div>
       <div class="card health-metric">
-        <div class="label">Applies</div>
-        <div class="value">{summary["applies"]:,}</div>
-      </div>
-      <div class="card health-metric">
-        <div class="label">Removes</div>
-        <div class="value">{summary["removes"]:,}</div>
+        <div class="label">Applies / Removes</div>
+        <div class="value">{summary["applies"]:,} / {summary["removes"]:,}</div>
       </div>
       <div class="card health-metric">
         <div class="label">Labelers</div>

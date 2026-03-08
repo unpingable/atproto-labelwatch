@@ -102,7 +102,7 @@ def _visibility_badge(vis_class: Optional[str]) -> str:
 STYLE = """
 :root {
   --bg: #fff; --fg: #111; --fg-muted: #666; --border: #ddd;
-  --link: #0b5394; --link-hover-bg: #f0f7fb;
+  --link: #0b5394; --link-hover-bg: #f0f7fb; --accent: #2980b9;
   --card-bg: #fff; --card-border: #ddd;
   --anomaly-bg: #fff8f0;
   --methods-bg: #f8f9fa; --methods-border: #e9ecef;
@@ -134,6 +134,7 @@ STYLE = """
   --badge-fixated-bg: #3a2a1a; --badge-fixated-fg: #e6a866;
   --badge-flipflop-bg: #2a2040; --badge-flipflop-fg: #c0a8e6;
   --badge-lowconf-bg: #2a2a2a; --badge-lowconf-fg: #aaa;
+  --accent: #3498db;
   --pre-bg: #16213e;
 }
 body { font-family: Georgia, "Times New Roman", serif; margin: 2rem; color: var(--fg); background: var(--bg); }
@@ -392,12 +393,13 @@ def _table(headers: List[str], rows: List[List[str]]) -> str:
     callers must pre-escape all untrusted content (html.escape) before passing."""
     head = "".join(f"<th>{escape(h)}</th>" for h in headers)
     body = "".join("<tr>" + "".join(f"<td>{cell}</td>" for cell in row) + "</tr>" for row in rows)
-    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    return f'<div style="overflow-x:auto;"><table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
 
 
-def _sparkline_svg(values: List[int], width: int = 120, height: int = 24) -> str:
+def _sparkline_svg(values: List[int], width: int = 120, height: int = 24,
+                   label: str = "Activity sparkline") -> str:
     if not values or max(values) == 0:
-        return f'<svg class="sparkline" width="{width}" height="{height}"></svg>'
+        return f'<svg class="sparkline" width="{width}" height="{height}" role="img" aria-label="{escape(label)}"></svg>'
     n = len(values)
     peak = max(values)
     pad = 1
@@ -408,7 +410,7 @@ def _sparkline_svg(values: List[int], width: int = 120, height: int = 24) -> str
         points.append(f"{x:.1f},{y:.1f}")
     polyline = " ".join(points)
     return (
-        f'<svg class="sparkline" width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
+        f'<svg class="sparkline" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="{escape(label)}">'
         f'<polyline points="{polyline}" fill="none" stroke="var(--sparkline-stroke, #0b5394)" stroke-width="1.5" />'
         f'</svg>'
     )
