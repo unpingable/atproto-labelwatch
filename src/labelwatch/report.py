@@ -188,6 +188,13 @@ pre { background: var(--pre-bg); padding: 0.5rem; border-radius: 4px; overflow-x
 .rollup { background: var(--rollup-bg); border: 1px solid var(--rollup-border); padding: 0.5rem; border-radius: 4px; margin: 0.5rem 0; }
 .rollup summary { cursor: pointer; font-size: 0.9rem; }
 .hidden { display: none; }
+thead th { position: sticky; top: 0; z-index: 1; background: var(--bg); box-shadow: 0 1px 0 var(--border); }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { background: var(--link-hover-bg); }
+th.sort-asc::after { content: " \\25B2"; font-size: 0.7em; }
+th.sort-desc::after { content: " \\25BC"; font-size: 0.7em; }
+.search-bar { margin-bottom: 0.5rem; }
+.search-bar input { width: 100%; max-width: 400px; padding: 0.4rem 0.6rem; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--fg); font-size: 0.9rem; box-sizing: border-box; }
 .theme-toggle { background: none; border: 1px solid var(--border); border-radius: 4px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.85rem; color: var(--fg-muted); }
 .theme-toggle:hover { background: var(--link-hover-bg); }
 .badge-explainer { margin: 0.5rem 0 1rem 0; font-size: 0.85rem; }
@@ -208,6 +215,8 @@ TRIAGE_JS = """
   var rows = document.querySelectorAll('.labeler-row');
   var testToggle = document.getElementById('toggle-test-dev');
   var inactiveToggle = document.getElementById('toggle-inactive');
+  var searchInput = document.getElementById('labeler-search');
+  var searchTerm = '';
 
   function applyFilters() {
     var active = document.querySelector('.tab-bar button.active');
@@ -229,6 +238,12 @@ TRIAGE_JS = """
       if (!showTest && isTest) visible = false;
       if (!showInactive && isInactive) visible = false;
 
+      // Search filter: match against first cell text (name/handle/DID)
+      if (visible && searchTerm) {
+        var cellText = row.cells[0].textContent.toLowerCase();
+        visible = cellText.indexOf(searchTerm) !== -1;
+      }
+
       row.style.display = visible ? '' : 'none';
       if (visible) shown++;
     });
@@ -241,6 +256,10 @@ TRIAGE_JS = """
         var isInactive = r.dataset.inactive === '1';
         if (!showTest && isTest) return;
         if (!showInactive && isInactive) return;
+        if (searchTerm) {
+          var ct = r.cells[0].textContent.toLowerCase();
+          if (ct.indexOf(searchTerm) === -1) return;
+        }
         if (v === 'all') count++;
         else if (v === 'active' && r.dataset.events7d !== '0') count++;
         else if (v === 'alerts' && r.dataset.alertCount !== '0') count++;
@@ -261,6 +280,46 @@ TRIAGE_JS = """
 
   if (testToggle) testToggle.addEventListener('change', applyFilters);
   if (inactiveToggle) inactiveToggle.addEventListener('change', applyFilters);
+
+  // Search
+  if (searchInput) {
+    searchInput.addEventListener('input', function() {
+      searchTerm = this.value.trim().toLowerCase();
+      applyFilters();
+    });
+  }
+
+  // Column sorting
+  var sortCol = -1, sortDir = 'asc';
+  document.querySelectorAll('#labeler-table th.sortable').forEach(function(th) {
+    th.addEventListener('click', function() {
+      var col = parseInt(th.dataset.col);
+      if (sortCol === col) {
+        sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        sortCol = col;
+        sortDir = 'asc';
+      }
+      // Update sort indicators
+      document.querySelectorAll('#labeler-table th.sortable').forEach(function(h) {
+        h.classList.remove('sort-asc', 'sort-desc');
+      });
+      th.classList.add('sort-' + sortDir);
+
+      var tbody = document.querySelector('#labeler-table tbody');
+      var arr = Array.from(rows);
+      arr.sort(function(a, b) {
+        var va = a.cells[col].getAttribute('data-sort-value') || a.cells[col].textContent;
+        var vb = b.cells[col].getAttribute('data-sort-value') || b.cells[col].textContent;
+        va = va.toLowerCase(); vb = vb.toLowerCase();
+        if (va < vb) return sortDir === 'asc' ? -1 : 1;
+        if (va > vb) return sortDir === 'asc' ? 1 : -1;
+        return 0;
+      });
+      arr.forEach(function(row) { tbody.appendChild(row); });
+      applyFilters();
+    });
+  });
 
   applyFilters();
 })();
@@ -1310,6 +1369,9 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
         labeler_alert_counts[r["labeler_did"]] = labeler_alert_counts.get(r["labeler_did"], 0) + 1
 
     tab_bar = f"""
+<div class="search-bar">
+  <input type="text" id="labeler-search" placeholder="Search labelers by name, handle, or DID\u2026">
+</div>
 <div class="tab-bar">
   <button data-view="active">Active <span class="tab-count"></span></button>
   <button class="active" data-view="alerts">Alerts <span class="tab-count"></span></button>
@@ -1323,7 +1385,17 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
 </div>
 """
 
-    labeler_table_header = '<table><thead><tr><th>labeler</th><th>visibility</th><th>endpoint</th><th>first_seen</th><th>last_seen</th><th>activity</th><th>behavior</th></tr></thead><tbody>'
+    labeler_table_header = (
+        '<table id="labeler-table"><thead><tr>'
+        '<th class="sortable" data-col="0">labeler</th>'
+        '<th class="sortable" data-col="1">visibility</th>'
+        '<th>endpoint</th>'
+        '<th class="sortable" data-col="3">first_seen</th>'
+        '<th class="sortable" data-col="4">last_seen</th>'
+        '<th>activity</th>'
+        '<th>behavior</th>'
+        '</tr></thead><tbody>'
+    )
     labeler_table_rows_html = ""
 
     for r in nonref_labelers:
@@ -1364,16 +1436,20 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
             if not axis_badges and not extra:
                 behavior_html = '<span class="small">--</span>'
 
+        sort_name = escape(_display_name(did, handles, display_names))
+        first_seen_raw = r["first_seen"] or ""
+        last_seen_raw = r["last_seen"] or ""
+
         labeler_table_rows_html += (
             f'<tr class="labeler-row" '
             f'data-events7d="{events_7d}" data-alert-count="{alert_count}" '
             f'data-test-dev="{is_test}" data-is-new="{is_new}" '
             f'data-opaque="{is_opaque}" data-inactive="{is_inactive}">'
-            f'<td>{_labeler_link(did, handles, display_names)}</td>'
-            f'<td>{_visibility_badge(vis_class)}</td>'
+            f'<td data-sort-value="{sort_name}">{_labeler_link(did, handles, display_names)}</td>'
+            f'<td data-sort-value="{escape(vis_class)}">{_visibility_badge(vis_class)}</td>'
             f'<td>{_endpoint_dot(ep_status)}</td>'
-            f'<td>{escape(_human_ts(r["first_seen"]))}</td>'
-            f'<td>{escape(_human_ts(r["last_seen"]))}</td>'
+            f'<td data-sort-value="{escape(first_seen_raw)}">{escape(_human_ts(r["first_seen"]))}</td>'
+            f'<td data-sort-value="{escape(last_seen_raw)}">{escape(_human_ts(r["last_seen"]))}</td>'
             f'<td>{spark}</td>'
             f'<td>{behavior_html}</td>'
             f'</tr>'

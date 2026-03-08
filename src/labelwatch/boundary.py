@@ -95,9 +95,14 @@ def find_shared_targets(conn, window_start: str, window_end: str,
 
 def build_distributions(conn, uris: list[str], window_start: str,
                         window_end: str) -> dict[str, dict[str, dict[str, int]]]:
-    """Build per-URI, per-labeler family count maps.
+    """Build per-URI, per-labeler family presence maps.
 
-    Returns: {uri: {labeler_did: {family: count}}}
+    Returns: {uri: {labeler_did: {family: 1}}}
+
+    Uses binary presence (1 per family per labeler per target) rather than
+    raw event counts. This prevents "who spams updates" from dominating
+    the distribution — what matters is the *decision*, not repetition count.
+
     Only counts applies (neg=0).
     """
     if not uris:
@@ -111,17 +116,18 @@ def build_distributions(conn, uris: list[str], window_start: str,
     for i in range(0, len(uris), 400):
         chunk = uris[i:i + 400]
         placeholders = ",".join("?" * len(chunk))
+        # Use DISTINCT to get unique (uri, labeler, val) tuples
         rows = conn.execute(f"""
-            SELECT uri, labeler_did, val, COUNT(*) AS c
+            SELECT DISTINCT uri, labeler_did, val
             FROM label_events
             WHERE ts >= ? AND ts < ? AND neg = 0
               AND uri IN ({placeholders})
-            GROUP BY uri, labeler_did, val
         """, (window_start, window_end, *chunk)).fetchall()
 
         for r in rows:
             family = normalize_family(r["val"])
-            result[r["uri"]][r["labeler_did"]][family] += r["c"]
+            # Binary: each family counts as 1 per (target, labeler)
+            result[r["uri"]][r["labeler_did"]][family] = 1
 
     return dict(result)
 

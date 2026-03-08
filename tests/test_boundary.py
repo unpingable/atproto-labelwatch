@@ -52,11 +52,17 @@ def _insert_labeler(conn, did, ts):
 
 
 def test_normalize_family_basic():
-    assert normalize_family("Porn") == "porn"
+    assert normalize_family("Porn") == "adult-sexual"  # mapped synonym
     assert normalize_family("  SPAM  ") == "spam"
-    assert normalize_family("Adult Content") == "adult_content"
+    assert normalize_family("Adult Content") == "adult-sexual"  # mapped synonym
     assert normalize_family(None) == "<null>"
     assert normalize_family("") == "<null>"
+
+
+def test_normalize_family_passthrough():
+    """Unmapped values pass through as their canonical form."""
+    assert normalize_family("custom_label") == "custom_label"
+    assert normalize_family("My Special Tag") == "my_special_tag"
 
 
 def test_family_version():
@@ -199,9 +205,10 @@ def test_build_distributions():
 
     assert uri in dists
     assert "did:plc:a" in dists[uri]
-    assert dists[uri]["did:plc:a"]["spam"] == 3
-    assert dists[uri]["did:plc:a"]["adult_content"] == 1
-    assert dists[uri]["did:plc:b"]["porn"] == 2
+    # Binary: each family counts as 1 (not raw event count)
+    assert dists[uri]["did:plc:a"]["spam"] == 1
+    assert dists[uri]["did:plc:a"]["adult-sexual"] == 1  # "Adult Content" maps to "adult-sexual"
+    assert dists[uri]["did:plc:b"]["adult-sexual"] == 1  # "porn" maps to "adult-sexual"
 
 
 # ── Contradiction edges ──────────────────────────────────────────────
@@ -395,7 +402,7 @@ def test_run_boundary_pass_stores_results():
         boundary_enabled=True,
         boundary_window_hours=24,
         boundary_min_labelers=2,
-        boundary_min_events_per_labeler=3,
+        boundary_min_events_per_labeler=1,
         boundary_jsd_min=0.1,
         boundary_min_top_share=0.3,
         boundary_lag_max_s=21600,
@@ -438,7 +445,7 @@ def test_run_boundary_pass_idempotent():
         boundary_enabled=True,
         boundary_window_hours=24,
         boundary_min_labelers=2,
-        boundary_min_events_per_labeler=3,
+        boundary_min_events_per_labeler=1,
         boundary_jsd_min=0.1,
         boundary_min_top_share=0.3,
     )
@@ -469,7 +476,7 @@ def test_run_boundary_pass_no_shared_targets():
     cfg = Config(
         boundary_enabled=True,
         boundary_min_labelers=2,
-        boundary_min_events_per_labeler=3,
+        boundary_min_events_per_labeler=1,
     )
     stats = run_boundary_pass(conn, cfg, now)
     assert stats["shared_targets"] == 0

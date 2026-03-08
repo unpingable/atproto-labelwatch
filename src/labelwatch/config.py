@@ -70,7 +70,7 @@ class Config:
     boundary_enabled: bool = False  # Phase 1: behind flag
     boundary_window_hours: int = 24
     boundary_min_labelers: int = 2  # minimum distinct labelers per target
-    boundary_min_events_per_labeler: int = 3
+    boundary_min_events_per_labeler: int = 1  # binary presence: 1 family = 1 "event"
     boundary_jsd_min: float = 0.15  # contradiction edge threshold
     boundary_min_top_share: float = 0.30  # minimum top-family share
     boundary_lag_max_s: int = 21600  # 6 hours
