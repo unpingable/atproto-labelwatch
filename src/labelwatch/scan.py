@@ -11,6 +11,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from . import db
+from .boundary import run_boundary_pass
 from .config import Config
 from .derive import (
     LabelerSignals,
@@ -1129,5 +1130,11 @@ def run_derive(conn, config: Config, now: datetime | None = None) -> None:
         _update_author_labeler_day(conn)
     except Exception as exc:
         _log.warning("author labeler day rollup failed: %s", exc)
+
+    if config.boundary_enabled:
+        try:
+            run_boundary_pass(conn, config, now)
+        except Exception as exc:
+            _log.warning("boundary pass failed: %s", exc)
 
     conn.commit()

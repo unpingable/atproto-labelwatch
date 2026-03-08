@@ -51,6 +51,7 @@
 | v8 | Warmup alert quarantine: warmup_alert column on alerts table |
 | v16 | target_did column, derived_author_day + derived_author_labeler_day rollup tables |
 | v17 | discovery_events table, indexes on labeler_did and discovered_at |
+| v18 | boundary_edges + boundary_targets tables, indexes on target_uri and computed_at |
 
 ## Up next
 
@@ -59,7 +60,10 @@
 - ~~Handle-to-DID resolution in Climate lookup~~ (done — resolve client-side, pass handle to renderer)
 - ~~Climate form layout bug~~ (done — Firefox flex shorthand fix)
 - ~~Climate empty state + back link~~ (done — centered layout, try-other-window links, nav link)
-- **Milestone: Boundary Instability (B.3 synthesis)** — cross-labeler disagreement, lead/lag, JSD divergence, churn deltas, assembled into BoundaryFightCard compound signal. Two phases: primitives first, synthesis second. See [`docs/MILESTONE_BOUNDARY_INSTABILITY.md`](docs/MILESTONE_BOUNDARY_INSTABILITY.md).
+- **Milestone: Boundary Instability (B.3 synthesis)** — Two phases: primitives first, synthesis second. See [`docs/MILESTONE_BOUNDARY_INSTABILITY.md`](docs/MILESTONE_BOUNDARY_INSTABILITY.md).
+  - ~~Phase 1 (primitives)~~: `label_family.py` (versioned normalization), `boundary.py` (shared-target finding, JSD divergence, contradiction edges, lead/lag edges, divergence summaries). Schema v18: `boundary_edges` + `boundary_targets` tables. Behind `boundary_enabled` config flag. 23 tests.
+  - Phase 2 (synthesis): `BoundaryFightCard` — deterministic join over Phase 1 edges + existing flip_flop/churn/concentration/spike receipts. Report cards.
+  - Future: boundary_distance / Schmitt trigger hysteresis as derive.py regime classifier upgrade (complementary to cross-labeler signal).
 
 **UI polish (from audit):** all done
 - ~~Tables responsive~~ (overflow-x:auto wrapper)

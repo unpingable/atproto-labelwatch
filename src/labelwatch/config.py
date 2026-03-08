@@ -67,6 +67,17 @@ class Config:
     alert_budget_per_rule: int = 10  # max alerts per (rule, labeler) per window
     alert_budget_window_hours: int = 24  # budget window size
 
+    boundary_enabled: bool = False  # Phase 1: behind flag
+    boundary_window_hours: int = 24
+    boundary_min_labelers: int = 2  # minimum distinct labelers per target
+    boundary_min_events_per_labeler: int = 3
+    boundary_jsd_min: float = 0.15  # contradiction edge threshold
+    boundary_min_top_share: float = 0.30  # minimum top-family share
+    boundary_lag_max_s: int = 21600  # 6 hours
+    boundary_lag_min_overlap: float = 0.30  # minimum family overlap for lead/lag
+    boundary_max_targets: int = 500  # cap shared-target scan
+    boundary_participant_top_k: int = 25  # cap pairwise per target
+
     driftwatch_facts_path: str = ""  # path to facts.sqlite, empty = disabled
 
     def to_receipt_dict(self) -> dict:
@@ -90,6 +101,13 @@ class Config:
             "confidence_min_age_hours": self.confidence_min_age_hours,
             "alert_budget_per_rule": self.alert_budget_per_rule,
             "alert_budget_window_hours": self.alert_budget_window_hours,
+            "boundary_window_hours": self.boundary_window_hours,
+            "boundary_min_labelers": self.boundary_min_labelers,
+            "boundary_min_events_per_labeler": self.boundary_min_events_per_labeler,
+            "boundary_jsd_min": self.boundary_jsd_min,
+            "boundary_min_top_share": self.boundary_min_top_share,
+            "boundary_lag_max_s": self.boundary_lag_max_s,
+            "boundary_lag_min_overlap": self.boundary_lag_min_overlap,
         }
 
 

@@ -8,7 +8,7 @@ from .utils import get_git_commit
 
 _log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 # SCHEMA_TABLES: all CREATE TABLE statements. Safe to run against pre-existing
 # tables (IF NOT EXISTS is a no-op). Used by v0→v1 bootstrap where the table
@@ -260,6 +260,46 @@ CREATE TABLE IF NOT EXISTS discovery_events (
     discovered_at TEXT NOT NULL,
     UNIQUE(labeler_did, commit_rev, operation)
 );
+
+CREATE TABLE IF NOT EXISTS boundary_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    edge_type TEXT NOT NULL,
+    target_uri TEXT NOT NULL,
+    window_start TEXT NOT NULL,
+    window_end TEXT NOT NULL,
+    labeler_a TEXT NOT NULL,
+    labeler_b TEXT NOT NULL,
+    jsd REAL,
+    top_family_a TEXT,
+    top_share_a REAL,
+    top_family_b TEXT,
+    top_share_b REAL,
+    delta_s REAL,
+    overlap REAL,
+    leader_did TEXT,
+    n_events_a INTEGER,
+    n_events_b INTEGER,
+    family_version TEXT NOT NULL,
+    config_hash TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    UNIQUE(edge_type, target_uri, window_start, labeler_a, labeler_b, family_version)
+);
+
+CREATE TABLE IF NOT EXISTS boundary_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_uri TEXT NOT NULL,
+    window_start TEXT NOT NULL,
+    window_end TEXT NOT NULL,
+    n_labelers INTEGER NOT NULL,
+    n_events INTEGER NOT NULL,
+    mean_jsd_to_centroid REAL,
+    max_jsd_pair REAL,
+    top_families_json TEXT,
+    family_version TEXT NOT NULL,
+    config_hash TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    UNIQUE(target_uri, window_start, family_version)
+);
 """
 
 # SCHEMA_INDEXES: all CREATE INDEX statements. Separated from tables because
@@ -281,6 +321,9 @@ CREATE INDEX IF NOT EXISTS idx_labeler_evidence_did ON labeler_evidence(labeler_
 CREATE INDEX IF NOT EXISTS idx_probe_history_did_ts ON labeler_probe_history(labeler_did, ts);
 CREATE INDEX IF NOT EXISTS idx_discovery_events_did ON discovery_events(labeler_did);
 CREATE INDEX IF NOT EXISTS idx_discovery_events_ts ON discovery_events(discovered_at);
+CREATE INDEX IF NOT EXISTS idx_boundary_edges_target ON boundary_edges(target_uri);
+CREATE INDEX IF NOT EXISTS idx_boundary_edges_computed ON boundary_edges(computed_at);
+CREATE INDEX IF NOT EXISTS idx_boundary_targets_computed ON boundary_targets(computed_at);
 """
 
 # Full schema = tables + indexes. Used for fresh DB init.
@@ -820,6 +863,63 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         """)
         set_schema_version(conn, 17)
         current = 17
+    if current == 17 and target >= 18:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS boundary_edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                edge_type TEXT NOT NULL,
+                target_uri TEXT NOT NULL,
+                window_start TEXT NOT NULL,
+                window_end TEXT NOT NULL,
+                labeler_a TEXT NOT NULL,
+                labeler_b TEXT NOT NULL,
+                jsd REAL,
+                top_family_a TEXT,
+                top_share_a REAL,
+                top_family_b TEXT,
+                top_share_b REAL,
+                delta_s REAL,
+                overlap REAL,
+                leader_did TEXT,
+                n_events_a INTEGER,
+                n_events_b INTEGER,
+                family_version TEXT NOT NULL,
+                config_hash TEXT NOT NULL,
+                computed_at TEXT NOT NULL,
+                UNIQUE(edge_type, target_uri, window_start, labeler_a, labeler_b, family_version)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS boundary_targets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_uri TEXT NOT NULL,
+                window_start TEXT NOT NULL,
+                window_end TEXT NOT NULL,
+                n_labelers INTEGER NOT NULL,
+                n_events INTEGER NOT NULL,
+                mean_jsd_to_centroid REAL,
+                max_jsd_pair REAL,
+                top_families_json TEXT,
+                family_version TEXT NOT NULL,
+                config_hash TEXT NOT NULL,
+                computed_at TEXT NOT NULL,
+                UNIQUE(target_uri, window_start, family_version)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_boundary_edges_target
+            ON boundary_edges(target_uri)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_boundary_edges_computed
+            ON boundary_edges(computed_at)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_boundary_targets_computed
+            ON boundary_targets(computed_at)
+        """)
+        set_schema_version(conn, 18)
+        current = 18
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
