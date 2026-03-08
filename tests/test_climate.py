@@ -9,6 +9,8 @@ from labelwatch import db
 from labelwatch.climate import (
     _at_uri_to_bsky_link,
     _query_daily_series,
+    _query_examples_by_labeler,
+    _query_examples_by_value,
     _query_recent_receipts,
     _query_summary,
     _query_top_labelers,
@@ -517,3 +519,98 @@ def test_index_usage_recent_receipts():
     ).fetchall()
     plan_text = " ".join(str(r["detail"]) for r in plan)
     assert "idx_label_events_target_did_ts" in plan_text
+
+
+# ---------------------------------------------------------------------------
+# Example URIs (investigation launchpad)
+# ---------------------------------------------------------------------------
+
+
+def test_examples_by_labeler():
+    """examples_by_labeler returns URIs for labelers that labeled the target."""
+    conn = _make_db()
+    ts = _now_iso()
+    events = [
+        {"labeler_did": LABELER1, "uri": f"at://{TARGET}/app.bsky.feed.post/a",
+         "val": "spam", "neg": 0, "ts": ts, "target_did": TARGET},
+        {"labeler_did": LABELER1, "uri": f"at://{TARGET}/app.bsky.feed.post/b",
+         "val": "porn", "neg": 0, "ts": ts, "target_did": TARGET},
+        {"labeler_did": LABELER2, "uri": f"at://{TARGET}/app.bsky.feed.post/c",
+         "val": "spam", "neg": 0, "ts": ts, "target_did": TARGET},
+    ]
+    _seed_events(conn, events)
+
+    result = _query_examples_by_labeler(conn, TARGET, _day_iso(30), [LABELER1, LABELER2])
+    assert LABELER1 in result
+    assert LABELER2 in result
+    assert len(result[LABELER1]) == 2
+    assert len(result[LABELER2]) == 1
+    # Each entry has uri, val, ts
+    for ex in result[LABELER1]:
+        assert "uri" in ex
+        assert "val" in ex
+        assert "ts" in ex
+        assert ex["uri"].startswith("at://")
+
+
+def test_examples_by_labeler_limit():
+    """At most 3 examples returned per labeler."""
+    conn = _make_db()
+    ts = _now_iso()
+    events = [
+        {"labeler_did": LABELER1, "uri": f"at://{TARGET}/app.bsky.feed.post/{i}",
+         "val": "spam", "neg": 0, "ts": ts, "target_did": TARGET}
+        for i in range(10)
+    ]
+    _seed_events(conn, events)
+
+    result = _query_examples_by_labeler(conn, TARGET, _day_iso(30), [LABELER1])
+    assert len(result[LABELER1]) == 3
+
+
+def test_examples_by_value():
+    """examples_by_value returns URIs for each label value used on the target."""
+    conn = _make_db()
+    ts = _now_iso()
+    events = [
+        {"labeler_did": LABELER1, "uri": f"at://{TARGET}/app.bsky.feed.post/a",
+         "val": "spam", "neg": 0, "ts": ts, "target_did": TARGET},
+        {"labeler_did": LABELER2, "uri": f"at://{TARGET}/app.bsky.feed.post/b",
+         "val": "spam", "neg": 0, "ts": ts, "target_did": TARGET},
+        {"labeler_did": LABELER1, "uri": f"at://{TARGET}/app.bsky.feed.post/c",
+         "val": "porn", "neg": 0, "ts": ts, "target_did": TARGET},
+    ]
+    _seed_events(conn, events)
+
+    result = _query_examples_by_value(conn, TARGET, _day_iso(30), ["spam", "porn"])
+    assert "spam" in result
+    assert "porn" in result
+    assert len(result["spam"]) == 2
+    assert len(result["porn"]) == 1
+    # Each entry has uri, labeler_did, ts
+    for ex in result["spam"]:
+        assert "uri" in ex
+        assert "labeler_did" in ex
+        assert "ts" in ex
+        assert ex["uri"].startswith("at://")
+
+
+def test_examples_in_generate_climate(tmp_path):
+    """generate_climate includes examples_by_labeler and examples_by_value."""
+    conn = _make_db()
+    _seed_and_rollup(conn, _make_basic_events(), [
+        {"labeler_did": LABELER1, "handle": "lab1.test", "regime_state": "stable"},
+        {"labeler_did": LABELER2, "handle": "lab2.test"},
+    ])
+
+    payload = generate_climate(conn, TARGET, window_days=30, out_dir=str(tmp_path), fmt="both")
+
+    assert "examples_by_labeler" in payload
+    assert "examples_by_value" in payload
+    # LABELER1 has events so should have examples
+    assert LABELER1 in payload["examples_by_labeler"]
+    # "spam" is a top value so should have examples
+    assert "spam" in payload["examples_by_value"]
+    # HTML should contain the Examples column header
+    html_content = (tmp_path / "climate.html").read_text()
+    assert ">Examples<" in html_content

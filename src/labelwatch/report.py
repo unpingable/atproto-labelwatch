@@ -384,6 +384,30 @@ def _write_json(path: str, payload: Any) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
+def _stream_alerts_json(conn, out_path: str) -> None:
+    """Stream alerts to JSON file without materializing entire table in memory."""
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    cur = conn.execute(
+        "SELECT id, rule_id, labeler_did, ts FROM alerts ORDER BY ts DESC"
+    )
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("[\n")
+        first = True
+        for row in cur:
+            if not first:
+                f.write(",\n")
+            first = False
+            obj = {
+                "id": row["id"],
+                "rule_id": row["rule_id"],
+                "labeler_did": row["labeler_did"],
+                "ts": row["ts"],
+                "href": f"alert/{row['id']}.html",
+            }
+            f.write(json.dumps(obj, separators=(",", ":")))
+        f.write("\n]\n")
+
+
 THEME_JS = """
 <script>
 (function() {
@@ -1076,7 +1100,23 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
     top_labelers = _top_labelers(conn, start_7d, now_ts)
 
     labelers = conn.execute("SELECT * FROM labelers ORDER BY labeler_did").fetchall()
-    alerts = conn.execute("SELECT * FROM alerts ORDER BY ts DESC").fetchall()
+    # Targeted alert queries instead of loading entire table into memory
+    alert_count = conn.execute("SELECT COUNT(*) AS c FROM alerts").fetchone()["c"]
+    alerts_recent = conn.execute(
+        "SELECT id, rule_id, labeler_did, ts, inputs_json, evidence_hashes_json, "
+        "config_hash, receipt_hash, warmup_alert "
+        "FROM alerts ORDER BY ts DESC LIMIT 200"
+    ).fetchall()
+    labelers_with_alerts_7d_set = {
+        r["labeler_did"] for r in conn.execute(
+            "SELECT DISTINCT labeler_did FROM alerts WHERE ts >= ?", (start_7d,)
+        ).fetchall()
+    }
+    labeler_alert_counts = {
+        r["labeler_did"]: r["n"] for r in conn.execute(
+            "SELECT labeler_did, COUNT(*) AS n FROM alerts GROUP BY labeler_did"
+        ).fetchall()
+    }
     handles = _handle_cache(conn)
     display_names = _display_name_cache(conn)
 
@@ -1109,7 +1149,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         "alerts_by_rule_7d": alerts_7d,
         "top_labelers_7d": top_labelers,
         "labeler_count": len(labelers),
-        "alert_count": len(alerts),
+        "alert_count": alert_count,
         "now_clamped_to_real_time": clamped,
         "max_raw_timestamp_seen": max_raw_ts,
         "max_skew_seconds": skew_seconds,
@@ -1144,20 +1184,11 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
         })
     _write_json(os.path.join(tmp_dir, "labelers.json"), labeler_rows_json)
 
-    alert_rows_json = []
-    for row in alerts:
-        alert_rows_json.append({
-            "id": row["id"],
-            "rule_id": row["rule_id"],
-            "labeler_did": row["labeler_did"],
-            "ts": row["ts"],
-            "href": f"alert/{row['id']}.html",
-        })
-    _write_json(os.path.join(tmp_dir, "alerts.json"), alert_rows_json)
+    _stream_alerts_json(conn, os.path.join(tmp_dir, "alerts.json"))
 
     # --- Staleness indicators ---
     alerts_7d_total = sum(alerts_7d.values()) if alerts_7d else 0
-    labelers_with_alerts_7d = len(set(r["labeler_did"] for r in alerts if r["ts"] >= start_7d))
+    labelers_with_alerts_7d = len(labelers_with_alerts_7d_set)
     staleness_cards = f"""
 <div class="grid">
   <div class="card"><h3>Last updated</h3><div>{escape(_human_ts(now_ts))}</div></div>
@@ -1363,11 +1394,6 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
         )
 
     # --- Triage view with tabs ---
-    # Pre-compute per-labeler data attributes
-    labeler_alert_counts = {}
-    for r in alerts:
-        labeler_alert_counts[r["labeler_did"]] = labeler_alert_counts.get(r["labeler_did"], 0) + 1
-
     tab_bar = f"""
 <div class="search-bar">
   <input type="text" id="labeler-search" placeholder="Search labelers by name, handle, or DID\u2026">
@@ -1459,7 +1485,7 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
 
     # --- Alert rollups ---
     alert_head = "<tr><th>id</th><th>rule_id</th><th>labeler</th><th>ts</th></tr>"
-    rollup_html = _alert_rollups(list(alerts[:200]), handles, display_names)
+    rollup_html = _alert_rollups(list(alerts_recent), handles, display_names)
     alert_links = f"<h2>Recent alerts</h2><table><thead>{alert_head}</thead><tbody>{rollup_html}</tbody></table>"
 
     naive_banner = ""
@@ -1748,8 +1774,8 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
         )
         _write(os.path.join(tmp_dir, "labeler", f"{slug}.html"), html)
 
-    # --- Per-alert pages ---
-    for row in alerts:
+    # --- Per-alert pages (recent 200 only) ---
+    for row in alerts_recent:
         evidence_hashes = json.loads(row["evidence_hashes_json"])
         events = _alert_events(conn, evidence_hashes)
         payload = {

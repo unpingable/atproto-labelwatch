@@ -34,6 +34,7 @@ _PUBLIC_KEYS = frozenset({
     "empty", "target_did", "window_days", "message",
     "summary", "week_deltas", "top_labelers", "top_values",
     "daily_series", "generated_at",
+    "examples_by_labeler", "examples_by_value",
 })
 
 
@@ -268,6 +269,42 @@ def _query_daily_series(conn, target_did: str, start_day_epoch: int,
     return result
 
 
+def _query_examples_by_labeler(conn, target_did: str, start_iso: str,
+                               labeler_dids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """For each labeler, fetch up to 3 most recent example post URIs."""
+    result: Dict[str, List[Dict[str, Any]]] = {}
+    for ldid in labeler_dids:
+        rows = conn.execute(
+            "SELECT uri, val, ts FROM label_events "
+            "WHERE target_did=? AND labeler_did=? AND ts>=? "
+            "  AND uri LIKE 'at://%/app.bsky.feed.post/%' "
+            "ORDER BY ts DESC LIMIT 3",
+            (target_did, ldid, start_iso),
+        ).fetchall()
+        if rows:
+            result[ldid] = [{"uri": r["uri"], "val": r["val"], "ts": r["ts"]}
+                            for r in rows]
+    return result
+
+
+def _query_examples_by_value(conn, target_did: str, start_iso: str,
+                             values: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """For each label value, fetch up to 3 most recent example post URIs."""
+    result: Dict[str, List[Dict[str, Any]]] = {}
+    for val in values:
+        rows = conn.execute(
+            "SELECT uri, labeler_did, ts FROM label_events "
+            "WHERE target_did=? AND val=? AND ts>=? "
+            "  AND uri LIKE 'at://%/app.bsky.feed.post/%' "
+            "ORDER BY ts DESC LIMIT 3",
+            (target_did, val, start_iso),
+        ).fetchall()
+        if rows:
+            result[val] = [{"uri": r["uri"], "labeler_did": r["labeler_did"],
+                            "ts": r["ts"]} for r in rows]
+    return result
+
+
 def _query_recent_receipts(conn, target_did: str, start_iso: str,
                            labeler_dids: List[str]) -> List[Dict[str, Any]]:
     """Recent label events for this target, scoped to known labelers."""
@@ -337,6 +374,9 @@ def generate_climate(conn, target_did: str, window_days: int = 30,
     daily_series = _query_daily_series(conn, target_did, start_day_epoch, end_day_epoch)
     labeler_dids = [l["labeler_did"] for l in top_labelers]
     recent_receipts = _query_recent_receipts(conn, target_did, start_iso, labeler_dids)
+    examples_by_labeler = _query_examples_by_labeler(conn, target_did, start_iso, labeler_dids)
+    value_names = [v["val"] for v in top_values]
+    examples_by_value = _query_examples_by_value(conn, target_did, start_iso, value_names)
 
     payload = {
         "empty": False,
@@ -346,6 +386,8 @@ def generate_climate(conn, target_did: str, window_days: int = 30,
         "week_deltas": week_deltas,
         "top_labelers": top_labelers,
         "top_values": top_values,
+        "examples_by_labeler": examples_by_labeler,
+        "examples_by_value": examples_by_value,
         "daily_series": daily_series,
         "recent_receipts": recent_receipts,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -469,10 +511,13 @@ def _render_html(payload: Dict[str, Any], target_did: str,
 
     # --- Top Labelers ---
     if payload.get("top_labelers"):
+        ex_by_lab = payload.get("examples_by_labeler", {})
         rows = []
         for l in payload["top_labelers"]:
             handle_str = html.escape(l["handle"]) if l["handle"] else html.escape(l["labeler_did"])
             badge = _regime_badge(l.get("regime_state"))
+            examples = ex_by_lab.get(l["labeler_did"], [])
+            examples_html = "<br>".join(_at_uri_to_bsky_link(e["uri"]) for e in examples) if examples else "—"
             rows.append([
                 f"{handle_str} {badge}",
                 html.escape(l["one_liner"]),
@@ -480,24 +525,29 @@ def _render_html(payload: Dict[str, Any], target_did: str,
                 str(l["applies"]),
                 str(l["removes"]),
                 str(l["targets"]),
+                examples_html,
             ])
         sections.append(
             '<h2>Top Labelers</h2>'
-            + _table(["Labeler", "Summary", "Events", "Applies", "Removes", "Posts"], rows)
+            + _table(["Labeler", "Summary", "Events", "Applies", "Removes", "Posts", "Examples"], rows)
         )
 
     # --- Top Label Values ---
     if payload.get("top_values"):
+        ex_by_val = payload.get("examples_by_value", {})
         rows = []
         for v in payload["top_values"]:
+            examples = ex_by_val.get(v["val"], [])
+            examples_html = "<br>".join(_at_uri_to_bsky_link(e["uri"]) for e in examples) if examples else "—"
             rows.append([
                 html.escape(v["val"]),
                 str(v["applies"]),
                 str(v["removes"]),
+                examples_html,
             ])
         sections.append(
             '<h2>Top Label Values</h2>'
-            + _table(["Value", "Applies", "Removes"], rows)
+            + _table(["Value", "Applies", "Removes", "Examples"], rows)
         )
 
     # --- Daily Activity ---

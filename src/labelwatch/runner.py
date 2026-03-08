@@ -26,6 +26,19 @@ def _heartbeat(conn, key: str) -> None:
     conn.commit()
 
 
+def _rss_mb() -> str:
+    """Read RSS from /proc/self/status (Linux only)."""
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    kb = int(line.split()[1])
+                    return f"{kb / 1024:.1f}MB"
+    except (FileNotFoundError, ValueError):
+        pass
+    return "n/a"
+
+
 def _release_memory(conn) -> None:
     """Force Python + SQLite to release memory back to OS."""
     gc.collect()
@@ -34,6 +47,7 @@ def _release_memory(conn) -> None:
         ctypes.CDLL("libc.so.6").malloc_trim(0)
     except (OSError, AttributeError):
         pass  # Not on Linux or libc not found
+    log.info("rss=%s", _rss_mb())
 
 
 def run_loop(
