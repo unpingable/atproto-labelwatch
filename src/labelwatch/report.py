@@ -445,10 +445,28 @@ THEME_TOGGLE_JS = """
 """
 
 
-def _layout(title: str, body: str, canonical: str = "") -> str:
+_OG_DESCRIPTION = (
+    "Bluesky doesn\u2019t have a single moderation team deciding what you see. "
+    "Instead, it has labelers \u2014 and nobody\u2019s watching the watchers. "
+    "Labelwatch monitors every public labeler: who\u2019s labeling, what they\u2019re "
+    "labeling, and whether their behavior is stable, bursty, or going dark."
+)
+
+
+def _layout(title: str, body: str, canonical: str = "", description: str = "") -> str:
     """Wrap body in a full HTML page. Title and canonical are escaped here.
     Body is injected raw — callers must pre-escape all untrusted content."""
     canonical_tag = f'\n<link rel="canonical" href="{escape(canonical)}" />' if canonical else ""
+    desc = description or _OG_DESCRIPTION
+    og_tags = (
+        f'<meta name="description" content="{escape(desc)}" />\n'
+        f'<meta property="og:title" content="{escape(title)}" />\n'
+        f'<meta property="og:description" content="{escape(desc)}" />\n'
+        f'<meta property="og:type" content="website" />\n'
+        f'<meta name="twitter:card" content="summary" />\n'
+        f'<meta name="twitter:title" content="{escape(title)}" />\n'
+        f'<meta name="twitter:description" content="{escape(desc)}" />'
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -456,6 +474,7 @@ def _layout(title: str, body: str, canonical: str = "") -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta http-equiv="Cache-Control" content="no-cache, must-revalidate" />
 <title>{escape(title)}</title>{canonical_tag}
+{og_tags}
 <style>{STYLE}</style>
 {THEME_JS}
 </head>
