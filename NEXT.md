@@ -43,11 +43,12 @@
 | v16 | target_did column, derived_author_day + derived_author_labeler_day rollup tables |
 | v17 | discovery_events table, indexes on labeler_did and discovered_at |
 | v18 | boundary_edges + boundary_targets tables, indexes on target_uri and computed_at |
+| v19 | Volume/reach columns on labelers: events_7d/30d, unique_targets_7d/30d, unique_subjects_7d/30d |
 
 ## Up next
 
 **Near-term (adds signal):**
-- **Volume/reach tiers for labelers** — compute events, unique targets, unique authors labeled (7d/30d) in derive loop. Surface as a "high impact" indicator on labeler cards. Currently `is_reference` is manual config; this would make volume/reach visible for all labelers so the dashboard shows who's actually doing the most work. Could auto-tag "high volume" tier or just display the stats.
+- ~~**Volume/reach tiers for labelers**~~ (done — schema v19: events_7d/30d, unique_targets_7d/30d, unique_subjects_7d/30d computed in derive loop, volume tier badges on cards)
 - ~~Per-rule activation budgets~~ (done — 10 alerts per rule/labeler per 24h, gate at insertion)
 - ~~Handle-to-DID resolution in Climate lookup~~ (done — resolve client-side, pass handle to renderer)
 - ~~Climate form layout bug~~ (done — Firefox flex shorthand fix)

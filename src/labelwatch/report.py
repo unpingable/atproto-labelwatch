@@ -770,34 +770,72 @@ def _non_axis_badges(rules_fired: set, coverage_ratio: Optional[float] = None) -
     return badges
 
 
+def _volume_tier(events_7d: int) -> str:
+    """Classify labeler volume tier from 7d event count."""
+    if events_7d >= 10000:
+        return "very-high"
+    elif events_7d >= 1000:
+        return "high"
+    elif events_7d >= 100:
+        return "medium"
+    elif events_7d > 0:
+        return "low"
+    return "silent"
+
+
+def _volume_badge(tier: str) -> str:
+    """Render a volume tier badge."""
+    css = {
+        "very-high": "badge-risk-high",
+        "high": "badge-risk-med",
+        "medium": "badge-risk-low",
+        "low": "badge-low-conf",
+        "silent": "badge-low-conf",
+    }.get(tier, "badge-low-conf")
+    label = tier.replace("-", " ").title()
+    return f'<span class="badge {css}">{label} volume</span>'
+
+
 def _labeler_health_card(conn, labeler_did: str, start_7d: str, now_ts: str, sparkline_counts: List[int],
                          regime_state: Optional[str] = None,
-                         coverage_ratio: Optional[float] = None) -> str:
-    events_7d = conn.execute(
-        "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=? AND ts>=? AND ts<=?",
-        (labeler_did, start_7d, now_ts),
-    ).fetchone()["c"]
-    unique_targets = conn.execute(
-        "SELECT COUNT(DISTINCT uri) AS c FROM label_events WHERE labeler_did=? AND ts>=? AND ts<=?",
-        (labeler_did, start_7d, now_ts),
-    ).fetchone()["c"]
+                         coverage_ratio: Optional[float] = None,
+                         events_7d: Optional[int] = None,
+                         unique_targets_7d: Optional[int] = None,
+                         unique_subjects_7d: Optional[int] = None) -> str:
+    # Use pre-computed values if available, else fall back to queries
+    if events_7d is None:
+        events_7d = conn.execute(
+            "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=? AND ts>=? AND ts<=?",
+            (labeler_did, start_7d, now_ts),
+        ).fetchone()["c"]
+    if unique_targets_7d is None:
+        unique_targets_7d = conn.execute(
+            "SELECT COUNT(DISTINCT uri) AS c FROM label_events WHERE labeler_did=? AND ts>=? AND ts<=?",
+            (labeler_did, start_7d, now_ts),
+        ).fetchone()["c"]
     alert_count = conn.execute(
         "SELECT COUNT(*) AS c FROM alerts WHERE labeler_did=? AND ts>=? AND ts<=?",
         (labeler_did, start_7d, now_ts),
     ).fetchone()["c"]
-    target_spread = f"{unique_targets}/{events_7d}" if events_7d else "0/0"
+    target_spread = f"{unique_targets_7d}/{events_7d}" if events_7d else "0/0"
+    tier = _volume_tier(events_7d)
     sparkline = _sparkline_svg(sparkline_counts)
     badges = _labeler_badges(conn, labeler_did, start_7d, now_ts, regime_state=regime_state, coverage_ratio=coverage_ratio)
+
+    subjects_metric = ""
+    if unique_subjects_7d is not None and unique_subjects_7d > 0:
+        subjects_metric = f'<div class="health-metric"><div class="value">{unique_subjects_7d}</div><div class="label">Subjects (7d)</div></div>'
 
     return f"""
 <div class="card">
   <div class="health-bar">
     <div class="health-metric"><div class="value">{events_7d}</div><div class="label">Events (7d)</div></div>
     <div class="health-metric"><div class="value">{target_spread}</div><div class="label">Targets/Events</div></div>
+    {subjects_metric}
     <div class="health-metric"><div class="value">{alert_count}</div><div class="label">Anomalies</div></div>
     <div class="health-metric">{sparkline}<div class="label">Activity (7d)</div></div>
   </div>
-  <div>{_badges_html(badges)}</div>
+  <div>{_volume_badge(tier)} {_badges_html(badges)}</div>
 </div>
 """
 
@@ -1646,7 +1684,9 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
             (did,),
         ).fetchall()
         events_24h = _labeler_activity(conn, did, start_24h, now_ts)
-        events_7d = _labeler_activity(conn, did, start_7d, now_ts)
+        events_7d = row["events_7d"] or _labeler_activity(conn, did, start_7d, now_ts)
+        unique_targets_7d = row["unique_targets_7d"] or 0
+        unique_subjects_7d = row["unique_subjects_7d"] or 0
         top_targets = _top_targets(conn, did, start_7d, now_ts)
 
         payload = {
@@ -1671,7 +1711,12 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
         _write_json(os.path.join(tmp_dir, "labeler", f"{slug}.json"), payload)
 
         sparkline_counts = _hourly_counts(conn, did, start_7d, now_ts)
-        health_card = _labeler_health_card(conn, did, start_7d, now_ts, sparkline_counts, regime_state=row["regime_state"], coverage_ratio=row["coverage_ratio"])
+        health_card = _labeler_health_card(
+            conn, did, start_7d, now_ts, sparkline_counts,
+            regime_state=row["regime_state"], coverage_ratio=row["coverage_ratio"],
+            events_7d=events_7d, unique_targets_7d=unique_targets_7d,
+            unique_subjects_7d=unique_subjects_7d,
+        )
 
         # Data maturity line (below health card)
         maturity_line = _data_maturity_line(row)
@@ -1764,7 +1809,9 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
   <div class="card"><h3>First seen</h3><div>{escape(_human_ts(row['first_seen']))}</div></div>
   <div class="card"><h3>Last seen</h3><div>{escape(_human_ts(row['last_seen']))}</div></div>
   <div class="card"><h3>Events (24h)</h3><div>{events_24h}</div></div>
-  <div class="card"><h3>Events (7d)</h3><div>{events_7d}</div></div>
+  <div class="card"><h3>Events (7d)</h3><div>{events_7d} {_volume_badge(_volume_tier(events_7d))}</div></div>
+  <div class="card"><h3>Targets (7d)</h3><div>{unique_targets_7d}</div></div>
+  <div class="card"><h3>Subjects (7d)</h3><div>{unique_subjects_7d}</div></div>
   <div class="card"><h3>Alerts</h3><div>{len(alerts_rows)}</div></div>
   {cov_card}
   {profile_link}

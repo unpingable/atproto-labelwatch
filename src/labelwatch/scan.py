@@ -190,6 +190,26 @@ def _fetch_last_regime_change(conn) -> dict:
     return {r["labeler_did"]: r["ts"] for r in rows}
 
 
+def _fetch_reach_stats(conn, ts_7d: str, ts_30d: str) -> dict[str, dict]:
+    """One query: per-labeler unique targets + unique subjects (7d/30d).
+
+    Returns {labeler_did: {unique_targets_7d, unique_targets_30d,
+                           unique_subjects_7d, unique_subjects_30d}}.
+    """
+    rows = conn.execute(
+        """SELECT labeler_did,
+                  COUNT(DISTINCT CASE WHEN ts >= ? THEN uri END) AS unique_targets_7d,
+                  COUNT(DISTINCT uri) AS unique_targets_30d,
+                  COUNT(DISTINCT CASE WHEN ts >= ? THEN target_did END) AS unique_subjects_7d,
+                  COUNT(DISTINCT target_did) AS unique_subjects_30d
+           FROM label_events
+           WHERE ts >= ?
+           GROUP BY labeler_did""",
+        (ts_7d, ts_7d, ts_30d),
+    ).fetchall()
+    return {r["labeler_did"]: dict(r) for r in rows}
+
+
 def _build_all_signals(conn, config: Config, now: datetime) -> dict[str, LabelerSignals]:
     """Build LabelerSignals for all labelers using batched queries.
 
@@ -320,6 +340,11 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
     # Build all signals in one pass (6 grouped queries)
     signals_map = _build_all_signals(conn, config, now)
 
+    # Fetch reach stats (unique targets/subjects) in one pass
+    ts_7d = format_ts(now - timedelta(days=7))
+    ts_30d = format_ts(now - timedelta(days=30))
+    reach_map = _fetch_reach_stats(conn, ts_7d, ts_30d)
+
     # Fetch labeler rows for previous derived values
     labelers = conn.execute("SELECT * FROM labelers").fetchall()
 
@@ -409,7 +434,11 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
         inf_prev = row["inference_risk"] if row["inference_risk"] is not None else None
         coh_prev = row["temporal_coherence"] if row["temporal_coherence"] is not None else None
 
-        # Update labeler row (with effective regime + pending state + prev scores)
+        # Reach stats for this labeler
+        reach = reach_map.get(did, {})
+        ev = signals_map[did]
+
+        # Update labeler row (with effective regime + pending state + prev scores + reach)
         db.update_labeler_derived(
             conn, did,
             regime_state=effective_regime.regime_state,
@@ -430,6 +459,12 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
             auditability_risk_prev=audit_prev,
             inference_risk_prev=inf_prev,
             temporal_coherence_prev=coh_prev,
+            events_7d=ev.event_count_7d,
+            events_30d=ev.event_count_30d,
+            unique_targets_7d=reach.get("unique_targets_7d", 0),
+            unique_targets_30d=reach.get("unique_targets_30d", 0),
+            unique_subjects_7d=reach.get("unique_subjects_7d", 0),
+            unique_subjects_30d=reach.get("unique_subjects_30d", 0),
         )
 
 
