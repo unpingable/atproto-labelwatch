@@ -47,6 +47,7 @@
 ## Up next
 
 **Near-term (adds signal):**
+- **Volume/reach tiers for labelers** — compute events, unique targets, unique authors labeled (7d/30d) in derive loop. Surface as a "high impact" indicator on labeler cards. Currently `is_reference` is manual config; this would make volume/reach visible for all labelers so the dashboard shows who's actually doing the most work. Could auto-tag "high volume" tier or just display the stats.
 - ~~Per-rule activation budgets~~ (done — 10 alerts per rule/labeler per 24h, gate at insertion)
 - ~~Handle-to-DID resolution in Climate lookup~~ (done — resolve client-side, pass handle to renderer)
 - ~~Climate form layout bug~~ (done — Firefox flex shorthand fix)
@@ -80,6 +81,7 @@
 - **Silence Adjudicator v0** — regime classifier for labeler silence. Not "is it quiet?" (timestamp comparison) but "why is it quiet?" (regime taxonomy: normal silence, burst gap, upstream PDS issue, labeler death, behavioral drift, firehose issue, local ingest issue, unresolved). Cadence sketches (rolling inter-event intervals → behavioral classes: metronomic/bursty/sparse/dormant), peer comparison by PDS/hosting, governor-constrained probes, receipt trail with ground truth hooks for retrospective learning. Sidecar process, own SQLite, read-only against labelwatch DB. Spec pinned at `docs/SILENCE_ADJUDICATOR_V0.md`. Build when you find yourself staring at timestamps wishing for a better answer.
 - **Monitoring / alerting** — something lightweight for service health (labelwatch, labelwatch-discovery, labelwatch-api). Uptime checks, restart detection, disk/memory. TBD what tool — not Prometheus, not Zabbix. Maybe just a simple healthcheck script + webhook, or a hosted service.
 - **List membership tracking** — ATProto has no inverse "what lists am I on?" query. `app.bsky.graph.listitem` records live in the *list owner's* repo. Only way to build a subject-centric index: Jetstream sidecar with `wantedCollections=app.bsky.graph.listitem`, filter locally by `record.subject == target_did`. Same pattern as discovery_stream.py. Could share the process with a multi-collection filter. Not retroactive without third-party backfill (clearsky-style). See [atproto-stats](https://github.com/unpingable/atproto-stats) for post-level analysis.
+- **Public label query API** — `GET /v1/labels?subject={did}` — the inverse query ATProto doesn't provide. Labelwatch already has the data (10M+ events, target_did indexed). Read-only, per-IP rate limited, result caps. Labels are public records so no auth needed for reads. Would let atproto-stats (or anyone) poll labelwatch instead of running their own Jetstream consumer + index. Separate design conversation: scope (raw events vs rollups vs both), pagination, filtering (by labeler, by value, by time range), caching strategy. See [atproto-stats](https://github.com/unpingable/atproto-stats).
 - Cross-project receipt verification with driftwatch
 - Casefile / annotation ledger for human review notes
 - Caddy-level rate limiting for `/v1/climate/*`
