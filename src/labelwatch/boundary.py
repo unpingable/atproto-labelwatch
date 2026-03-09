@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from .config import Config
-from .label_family import FAMILY_VERSION, normalize_family
+from .label_family import FAMILY_VERSION, classify_domain, normalize_family
 from .receipts import config_hash
 from .utils import format_ts, parse_ts, stable_json
 
@@ -383,6 +383,134 @@ def compute_divergence_summaries(
         })
 
     return summaries
+
+
+# ── Fight-edge filtering (Phase 2) ───────────────────────────────────
+
+
+def classify_edge_domains(edge: dict) -> tuple[str, str]:
+    """Return (domain_a, domain_b) for an edge's top families."""
+    return (
+        classify_domain(edge.get("top_family_a") or ""),
+        classify_domain(edge.get("top_family_b") or ""),
+    )
+
+
+def filter_fight_edges(
+    conn,
+    window_start: str,
+    window_end: str,
+    min_shared_targets: int = 2,
+) -> list[dict]:
+    """Return moderation-vs-moderation contradiction edges with repeated disagreement.
+
+    Filters to pairs where:
+    1. Both top families are in the moderation domain
+    2. The pair disagrees on at least min_shared_targets distinct targets
+    """
+    rows = conn.execute("""
+        SELECT edge_type, target_uri, labeler_a, labeler_b,
+               jsd, top_family_a, top_share_a, top_family_b, top_share_b,
+               n_events_a, n_events_b, computed_at
+        FROM boundary_edges
+        WHERE edge_type = 'contradiction'
+          AND computed_at >= ? AND computed_at <= ?
+        ORDER BY jsd DESC
+    """, (window_start, window_end)).fetchall()
+
+    # Group by labeler pair, filter by domain
+    from collections import defaultdict
+    pair_edges: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for r in rows:
+        edge = dict(r)
+        domain_a, domain_b = classify_edge_domains(edge)
+        if domain_a != "moderation" or domain_b != "moderation":
+            continue
+        pair_key = (edge["labeler_a"], edge["labeler_b"])
+        pair_edges[pair_key].append(edge)
+
+    # Only keep pairs with enough shared targets
+    fight_edges = []
+    for pair_key, edges in pair_edges.items():
+        distinct_targets = len({e["target_uri"] for e in edges})
+        if distinct_targets >= min_shared_targets:
+            fight_edges.extend(edges)
+
+    return fight_edges
+
+
+def boundary_summary_for_report(
+    conn,
+    window_start: str,
+    window_end: str,
+) -> dict:
+    """Compute boundary summary stats for the report page.
+
+    Returns dict with fight_edges, novelty_edge_count, metadata_edge_count,
+    top_fight_pairs, and total_edges.
+    """
+    rows = conn.execute("""
+        SELECT edge_type, target_uri, labeler_a, labeler_b,
+               jsd, top_family_a, top_share_a, top_family_b, top_share_b,
+               n_events_a, n_events_b, computed_at
+        FROM boundary_edges
+        WHERE edge_type = 'contradiction'
+          AND computed_at >= ? AND computed_at <= ?
+        ORDER BY jsd DESC
+    """, (window_start, window_end)).fetchall()
+
+    fight_edges = []
+    novelty_count = 0
+    metadata_count = 0
+    moderation_count = 0
+    cross_domain_count = 0
+
+    from collections import defaultdict
+    pair_targets: dict[tuple[str, str], set[str]] = defaultdict(set)
+
+    for r in rows:
+        edge = dict(r)
+        domain_a, domain_b = classify_edge_domains(edge)
+        pair_key = (edge["labeler_a"], edge["labeler_b"])
+
+        if domain_a == "moderation" and domain_b == "moderation":
+            moderation_count += 1
+            pair_targets[pair_key].add(edge["target_uri"])
+            fight_edges.append(edge)
+        elif domain_a == "novelty" or domain_b == "novelty":
+            novelty_count += 1
+        elif domain_a == "metadata" or domain_b == "metadata":
+            metadata_count += 1
+        else:
+            cross_domain_count += 1
+
+    # Filter fight edges to pairs with 2+ shared targets
+    qualifying_pairs = {
+        pair for pair, targets in pair_targets.items()
+        if len(targets) >= 2
+    }
+    fight_edges = [
+        e for e in fight_edges
+        if (e["labeler_a"], e["labeler_b"]) in qualifying_pairs
+    ]
+
+    # Top fight pairs by target count
+    top_pairs = sorted(
+        [(pair, len(targets)) for pair, targets in pair_targets.items()
+         if len(targets) >= 2],
+        key=lambda x: x[1],
+        reverse=True,
+    )[:10]
+
+    return {
+        "fight_edges": fight_edges,
+        "top_fight_pairs": top_pairs,
+        "total_edges": len(rows),
+        "moderation_edges": moderation_count,
+        "novelty_edges": novelty_count,
+        "metadata_edges": metadata_count,
+        "cross_domain_edges": cross_domain_count,
+    }
 
 
 # ── Storage ──────────────────────────────────────────────────────────

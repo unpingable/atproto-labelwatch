@@ -1,19 +1,26 @@
-"""Tests for boundary instability primitives (Phase 1)."""
+"""Tests for boundary instability primitives (Phase 1 + Phase 2)."""
 from datetime import datetime, timedelta, timezone
 
 from labelwatch import db
 from labelwatch.boundary import (
     _ordered_pair,
+    boundary_summary_for_report,
     build_distributions,
+    classify_edge_domains,
     compute_contradiction_edges,
     compute_divergence_summaries,
     compute_lead_lag_edges,
+    filter_fight_edges,
     find_shared_targets,
     jsd,
     run_boundary_pass,
 )
 from labelwatch.config import Config
-from labelwatch.label_family import FAMILY_VERSION, normalize_family
+from labelwatch.label_family import (
+    FAMILY_VERSION,
+    classify_domain,
+    normalize_family,
+)
 from labelwatch.utils import format_ts
 
 
@@ -66,7 +73,7 @@ def test_normalize_family_passthrough():
 
 
 def test_family_version():
-    assert FAMILY_VERSION == "v1"
+    assert FAMILY_VERSION == "v2"
 
 
 # ── JSD math tests ───────────────────────────────────────────────────
@@ -481,3 +488,208 @@ def test_run_boundary_pass_no_shared_targets():
     stats = run_boundary_pass(conn, cfg, now)
     assert stats["shared_targets"] == 0
     assert stats["edges_stored"] == 0
+
+
+# ── Phase 2: Domain classification ──────────────────────────────────
+
+
+def test_classify_domain_moderation_families():
+    """Mapped moderation families return 'moderation'."""
+    for fam in ("spam", "adult-sexual", "nudity", "harassment", "hate",
+                "violence", "impersonation", "mod-warn", "mod-hide",
+                "mod-takedown", "mod-gate", "misleading", "graphic-media"):
+        assert classify_domain(fam) == "moderation", f"{fam} should be moderation"
+
+
+def test_classify_domain_metadata_families():
+    """Mapped metadata families return 'metadata'."""
+    for fam in ("handle-changed", "bot-reply", "site-standard",
+                "some-blocks", "modlist-author"):
+        assert classify_domain(fam) == "metadata", f"{fam} should be metadata"
+
+
+def test_classify_domain_political():
+    assert classify_domain("uspol") == "political"
+    assert classify_domain("government") == "political"
+
+
+def test_classify_domain_novelty_fallback():
+    """Unmapped families without moderation keywords default to novelty."""
+    assert classify_domain("cool-badge") == "novelty"
+    assert classify_domain("emoji-collector") == "novelty"
+    assert classify_domain("") == "novelty"
+
+
+def test_classify_domain_keyword_heuristic():
+    """Unmapped families with moderation keywords get 'moderation'."""
+    assert classify_domain("custom-spam-filter") == "moderation"  # "spam" in name
+    assert classify_domain("nsfw-detector") == "moderation"
+    assert classify_domain("abuse-report") == "moderation"
+
+
+def test_classify_domain_bang_prefix():
+    """ATProto mod actions (! prefix) are moderation even if unmapped."""
+    assert classify_domain("!custom-action") == "moderation"
+
+
+# ── Phase 2: Edge domain classification ─────────────────────────────
+
+
+def test_classify_edge_domains_both_moderation():
+    edge = {"top_family_a": "spam", "top_family_b": "harassment"}
+    assert classify_edge_domains(edge) == ("moderation", "moderation")
+
+
+def test_classify_edge_domains_mixed():
+    edge = {"top_family_a": "spam", "top_family_b": "cool-badge"}
+    assert classify_edge_domains(edge) == ("moderation", "novelty")
+
+
+def test_classify_edge_domains_null():
+    """Missing families default to novelty (empty string)."""
+    edge = {"top_family_a": None, "top_family_b": "spam"}
+    assert classify_edge_domains(edge) == ("novelty", "moderation")
+
+
+# ── Phase 2: Fight-edge filtering ───────────────────────────────────
+
+
+def _setup_boundary_edges(conn, now):
+    """Insert boundary edges for fight-edge tests. Returns window params."""
+    ts = format_ts(now)
+    w_start = format_ts(now - timedelta(hours=24))
+    w_end = format_ts(now + timedelta(hours=1))
+
+    # 3 moderation-vs-moderation edges between same pair on different targets
+    for i in range(3):
+        conn.execute("""
+            INSERT INTO boundary_edges (
+                edge_type, target_uri, window_start, window_end,
+                labeler_a, labeler_b, jsd, top_family_a, top_share_a,
+                top_family_b, top_share_b, delta_s, overlap, leader_did,
+                n_events_a, n_events_b, family_version, config_hash, computed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "contradiction", f"at://did:plc:t/post/{i}", w_start, w_end,
+            "did:plc:a", "did:plc:b", 0.95,
+            "spam", 0.8, "harassment", 0.9,
+            None, None, None, 5, 5,
+            FAMILY_VERSION, "test", ts,
+        ))
+
+    # 1 novelty-vs-novelty edge (different pair)
+    conn.execute("""
+        INSERT INTO boundary_edges (
+            edge_type, target_uri, window_start, window_end,
+            labeler_a, labeler_b, jsd, top_family_a, top_share_a,
+            top_family_b, top_share_b, delta_s, overlap, leader_did,
+            n_events_a, n_events_b, family_version, config_hash, computed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        "contradiction", "at://did:plc:t/post/99", w_start, w_end,
+        "did:plc:c", "did:plc:d", 1.0,
+        "cool-badge", 1.0, "emoji-star", 1.0,
+        None, None, None, 3, 3,
+        FAMILY_VERSION, "test", ts,
+    ))
+
+    # 1 moderation-vs-moderation edge with only 1 target (below threshold)
+    conn.execute("""
+        INSERT INTO boundary_edges (
+            edge_type, target_uri, window_start, window_end,
+            labeler_a, labeler_b, jsd, top_family_a, top_share_a,
+            top_family_b, top_share_b, delta_s, overlap, leader_did,
+            n_events_a, n_events_b, family_version, config_hash, computed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        "contradiction", "at://did:plc:t/post/solo", w_start, w_end,
+        "did:plc:e", "did:plc:f", 0.85,
+        "spam", 0.9, "misleading", 0.8,
+        None, None, None, 4, 4,
+        FAMILY_VERSION, "test", ts,
+    ))
+
+    conn.commit()
+    return w_start, w_end
+
+
+def test_filter_fight_edges_moderation_only():
+    """Only moderation-vs-moderation edges with 2+ shared targets pass."""
+    conn = _make_db()
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    w_start, w_end = _setup_boundary_edges(conn, now)
+
+    fights = filter_fight_edges(conn, w_start, w_end, min_shared_targets=2)
+    # Only the 3 edges from did:plc:a vs did:plc:b qualify
+    assert len(fights) == 3
+    for e in fights:
+        assert e["labeler_a"] == "did:plc:a"
+        assert e["labeler_b"] == "did:plc:b"
+
+
+def test_filter_fight_edges_excludes_novelty():
+    """Novelty-vs-novelty edges never appear in fight edges."""
+    conn = _make_db()
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    w_start, w_end = _setup_boundary_edges(conn, now)
+
+    fights = filter_fight_edges(conn, w_start, w_end, min_shared_targets=1)
+    labeler_pairs = {(e["labeler_a"], e["labeler_b"]) for e in fights}
+    # c vs d is novelty — should not appear
+    assert ("did:plc:c", "did:plc:d") not in labeler_pairs
+
+
+def test_filter_fight_edges_min_targets_threshold():
+    """Pairs with only 1 shared target are excluded at min_shared_targets=2."""
+    conn = _make_db()
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    w_start, w_end = _setup_boundary_edges(conn, now)
+
+    fights = filter_fight_edges(conn, w_start, w_end, min_shared_targets=2)
+    labeler_pairs = {(e["labeler_a"], e["labeler_b"]) for e in fights}
+    # e vs f has 1 target — excluded
+    assert ("did:plc:e", "did:plc:f") not in labeler_pairs
+
+
+# ── Phase 2: Boundary summary for report ────────────────────────────
+
+
+def test_boundary_summary_domain_counts():
+    """Summary correctly counts edges by domain."""
+    conn = _make_db()
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    w_start, w_end = _setup_boundary_edges(conn, now)
+
+    summary = boundary_summary_for_report(conn, w_start, w_end)
+    assert summary["total_edges"] == 5  # 3 mod + 1 novelty + 1 mod (single target)
+    assert summary["moderation_edges"] == 4  # 3 (a vs b) + 1 (e vs f)
+    assert summary["novelty_edges"] == 1
+    assert summary["metadata_edges"] == 0
+
+
+def test_boundary_summary_fight_edges_filtered():
+    """Fight edges in summary only include pairs with 2+ targets."""
+    conn = _make_db()
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    w_start, w_end = _setup_boundary_edges(conn, now)
+
+    summary = boundary_summary_for_report(conn, w_start, w_end)
+    # Only a vs b qualifies (3 targets), e vs f has only 1
+    assert len(summary["fight_edges"]) == 3
+    assert len(summary["top_fight_pairs"]) == 1
+    pair, count = summary["top_fight_pairs"][0]
+    assert pair == ("did:plc:a", "did:plc:b")
+    assert count == 3
+
+
+def test_boundary_summary_empty():
+    """Summary with no edges returns zeros."""
+    conn = _make_db()
+    now = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    w_start = format_ts(now - timedelta(hours=24))
+    w_end = format_ts(now)
+
+    summary = boundary_summary_for_report(conn, w_start, w_end)
+    assert summary["total_edges"] == 0
+    assert summary["fight_edges"] == []
+    assert summary["top_fight_pairs"] == []

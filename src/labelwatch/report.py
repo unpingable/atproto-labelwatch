@@ -11,7 +11,9 @@ from html import escape
 from typing import Any, Dict, List, Optional
 
 from . import db
+from .boundary import boundary_summary_for_report
 from .derive import burstiness_index
+from .label_family import classify_domain
 from .receipts import config_hash as config_hash_fn
 from .utils import format_ts, get_git_commit, parse_ts
 
@@ -1393,6 +1395,83 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
             f'{ref_cards}</div>'
         )
 
+    # --- Boundary conflicts section ---
+    boundary_section = ""
+    try:
+        boundary_data = boundary_summary_for_report(conn, start_7d, now_ts)
+        if boundary_data["total_edges"] > 0:
+            fight_edges = boundary_data["fight_edges"]
+            top_pairs = boundary_data["top_fight_pairs"]
+
+            # Summary cards
+            boundary_cards = f"""
+<div class="grid">
+  <div class="card health-metric">
+    <div class="label">Moderation Conflicts</div>
+    <div class="value">{boundary_data['moderation_edges']:,}</div>
+    <div class="small">{len(top_pairs)} pair{"s" if len(top_pairs) != 1 else ""} with 2+ targets</div>
+  </div>
+  <div class="card health-metric">
+    <div class="label">Badge Overlap</div>
+    <div class="value">{boundary_data['novelty_edges']:,}</div>
+    <div class="small">novelty labeler orthogonality</div>
+  </div>
+  <div class="card health-metric">
+    <div class="label">Total Boundary Edges</div>
+    <div class="value">{boundary_data['total_edges']:,}</div>
+  </div>
+</div>
+"""
+            # Fight pairs table (moderation conflicts only)
+            fight_table = ""
+            if top_pairs:
+                fight_rows = []
+                for (did_a, did_b), target_count in top_pairs:
+                    name_a = _labeler_link(did_a, handles, display_names)
+                    name_b = _labeler_link(did_b, handles, display_names)
+                    # Get example families from edges for this pair
+                    pair_edges = [
+                        e for e in fight_edges
+                        if e["labeler_a"] == did_a and e["labeler_b"] == did_b
+                    ]
+                    families_a = set(e["top_family_a"] for e in pair_edges if e.get("top_family_a"))
+                    families_b = set(e["top_family_b"] for e in pair_edges if e.get("top_family_b"))
+                    fam_a_str = ", ".join(sorted(families_a)[:3])
+                    fam_b_str = ", ".join(sorted(families_b)[:3])
+                    avg_jsd = sum(e["jsd"] for e in pair_edges) / len(pair_edges) if pair_edges else 0
+                    fight_rows.append([
+                        name_a, escape(fam_a_str),
+                        name_b, escape(fam_b_str),
+                        f"{avg_jsd:.2f}", str(target_count),
+                    ])
+                fight_table = (
+                    '<h3>Active moderation conflicts</h3>'
+                    '<p class="labeler-context">Labeler pairs applying different moderation-family labels '
+                    'to the same targets. Only pairs with 2+ shared targets shown.</p>'
+                    + _table(["Labeler A", "Families", "Labeler B", "Families", "Avg JSD", "Targets"], fight_rows)
+                )
+
+            # Collapsed novelty section
+            novelty_detail = ""
+            if boundary_data["novelty_edges"] > 0:
+                novelty_detail = (
+                    f'<details><summary class="small">Badge ecosystem edges '
+                    f'({boundary_data["novelty_edges"]:,} novelty, '
+                    f'{boundary_data["metadata_edges"]:,} metadata, '
+                    f'{boundary_data["cross_domain_edges"]:,} cross-domain)</summary>'
+                    f'<p class="small">These are labeler pairs applying labels from different ontologies '
+                    f'(e.g., achievement badges vs posting stats). Not moderation conflicts.</p>'
+                    f'</details>'
+                )
+
+            boundary_section = (
+                '<div class="boundary-section"><h2>Boundary Instability (7d)</h2>'
+                + boundary_cards + fight_table + novelty_detail
+                + '</div>'
+            )
+    except Exception as exc:
+        _log.warning("Boundary report section failed: %s", exc)
+
     # --- Triage view with tabs ---
     tab_bar = f"""
 <div class="search-bar">
@@ -1526,7 +1605,7 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
     overview_html = _layout(
         "Labelwatch overview",
         explainer_html + staleness_cards + climate_card + naive_banner + warmup_banner + coverage_card + reference_lane +
-        build_table + overview_tables + labeler_section + alert_links + METHODS_HTML + TRIAGE_JS,
+        boundary_section + build_table + overview_tables + labeler_section + alert_links + METHODS_HTML + TRIAGE_JS,
     )
     _write(os.path.join(tmp_dir, "index.html"), overview_html)
 
