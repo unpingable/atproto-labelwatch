@@ -2,10 +2,10 @@
 
 # labelwatch Architecture
 
-**Version**: 0.5
-**Last Updated**: 2026-02-26
+**Version**: 0.8
+**Last Updated**: 2026-03-10
 **Owner**: James Beck / unpingable
-**Status**: Draft — reflects actual MVP implementation
+**Status**: Draft — reflects current deployed state
 
 ---
 
@@ -13,70 +13,70 @@
 
 ### 1.1 One-Paragraph Purpose
 
-labelwatch is a meta-governance tool for ATProto's label ecosystem. It discovers labelers via `listReposByCollection`, polls label events via `com.atproto.label.queryLabels`, classifies labelers by evidence-based visibility/reachability analysis, stores everything in SQLite, runs detection rules to flag temporal anomalies (rate spikes, flip-flop patterns, target concentration, churn), and produces auditable alerts with SHA-256 receipt hashes. It observes labeler behavior — it does not moderate content, judge truth, or emit labels.
+labelwatch is a meta-governance observatory for ATProto's label ecosystem. It discovers labelers via three channels (batch enumeration, Jetstream sidecar, labeler-lists backstop), polls label events via `com.atproto.label.queryLabels`, classifies labelers by evidence-based visibility/reachability analysis, stores everything in SQLite (WAL mode, schema v19), runs detection rules to flag temporal anomalies (rate spikes, flip-flop patterns, target concentration, churn), derives per-labeler regime state and risk scores, detects cross-labeler boundary instability, serves per-DID label climate reports via HTTP, and produces auditable alerts with SHA-256 receipt hashes. It observes labeler behavior — it does not moderate content, judge truth, or emit labels.
 
 ### 1.2 System Diagram
 
+Three systemd services share one SQLite database (WAL mode):
+
 ```
-┌─────────────────────┐     ┌─────────────────────┐
-│  ATProto Service     │     │  PLC Directory       │
-│  (queryLabels HTTP)  │     │  (DID resolution)    │
-└──────────┬──────────┘     └──────────┬──────────┘
-           │ HTTP polling              │ DID docs
-           ▼                           ▼
-┌─────────────────────┐     ┌─────────────────────┐
-│  Ingest             │     │  Discovery           │
-│  (ingest.py)        │     │  (discover.py)       │
-│  observed-only      │     │  classify + probe    │
-│  tracking           │     │  evidence collection │
-└──────────┬──────────┘     └──────────┬──────────┘
-           │                           │
-           ▼                           ▼
-       ┌──────────────────────────────────┐
-       │  SQLite DB (schema v8)           │
-       │  label_events | labelers         │
-       │  alerts | labeler_evidence       │
-       │  labeler_probe_history | meta    │
-       └──────────────┬───────────────────┘
-                      │
-                      │ queries
-                      ▼
-┌─────────────────────┐     ┌──────────────────┐
-│  Rules              │────▶│  Scan            │
-│  (rules.py)         │     │  (scan.py)       │
-│  rate spike         │     │  receipts +      │
-│  flip-flop          │     │  alert writes    │
-│  concentration      │     │  warmup gating   │
-│  churn              │     └────────┬─────────┘
+┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐
+│  ATProto Service     │     │  PLC Directory       │     │  Jetstream           │
+│  (queryLabels HTTP)  │     │  (DID resolution)    │     │  (labeler.service    │
+└──────────┬──────────┘     └──────────┬──────────┘     │   records, WS)       │
+           │ HTTP polling              │ DID docs       └──────────┬──────────┘
+           ▼                           ▼                           │
+┌─────────────────────┐     ┌─────────────────────┐     ┌──────────▼──────────┐
+│  Ingest             │     │  Batch Discovery     │     │  Discovery Stream   │
+│  (ingest.py)        │     │  (discover.py)       │     │  (discovery_stream) │
+│  multi-ingest       │     │  classify + probe    │     │  + backstop scrape  │
+│  observed-only      │     │  evidence collection │     │  cursor persistence │
+└──────────┬──────────┘     └──────────┬──────────┘     └──────────┬──────────┘
+           │                           │                           │
+           ▼                           ▼                           ▼
+       ┌─────────────────────────────────────────────────────────────┐
+       │  SQLite DB (schema v19, WAL mode)                          │
+       │  label_events | labelers | alerts | labeler_evidence       │
+       │  discovery_events | boundary_edges | boundary_targets      │
+       │  derived_author_day | derived_author_labeler_day | meta    │
+       └──────────────┬──────────────────────────────┬──────────────┘
+                      │                              │
+                      │ queries                      │ read-only
+                      ▼                              ▼
+┌─────────────────────┐     ┌──────────────────┐  ┌──────────────────┐
+│  Rules + Scan       │────▶│  Derive          │  │  Climate API     │
+│  (rules.py,         │     │  (derive.py)     │  │  (server.py)     │
+│   scan.py)          │     │  regime state    │  │  /v1/climate/did │
+│  rate spike         │     │  risk scores     │  │  rate limited    │
+│  flip-flop          │     │  coherence       │  │  disk cached     │
+│  concentration      │     │  boundary        │  └──────────────────┘
+│  churn              │     │  volume/reach    │
+│  receipted alerts   │     └────────┬─────────┘
 └─────────────────────┘              │
-                                     ▼
-                            ┌──────────────────┐
-                            │  Derive          │
-                            │  (derive.py)     │
-                            │  regime state    │
-                            │  risk scores     │
-                            │  coherence       │
-                            │  receipts        │
-                            └────────┬─────────┘
-                                     │
                                      ▼
                             ┌──────────────────┐
                             │  Report          │
                             │  (report.py)     │
                             │  HTML + JSON     │
                             │  census + triage │
+                            │  health cards    │
+                            │  boundary cards  │
                             └──────────────────┘
 ```
 
 ### 1.3 Data Flow
 
 ```
-1. Ingest polls com.atproto.label.queryLabels for configured labeler DIDs
-2. Label events normalized, hashed (SHA-256), and stored in label_events table
-3. Labeler profiles upserted in labelers table (first_seen / last_seen)
-4. Scan runs detection rules against label_events
-5. Alerts written with receipt hashes (SHA-256 over rule + inputs + evidence + config)
-6. Report generates static HTML + JSON site from DB state
+1. Discovery finds labelers (batch enumeration + Jetstream + backstop lists)
+2. Ingest polls com.atproto.label.queryLabels for all discovered labelers
+3. Label events normalized, hashed (SHA-256), and stored in label_events table
+4. Labeler profiles upserted in labelers table (first_seen / last_seen)
+5. Scan runs detection rules against label_events
+6. Alerts written with receipt hashes (SHA-256 over rule + inputs + evidence + config)
+7. Derive pass computes regime state, risk scores, volume/reach stats, boundary edges
+8. Rollup tables updated (derived_author_day, derived_author_labeler_day)
+9. Report generates static HTML + JSON site from DB state
+10. Climate API serves per-DID reports from rollup tables on demand
 ```
 
 ### 1.4 Component Inventory
@@ -84,18 +84,23 @@ labelwatch is a meta-governance tool for ATProto's label ecosystem. It discovers
 | Component | Responsibility | Source |
 |-----------|---------------|--------|
 | Config | TOML config loading, dataclass with defaults | `config.py` |
-| DB | SQLite schema (v8), connection, migrations, evidence/probe/derive CRUD | `db.py` |
+| DB | SQLite schema (v19), connection, migrations, all CRUD | `db.py` |
 | Classify | Pure classifier: EvidenceDict → Classification (no network, no DB) | `classify.py` |
-| Discover | Labeler discovery, DID resolution, endpoint probing, evidence collection | `discover.py` |
+| Discover | Batch labeler discovery, DID resolution, endpoint probing, evidence collection | `discover.py` |
+| Discovery Stream | Async Jetstream listener for real-time labeler discovery (sidecar) | `discovery_stream.py` |
 | Resolve | DID document resolution, service endpoint and label key extraction | `resolve.py` |
-| Ingest | HTTP polling via queryLabels, event normalization, observed-only tracking | `ingest.py` |
+| Ingest | HTTP polling via queryLabels, event normalization, multi-ingest, observed-only tracking | `ingest.py` |
 | Rules | Detection logic: rate spike, flip-flop, concentration, churn; warmup gating | `rules.py` |
 | Derive | Pure regime/risk/coherence classifiers from LabelerSignals (no DB, no network) | `derive.py` |
-| Scan | Orchestrator: runs rules, computes receipts, writes alerts, runs derive pass | `scan.py` |
-| Report | Static HTML + JSON: census page, triage views, evidence expanders | `report.py` |
+| Scan | Orchestrator: runs rules, computes receipts, writes alerts, runs derive + boundary pass | `scan.py` |
+| Label Family | Label normalization (v2) and domain classification (moderation/metadata/novelty/political) | `label_family.py` |
+| Boundary | Cross-labeler disagreement: JSD divergence, contradiction edges, shared-target finding | `boundary.py` |
+| Climate | Per-DID label activity: rollups, daily series, top labelers/values, examples | `climate.py` |
+| Server | HTTP API for climate reports: rate limiting, disk cache, concurrency gate | `server.py` |
+| Report | Static HTML + JSON: census, triage views, evidence expanders, health cards, boundary cards | `report.py` |
 | Receipts | config_hash and receipt_hash computation | `receipts.py` |
-| Runner | Continuous ingest/scan loop with heartbeat timestamps | `runner.py` |
-| CLI | argparse entry point: ingest, scan, discover, labelers, census, reclassify, report, run | `cli.py` |
+| Runner | Continuous ingest/scan/report loop with heartbeat timestamps, memory management | `runner.py` |
+| CLI | argparse entry point: 13 subcommands | `cli.py` |
 | Utils | Timestamps, hashing, git commit detection | `utils.py` |
 
 ---
@@ -140,13 +145,18 @@ labelwatch is a meta-governance tool for ATProto's label ecosystem. It discovers
 
 | Table | Purpose | Key Fields | Mutability |
 |-------|---------|------------|------------|
-| `label_events` | Raw label events from queryLabels | labeler_did, uri, val, neg, ts, event_hash | Append-only (INSERT OR IGNORE) |
-| `labelers` | Per-labeler profile + classification + derive scores | labeler_did, visibility_class, reachability_state, auditability, regime_state, auditability_risk, inference_risk, temporal_coherence, sticky evidence fields, scan_count | Upsert (sticky fields never downgraded) |
+| `label_events` | Raw label events from queryLabels | labeler_did, uri, val, neg, ts, event_hash, target_did | Append-only (INSERT OR IGNORE) |
+| `labelers` | Per-labeler profile + classification + derive scores + volume stats | labeler_did, visibility_class, reachability_state, auditability, regime_state, risk scores, events_7d/30d, unique_targets/subjects_7d/30d | Upsert (sticky fields never downgraded) |
 | `alerts` | Detection results with receipts | rule_id, labeler_did, ts, inputs_json, evidence_hashes_json, config_hash, receipt_hash, warmup_alert | Append-only |
 | `labeler_evidence` | Append-only evidence records | labeler_did, evidence_type, evidence_value, ts, source | Append-only (dedupe within run) |
 | `labeler_probe_history` | Endpoint probe results | labeler_did, ts, endpoint, http_status, normalized_status, latency_ms, failure_type | Append-only |
 | `derived_receipts` | State change receipts for regime/risk derivations | labeler_did, receipt_type, derivation_version, trigger, ts, input_hash, previous/new_value_json, reason_codes_json | Append-only |
-| `meta` | Key-value store for schema version, build info, heartbeats | key, value | Upsert |
+| `discovery_events` | Jetstream/batch/backstop discovery audit trail | labeler_did, operation, source, time_us, commit_cid, record_json, record_sha256 | Append-only (UNIQUE on did+rev+op) |
+| `boundary_edges` | Cross-labeler contradiction/divergence edges | labeler_a, labeler_b, edge_type, jsd, shared_targets, computed_at | Recomputed per derive pass |
+| `boundary_targets` | Shared targets between labeler pairs | labeler_a, labeler_b, target_uri, computed_at | Recomputed per derive pass |
+| `derived_author_day` | Rollup: label counts per author per day | target_did, day, total_labels, distinct_labelers, distinct_values | Upsert per derive pass |
+| `derived_author_labeler_day` | Rollup: label counts per author/labeler/day | target_did, labeler_did, day, label_count, distinct_values | Upsert per derive pass |
+| `meta` | Key-value store for schema version, build info, heartbeats, cursors | key, value | Upsert |
 
 ### 4.2 Labeler Classification
 
@@ -175,7 +185,7 @@ Each labeler has a `visibility_class` (what kind of thing it is) and a `reachabi
 
 ### 4.4 Schema Version
 
-Schema version is tracked in the `meta` table (`key = "schema_version"`). Current version: 8. Migrations are handled in `db.init_db()` with automatic v2→v3→v4→v5→v6→v7→v8 upgrades.
+Schema version is tracked in the `meta` table (`key = "schema_version"`). Current version: 19. Migrations are handled in `db.init_db()` with automatic upgrades through all versions. See `NEXT.md` for the full schema history table.
 
 ---
 
@@ -222,7 +232,19 @@ Design constraint: four separate dials, not one collapsed trust score.
 
 Orchestrator that runs all rules, computes config_hash and receipt_hash for each alert, writes results to the `alerts` table (with `warmup_alert` flag), increments `scan_count`, then runs the derive pass. The derive pass builds `LabelerSignals` from batched DB queries (~6 total), runs all four classifiers with regime hysteresis (requires N consecutive passes before state change), shifts current scores to prev for delta rendering, emits derived receipts on state change, and updates labeler rows. Entry points: `run_scan(conn, config, now)` and `run_derive(conn, config, now)`.
 
-### 5.6 Report (`report.py`)
+### 5.6 Discovery Stream (`discovery_stream.py`)
+
+Async Jetstream listener running as a separate systemd service. Subscribes to `app.bsky.labeler.service` records via WebSocket. Worker queue architecture: receive loop only parses JSON and updates cursor; DID resolution and DB writes happen in a worker task off the event loop. Cursor persistence with 3s rewind on reconnect for gapless replay. Backstop loop scrapes `labeler-lists.bsky.social` every 6h as belt-and-suspenders. Crashes on DB write failures (let systemd restart) rather than running in a "dead but optimistic" state.
+
+### 5.7 Boundary Analysis (`boundary.py`, `label_family.py`)
+
+Cross-labeler disagreement detection. `label_family.py` normalizes label values into families (v2 scheme) and classifies them by domain (moderation / metadata / novelty / political). `boundary.py` finds shared targets between labeler pairs, computes JSD divergence of label distributions, identifies contradiction edges (same target, conflicting labels), and filters fight edges (moderation-vs-moderation conflicts with 2+ shared targets). Results stored in `boundary_edges` and `boundary_targets` tables, surfaced as report cards.
+
+### 5.8 Climate (`climate.py`, `server.py`)
+
+Per-DID label climate reporting. `climate.py` queries rollup tables (`derived_author_day`, `derived_author_labeler_day`) to produce summary stats, top labelers, top label values, daily time series, and example posts with clickable bsky.app links. `server.py` wraps this in an HTTP API (`/v1/climate/{did}`) with token bucket rate limiting, disk caching (5min TTL, atomic writes), concurrency semaphore, generation timeout, and a kill switch. Public payload whitelist strips `recent_receipts`.
+
+### 5.9 Report (`report.py`)
 
 Generates a static HTML + JSON site: overview page with triage views (Active/Alerts/New/Opaque/All tabs), census page with visibility/reachability/confidence/auditability breakdowns, per-labeler pages with evidence expanders and probe history, per-alert pages. Includes warm-up banner, staleness indicators, alert rollups for low-confidence alerts, build signature, clock-skew detection, and naive-timestamp warnings. Uses atomic directory swap for safe updates. Per-labeler URLs use slug format (`did-plc-abc123.html`).
 
@@ -239,6 +261,10 @@ Continuous loop for systemd deployment. Runs discovery, ingest, scan, and report
 | External System | Integration Type | Data Exchanged |
 |-----------------|------------------|----------------|
 | ATProto service (e.g. bsky.social) | HTTP GET polling | Label events (JSON) via `com.atproto.label.queryLabels` |
+| Individual labeler endpoints | HTTP GET (multi-ingest) | Label events directly from labeler services |
+| PLC Directory | HTTP GET | DID documents for labeler resolution |
+| Jetstream (bsky.network) | WebSocket (JSON) | `app.bsky.labeler.service` records for discovery |
+| labeler-lists.bsky.social | HTTP GET (AppView) | Curated labeler lists for backstop discovery |
 
 ### 6.2 Error Handling
 
@@ -247,18 +273,19 @@ Continuous loop for systemd deployment. Runs discovery, ingest, scan, and report
 | HTTP timeout / network error | `urllib.request` exception | Ingest run fails; runner retries on next interval |
 | Malformed label event | `normalize_label` ValueError | Event skipped |
 | DB write failure | SQLite exception | Transaction not committed; retried on next run |
+| Jetstream disconnect | WebSocket close | Reconnect with 3s cursor rewind, backoff+jitter |
+| Discovery DB write failure | SQLite exception | Crash (let systemd restart) — no "dead but optimistic" |
+| Climate API overload | Concurrency semaphore full | 503 response; prevents resource exhaustion |
 
 ---
 
 ## 7. Failure Modes & Resilience
 
-**Current state**: MVP. Single-process, no redundancy.
-
 - **Ingest failure**: Runner retries on next interval. Cursor persistence across restarts avoids redundant re-fetches; events still deduped by event_hash as a safety net.
-- **DB corruption**: No automated backup. Restore from external backup or re-ingest.
-- **Process crash**: Docker `restart: unless-stopped` handles restarts.
-
-TBD for post-MVP: health checks, structured logging, backup automation.
+- **Discovery stream failure**: Crash on DB write errors (let systemd restart with clean state). Cursor persistence with 3s rewind ensures gapless replay.
+- **Subsystem isolation**: Runner wraps each subsystem (ingest, scan, report, discovery) in try/except — a crash in one doesn't kill the others.
+- **DB corruption**: SQLite WAL mode with busy_timeout. No automated backup. Restore from external backup or re-ingest.
+- **Service crash**: systemd `restart=on-failure` with 5-10s backoff.
 
 ---
 
@@ -277,14 +304,17 @@ TBD for post-MVP: performance profiling, connection pooling, async I/O.
 
 ## 9. Security Architecture
 
-**Current state**: MVP. Minimal attack surface.
-
-- No authentication (no web server, no API endpoints)
+- Climate API binds to loopback only; Caddy reverse proxy handles TLS and external access
+- Token bucket rate limiting on `/v1/climate/{did}` (per-IP)
+- Concurrency semaphore prevents resource exhaustion from concurrent report generation
+- Generation timeout (10s) prevents slow queries from blocking the server
+- Path traversal protection on DID parameters
+- Kill switch (`CLIMATE_API_DISABLED`) for emergency shutdown of query layer
+- Public payload whitelist strips `recent_receipts` from climate responses
 - No secrets beyond the ATProto service URL
 - SQLite database is local-only
 - Report output is static files (no XSS vectors — HTML is escaped)
-
-TBD for post-MVP: if a web endpoint is added, authentication and rate limiting will be needed.
+- systemd hardening: ProtectSystem=strict, NoNewPrivileges, ReadOnlyPaths
 
 ---
 
@@ -292,14 +322,20 @@ TBD for post-MVP: if a web endpoint is added, authentication and rate limiting w
 
 ### 10.1 Deployment
 
-Single Docker Compose service running the `labelwatch run` loop. Config mounted read-only, data volume for SQLite DB and reports.
+Three systemd services on a shared host:
+- `labelwatch.service` — main loop (ingest, scan, derive, report)
+- `labelwatch-discovery.service` — Jetstream sidecar for real-time labeler discovery
+- `labelwatch-api.service` — climate HTTP server
+
+All run as `labelwatch:labelwatch` system user. Config at `/opt/labelwatch/config.toml`, DB at `/var/lib/labelwatch/labelwatch.db`. Deploy via rsync + pip install + systemctl restart.
 
 ### 10.2 Observability
 
-- stdout logging (print statements)
-- Report includes build signature and clock-skew diagnostics
-
-TBD for post-MVP: structured logging, metrics endpoint.
+- STATS heartbeat line from discovery stream (every 60s)
+- Heartbeat timestamps in meta table (last_ingest_ok_ts, last_scan_ok_ts, etc.)
+- Report includes build signature, clock-skew diagnostics, discovery health cards
+- RSS memory tracking in runner with periodic `_release_memory()` passes
+- `/health` endpoint on climate API
 
 ---
 
@@ -309,9 +345,9 @@ TBD for post-MVP: structured logging, metrics endpoint.
 
 | Tension | Current State | Notes |
 |---------|---------------|-------|
-| HTTP polling vs streaming | Polling via queryLabels | Misses events between polls. Cursor persistence across restarts is implemented. Jetstream would provide real-time streaming but adds complexity. |
+| HTTP polling vs streaming for labels | Polling via queryLabels for label events | Misses events between polls. Cursor persistence across restarts. Jetstream provides real-time discovery but not label events. |
 | SHA-256 hashing vs cryptographic signing | Receipt hashes are SHA-256 digests | Verifiable (reproducible) but not attributable to a specific signer. True cryptographic signing would require key management. |
-| Single-threaded | One process does ingest + scan + report | Adequate for MVP scale. Would need separation for higher throughput. |
+| Three processes vs one | Main + discovery + API as separate services | Good failure isolation but means three things to monitor. |
 
 ### 11.2 Technical Debt
 
@@ -325,14 +361,13 @@ TBD for post-MVP: structured logging, metrics endpoint.
 
 ## 12. Evolution
 
-Potential future work (not committed):
+See `NEXT.md` for the full roadmap. Key upcoming work:
 
-- **Coordination / co-movement rules**: Detect synchronized spikes or shared-target overlap across multiple labelers.
-- **Jetstream streaming**: Replace HTTP polling with ATProto Jetstream for real-time event ingestion.
-- **Web inspection endpoint**: Simple `/health` and `/recent-alerts` HTTP endpoint for operational monitoring.
-- **Metrics endpoint**: Expose ingest rates, alert counts, scan latency for monitoring dashboards.
-- **Meta-labeler emission**: Optionally emit labels about labeler behavior back into ATProto.
-- **Labeler policy checking**: Weak provenance signals from labeler service declarations.
+- **"What's on me?" view** — account-level labels via AppView `queryLabels` (different data source than local ingest)
+- **Silence Adjudicator** — regime classifier for labeler silence (why quiet, not just is quiet)
+- **Boundary Phase 2 synthesis** — BoundaryFightCard, conflict-only report cards
+- **Public label query API** — `GET /v1/labels?subject={did}` — the inverse query ATProto doesn't provide
+- **Receipt chain** — `prev_receipt_hash` for tamper-evident alert trail
 
 ---
 
@@ -363,3 +398,6 @@ Potential future work (not committed):
 | 0.3 | 2026-02-24 | unpingable | Schema v4: evidence-based classification, warm-up gating, census |
 | 0.4 | 2026-02-25 | unpingable | Schema v5: derive module (regime/risk/coherence), derived receipts, runner hardening, heartbeats |
 | 0.5 | 2026-02-26 | unpingable | Schema v6-v8: regime hysteresis, score deltas (prev columns), warmup alert quarantine, badge/score suppression during warmup, safe deploy script |
+| 0.6 | 2026-03-05 | unpingable | Schema v16-v17: My Label Climate (rollup tables, HTTP API), Jetstream discovery sidecar, coverage delta |
+| 0.7 | 2026-03-08 | unpingable | Schema v18-v19: Boundary instability (label families, contradiction edges, JSD divergence), volume/reach tiers |
+| 0.8 | 2026-03-10 | unpingable | Architecture doc refresh: three-service model, updated diagrams and component inventory, security and operational sections |
