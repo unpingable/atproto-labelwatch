@@ -104,7 +104,7 @@ Three systemd services, one SQLite database (WAL mode):
 |---------|---------|-----------|
 | `labelwatch.service` | Main loop: ingest, scan, derive, report | 2GB / 50% CPU |
 | `labelwatch-discovery.service` | Jetstream sidecar for real-time labeler discovery | 256MB / 10% CPU |
-| `labelwatch-api.service` | Climate HTTP server (`/v1/climate/{did}`) | 512MB / 25% CPU |
+| `labelwatch-api.service` | HTTP API: climate, whatsonme (`/v1/*`) | 512MB / 25% CPU |
 
 ## CLI
 
@@ -124,9 +124,11 @@ labelwatch report --format html --out report/    # Static HTML site
 labelwatch report --alerts --since 24h           # Recent alerts
 labelwatch report --labeler did:plc:...          # Single labeler
 
-# Climate
+# Climate & account labels
 labelwatch climate --did did:plc:...         # Generate climate report (CLI)
-labelwatch serve --port 8423                 # Start climate HTTP server
+labelwatch whatsonme did:plc:...             # Account labels via queryLabels
+labelwatch whatsonme @alice.bsky.social      # Also accepts @handles
+labelwatch serve --port 8423                 # Start HTTP server
 
 # Inspection
 labelwatch labelers                          # List discovered labelers
@@ -138,6 +140,20 @@ labelwatch reclassify --dry-run              # Preview reclassification
 # Maintenance
 labelwatch db-optimize                       # Run ANALYZE + query planner
 ```
+
+## API
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /health` | Health check |
+| `GET /v1/climate/{did_or_handle}` | Label climate report (local ingest data) |
+| `GET /v1/whatsonme/{did_or_handle}` | Account-level labels via network queryLabels |
+
+Both `/v1/climate/` and `/v1/whatsonme/` accept DIDs or `@handle`s. Query params:
+`format=json|html`, `window=N` (climate only), `sources=did1,did2` (whatsonme only).
+
+Rate limited, disk cached (climate), concurrency gated. Kill switch via
+`CLIMATE_API_DISABLED=1`.
 
 ## Configuration
 
