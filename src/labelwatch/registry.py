@@ -151,7 +151,6 @@ def render_registry_html(payload: Dict[str, Any]) -> str:
         '<a href="/">&larr; Back to dashboard</a></p>'
     )
 
-    sections.append('<h1>Labeler Registry</h1>')
     sections.append(_REGISTRY_INTRO)
 
     # Summary cards
@@ -200,17 +199,31 @@ def render_registry_html(payload: Dict[str, Any]) -> str:
     """)
 
     # Table
+    def _clean_search(text: str) -> str:
+        """Sanitize text for use in data-search attribute."""
+        # Strip newlines, collapse whitespace, escape for attribute
+        return html.escape(
+            " ".join(text.lower().split()),
+            quote=True,
+        )
+
     rows = []
     for lab in labelers:
         did = lab["labeler_did"]
         h = lab.get("handle") or ""
         dn = lab.get("display_name") or ""
-        name_display = html.escape(dn or h or did)
-        if h:
+        safe_did = html.escape(did)
+        if dn:
+            name_display = f'<a href="https://bsky.app/profile/{safe_did}">{html.escape(dn)}</a>'
+        elif h:
+            name_display = f'<a href="https://bsky.app/profile/{safe_did}">@{html.escape(h)}</a>'
+        else:
+            name_display = f'<a href="https://bsky.app/profile/{safe_did}">{safe_did}</a>'
+        if h and dn:
             name_display += f'<br><span class="small" style="opacity:0.6">@{html.escape(h)}</span>'
 
         desc = lab.get("description") or ""
-        desc_short = html.escape(desc[:80] + ("..." if len(desc) > 80 else ""))
+        desc_short = html.escape(desc[:80].replace("\n", " ") + ("..." if len(desc) > 80 else ""))
 
         vis = _visibility_badge(lab.get("visibility_class"))
         endpoint = _endpoint_dot(lab.get("endpoint_status"))
@@ -224,12 +237,13 @@ def render_registry_html(payload: Dict[str, Any]) -> str:
         test_dev = lab.get("likely_test_dev", 0)
         inactive = 1 if (lab.get("events_7d") or 0) == 0 else 0
 
-        # Wrap row in a tr with data attributes for filtering
+        search_text = _clean_search(f"{h} {dn} {did} {desc}")
+
         row_html = (
-            f'<tr data-search="{html.escape((h + " " + dn + " " + did + " " + desc).lower())}" '
+            f'<tr data-search="{search_text}" '
             f'data-test-dev="{test_dev}" data-inactive="{inactive}">'
-            f'<td>{name_display}</td>'
-            f'<td>{desc_short}</td>'
+            f'<td style="white-space:nowrap">{name_display}</td>'
+            f'<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis">{desc_short}</td>'
             f'<td>{vis}</td>'
             f'<td style="text-align:center">{endpoint}</td>'
             f'<td>{regime}</td>'
@@ -242,14 +256,20 @@ def render_registry_html(payload: Dict[str, Any]) -> str:
         rows.append(row_html)
 
     headers = [
-        "Labeler", "Description", "Visibility", "Endpoint",
-        "Regime", "7d", "30d", "Targets 7d", "Audit Risk",
+        "Labeler", "Description",
+        '<span title="How this labeler was discovered">Visibility</span>',
+        '<span title="Service endpoint reachability">EP</span>',
+        '<span title="Behavioral regime: stable, bursty, warming up, etc.">Regime</span>',
+        '<span title="Label events in last 7 days">7d</span>',
+        '<span title="Label events in last 30 days">30d</span>',
+        '<span title="Unique targets in last 7 days">Tgt 7d</span>',
+        '<span title="Auditability risk band: how legible is this operator?">Audit</span>',
     ]
     header_html = "<tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>"
 
     table_html = (
         '<div style="overflow-x:auto">'
-        '<table class="tbl" id="registry-table">'
+        '<table id="registry-table" style="width:100%;border-collapse:collapse">'
         f'<thead>{header_html}</thead>'
         f'<tbody>{"".join(rows)}</tbody>'
         '</table></div>'
