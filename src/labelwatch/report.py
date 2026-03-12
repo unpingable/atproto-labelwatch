@@ -1385,6 +1385,17 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
 </script>
 """
 
+    # --- Registry link ---
+    registry_card = """
+<div class="card" style="margin-top:0.75rem;display:flex;justify-content:space-between;align-items:center;">
+  <div>
+    <h3 style="margin:0">Labeler Registry</h3>
+    <p class="small" style="margin:0.2rem 0 0 0">Browse all known labelers, their activity, and operational status.</p>
+  </div>
+  <a href="/v1/registry" style="flex:0 0 auto;padding:0.3rem 1rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--accent,#2980b9);color:#fff;text-decoration:none;">Browse &rarr;</a>
+</div>
+"""
+
     # --- Warm-up banner ---
     warmup_banner = ""
     if warmup_count > 0:
@@ -1661,7 +1672,7 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
 
     overview_html = _layout(
         "Labelwatch overview",
-        explainer_html + staleness_cards + climate_card + naive_banner + warmup_banner + coverage_card + reference_lane +
+        explainer_html + staleness_cards + climate_card + registry_card + naive_banner + warmup_banner + coverage_card + reference_lane +
         boundary_section + build_table + overview_tables + labeler_section + alert_links + METHODS_HTML + TRIAGE_JS,
     )
     _write(os.path.join(tmp_dir, "index.html"), overview_html)
