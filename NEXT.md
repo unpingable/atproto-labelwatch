@@ -55,7 +55,7 @@
 - ~~Climate empty state + back link~~ (done — centered layout, try-other-window links, nav link)
 - **Milestone: Boundary Instability (B.3 synthesis)** — Two phases: primitives first, synthesis second. See [`docs/MILESTONE_BOUNDARY_INSTABILITY.md`](docs/MILESTONE_BOUNDARY_INSTABILITY.md).
   - ~~Phase 1 (primitives)~~: `label_family.py` (versioned normalization), `boundary.py` (shared-target finding, JSD divergence, contradiction edges, lead/lag edges, divergence summaries). Schema v18: `boundary_edges` + `boundary_targets` tables. Behind `boundary_enabled` config flag. 23 tests.
-  - Phase 2 (synthesis): `BoundaryFightCard` — deterministic join over Phase 1 edges + existing flip_flop/churn/concentration/spike receipts. Report cards.
+  - Phase 2 (synthesis): `BoundaryFightCard` — deterministic join over Phase 1 edges + existing flip_flop/churn/concentration/spike receipts. Report cards. **Spec draft: [`docs/BOUNDARY_PHASE2_SPEC.md`](docs/BOUNDARY_PHASE2_SPEC.md)** — domain taxonomy (6 domains), polarity model, orthogonality filter, acceptance tests.
   - Future: boundary_distance / Schmitt trigger hysteresis as derive.py regime classifier upgrade (complementary to cross-labeler signal).
 
 **UI polish (from audit):** all done
@@ -71,7 +71,7 @@
 - ~~Phase 2: HTTP query layer, hardening~~
 - Phase 4: share card template (screenshot-ready)
 - Phase 5: proof-of-control for private detail views (Tier-1 hardening)
-- **"What's on me?" view** — show account-level labels (DID-targeted, not post-targeted) by querying AppView `com.atproto.label.queryLabels` directly, since many small/novelty labelers aren't in the registry and their labels were never ingested. Different data source than climate (AppView vs local DB). Could be a separate endpoint or a section within climate.
+- ~~**"What's on me?" view**~~ (done — `whatsonme.py`, `/v1/whatsonme/{did_or_handle}`, `labelwatch whatsonme` CLI. Queries AppView `queryLabels` directly, computes label state (active/cleared/expired), resolves @handles. Deployed 2026-03-12.)
 
 **Seams / spec work:**
 - Align receipt hash canonicalization with PCAR-D profile (sorted keys, no whitespace, ASCII)
