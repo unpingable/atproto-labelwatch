@@ -3,12 +3,32 @@ import json
 from unittest.mock import patch, MagicMock
 import pytest
 
+from labelwatch import db
 from labelwatch.whatsonme import (
     compute_label_state,
+    fetch_account_labels_from_db,
     resolve_identifier,
     generate_whatsonme,
     _render_whatsonme_html,
 )
+
+
+def _make_db_with_labels():
+    """Create an in-memory DB with some label events."""
+    conn = db.connect(":memory:")
+    db.init_db(conn)
+    db.upsert_labeler(conn, "did:plc:lab1", "2025-01-01T00:00:00Z")
+    conn.execute(
+        "UPDATE labelers SET handle='lab1.bsky.social' WHERE labeler_did='did:plc:lab1'")
+    conn.execute(
+        "INSERT INTO label_events "
+        "(labeler_did, src, uri, cid, val, neg, ts, event_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("did:plc:lab1", "did:plc:lab1", "did:plc:alice",
+         "cid1", "spam", 0, "2025-06-01T00:00:00Z", "hash1"),
+    )
+    conn.commit()
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -101,20 +121,19 @@ def test_resolve_bad_handle(mock_resolve):
 # generate_whatsonme tests
 # ---------------------------------------------------------------------------
 
-@patch("labelwatch.whatsonme.resolve_handle", return_value=None)
 @patch("labelwatch.whatsonme.fetch_profile", return_value={
     "handle": "alice.bsky.social", "displayName": "Alice"
 })
-@patch("labelwatch.whatsonme.fetch_account_labels", return_value=[
-    {"src": "did:plc:lab1", "val": "spam", "uri": "did:plc:alice", "cts": "2025-06-01T00:00:00Z"},
-])
-def test_generate_whatsonme_with_did(mock_labels, mock_profile, mock_rh):
-    payload = generate_whatsonme("did:plc:alice")
+def test_generate_whatsonme_with_did(mock_profile):
+    conn = _make_db_with_labels()
+    payload = generate_whatsonme("did:plc:alice", conn=conn)
     assert payload["did"] == "did:plc:alice"
     assert payload["handle"] == "alice.bsky.social"
     assert payload["total_active"] == 1
     assert len(payload["active_labels"]) == 1
     assert payload["active_labels"][0]["val"] == "spam"
+    # Source handle resolved from local DB
+    assert any(s["handle"] == "lab1.bsky.social" for s in payload["sources"])
 
 
 @patch("labelwatch.whatsonme.resolve_handle_to_did", return_value=None)
@@ -123,13 +142,28 @@ def test_generate_whatsonme_bad_identifier(mock_resolve):
     assert payload.get("error") is True
 
 
-@patch("labelwatch.whatsonme.resolve_handle", return_value=None)
 @patch("labelwatch.whatsonme.fetch_profile", return_value={"handle": "bob.bsky.social"})
-@patch("labelwatch.whatsonme.fetch_account_labels", return_value=[])
-def test_generate_whatsonme_no_labels(mock_labels, mock_profile, mock_rh):
-    payload = generate_whatsonme("did:plc:bob")
+def test_generate_whatsonme_no_labels(mock_profile):
+    conn = db.connect(":memory:")
+    db.init_db(conn)
+    payload = generate_whatsonme("did:plc:bob", conn=conn)
     assert payload["total_active"] == 0
     assert payload["active_labels"] == []
+
+
+def test_fetch_account_labels_from_db():
+    conn = _make_db_with_labels()
+    labels = fetch_account_labels_from_db(conn, "did:plc:alice")
+    assert len(labels) == 1
+    assert labels[0]["val"] == "spam"
+    assert labels[0]["src"] == "did:plc:lab1"
+
+
+def test_fetch_account_labels_from_db_empty():
+    conn = db.connect(":memory:")
+    db.init_db(conn)
+    labels = fetch_account_labels_from_db(conn, "did:plc:nobody")
+    assert labels == []
 
 
 # ---------------------------------------------------------------------------

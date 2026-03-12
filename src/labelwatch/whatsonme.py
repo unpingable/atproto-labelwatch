@@ -1,8 +1,9 @@
-"""What's on me? — Account-level label lookup via ATProto queryLabels.
+"""What's on me? — Account-level label lookup.
 
-This is a different epistemic lane from Climate: Climate shows what our local
-ingest has seen on a DID's posts. This queries the network directly to show
-what labels are currently applied to the account (DID) itself.
+Uses labelwatch's own ingested label_events as the primary data source.
+This sees labels from ALL labelers in the registry, not just ones the user
+subscribes to — which is the whole point. queryLabels requires you to already
+know who to ask; labelwatch already knows.
 """
 from __future__ import annotations
 
@@ -18,50 +19,43 @@ from .resolve import resolve_handle, resolve_handle_to_did
 
 log = logging.getLogger(__name__)
 
-APPVIEW_BASE = "https://public.api.bsky.app/xrpc"
-QUERY_LABELS_LIMIT = 250
-
 
 # ---------------------------------------------------------------------------
-# Network queries
+# Local DB query (primary source)
 # ---------------------------------------------------------------------------
 
-def fetch_account_labels(
-    did: str,
-    sources: Optional[List[str]] = None,
-    timeout: int = 10,
+def fetch_account_labels_from_db(
+    conn, did: str,
 ) -> List[Dict[str, Any]]:
-    """Fetch all labels on a DID via com.atproto.label.queryLabels.
+    """Fetch all labels on a DID from labelwatch's own label_events table.
 
-    Paginates until exhausted. Returns raw label dicts from the API.
+    This is the good path: we see labels from every labeler we've ever
+    ingested, not just ones the user subscribes to.
     """
-    all_labels: List[Dict[str, Any]] = []
-    cursor: Optional[str] = None
-    max_pages = 10  # safety cap
+    rows = conn.execute(
+        "SELECT labeler_did, uri, val, neg, ts, cid, exp "
+        "FROM label_events WHERE uri = ? "
+        "ORDER BY ts DESC LIMIT 500",
+        (did,),
+    ).fetchall()
 
-    for _ in range(max_pages):
-        params = urllib.parse.urlencode(
-            [("uriPatterns", did), ("limit", str(QUERY_LABELS_LIMIT))]
-            + ([("cursor", cursor)] if cursor else [])
-            + [("sources", s) for s in (sources or [])],
-        )
-        url = f"{APPVIEW_BASE}/com.atproto.label.queryLabels?{params}"
+    labels = []
+    for r in rows:
+        label: Dict[str, Any] = {
+            "src": r["labeler_did"],
+            "uri": r["uri"],
+            "val": r["val"],
+            "cts": r["ts"],
+        }
+        if r["neg"]:
+            label["neg"] = True
+        if r["cid"]:
+            label["cid"] = r["cid"]
+        if r["exp"]:
+            label["exp"] = r["exp"]
+        labels.append(label)
 
-        try:
-            req = urllib.request.Request(url, headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-        except Exception:
-            log.error("queryLabels failed for %s", did, exc_info=True)
-            break
-
-        labels = data.get("labels", [])
-        all_labels.extend(labels)
-        cursor = data.get("cursor")
-        if not cursor or len(labels) < QUERY_LABELS_LIMIT:
-            break
-
-    return all_labels
+    return labels
 
 
 def fetch_profile(did: str, timeout: int = 10) -> Optional[Dict[str, Any]]:
@@ -159,8 +153,12 @@ def resolve_identifier(identifier: str) -> Optional[str]:
 def generate_whatsonme(
     identifier: str,
     sources: Optional[List[str]] = None,
+    conn=None,
 ) -> Dict[str, Any]:
     """Generate a 'What's on me?' report for an identifier (DID or handle).
+
+    If conn is provided, queries labelwatch's own DB (sees all labelers).
+    Otherwise falls back to AppView queryLabels (requires sources).
 
     Returns a payload dict with profile info, label state, and raw events.
     """
@@ -175,17 +173,27 @@ def generate_whatsonme(
     # Fetch profile
     profile = fetch_profile(did)
 
-    # Fetch labels
-    raw_labels = fetch_account_labels(did, sources=sources)
+    # Fetch labels — prefer local DB
+    if conn is not None:
+        raw_labels = fetch_account_labels_from_db(conn, did)
+    else:
+        raw_labels = []  # no DB, no AppView without sources
+        log.warning("whatsonme called without DB connection — results will be empty")
     state = compute_label_state(raw_labels)
 
     # Collect unique sources
     all_sources = sorted({label.get("src", "") for label in raw_labels} - {""})
 
-    # Resolve source handles (best-effort)
+    # Resolve source handles — from local DB if available, else network
     source_handles: Dict[str, Optional[str]] = {}
     for src in all_sources:
-        source_handles[src] = resolve_handle(src)
+        if conn is not None:
+            row = conn.execute(
+                "SELECT handle FROM labelers WHERE labeler_did = ?", (src,),
+            ).fetchone()
+            source_handles[src] = row["handle"] if row and row["handle"] else None
+        else:
+            source_handles[src] = resolve_handle(src)
 
     payload: Dict[str, Any] = {
         "did": did,

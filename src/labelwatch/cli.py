@@ -14,6 +14,7 @@ from . import discovery_stream
 from . import report as report_mod
 from . import runner
 from . import server as server_mod
+from . import provenance as provenance_mod
 from . import whatsonme as whatsonme_mod
 from .classify import EvidenceDict, classify_labeler, CLASSIFIER_VERSION
 from .config import load_config
@@ -280,10 +281,39 @@ def cmd_climate(args) -> None:
         print(json.dumps(payload, indent=2))
 
 
+def cmd_provenance(args) -> None:
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+
+    labeler_did = args.did
+
+    # Derive observed metrics from local DB
+    conn = db.connect(cfg.db_path)
+    db.init_db(conn)
+    observed = provenance_mod.derive_observed_metrics(conn, labeler_did)
+    conn.close()
+
+    # Build snapshot (fetches from network)
+    try:
+        snap = provenance_mod.snapshot_for_did(labeler_did, observed)
+    except Exception as e:
+        print(json.dumps({"error": str(e)}, indent=2), file=sys.stderr)
+        raise SystemExit(1)
+
+    print(json.dumps(snap.to_dict(), indent=2))
+
+
 def cmd_whatsonme(args) -> None:
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
     identifier = args.identifier
     sources = args.sources.split(",") if args.sources else None
-    payload = whatsonme_mod.generate_whatsonme(identifier, sources=sources)
+    conn = db.connect(cfg.db_path)
+    db.init_db(conn)
+    payload = whatsonme_mod.generate_whatsonme(identifier, sources=sources, conn=conn)
+    conn.close()
 
     if payload.get("error"):
         print(json.dumps(payload, indent=2), file=sys.stderr)
@@ -476,6 +506,10 @@ def main(argv: Optional[list] = None) -> None:
     p_whatsonme.add_argument("--format", choices=["json", "html", "both"], default="json",
                              dest="out_format", help="Output format")
     p_whatsonme.set_defaults(func=cmd_whatsonme)
+
+    p_prov = sub.add_parser("provenance", help="Generate provenance scorecard for a labeler")
+    p_prov.add_argument("did", help="Labeler DID to score")
+    p_prov.set_defaults(func=cmd_provenance)
 
     p_reclass = sub.add_parser("reclassify", help="Recompute classifications from evidence")
     p_reclass.add_argument("--dry-run", action="store_true", help="Show diff without writing")

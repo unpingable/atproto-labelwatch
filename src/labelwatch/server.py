@@ -336,10 +336,14 @@ class ClimateHandler(BaseHTTPRequestHandler):
 
         def _generate():
             try:
-                payload = whatsonme_mod.generate_whatsonme(
-                    identifier, sources=sources or None,
-                )
-                result["payload"] = payload
+                conn = db.connect(self.db_path, readonly=True)
+                try:
+                    payload = whatsonme_mod.generate_whatsonme(
+                        identifier, sources=sources or None, conn=conn,
+                    )
+                    result["payload"] = payload
+                finally:
+                    conn.close()
             except Exception as e:
                 error[0] = e
             finally:
