@@ -614,3 +614,83 @@ def test_examples_in_generate_climate(tmp_path):
     # HTML should contain the Examples column header
     html_content = (tmp_path / "climate.html").read_text()
     assert ">Examples<" in html_content
+
+
+# ---------------------------------------------------------------------------
+# Account labels integration
+# ---------------------------------------------------------------------------
+
+def test_climate_includes_account_labels(tmp_path):
+    """Climate payload includes account-level labels from label_events."""
+    conn = _make_db()
+    _seed_labeler(conn, LABELER1, handle="lab1.test")
+    # Post-level events (for rollup)
+    _seed_and_rollup(conn, _make_basic_events(), [
+        {"labeler_did": LABELER1, "handle": "lab1.test"},
+        {"labeler_did": LABELER2, "handle": "lab2.test"},
+    ])
+    # Account-level label (uri = bare DID, no target_did needed for whatsonme query)
+    conn.execute(
+        "INSERT INTO label_events(labeler_did, uri, val, neg, ts, event_hash) "
+        "VALUES(?, ?, ?, ?, ?, ?)",
+        (LABELER1, TARGET, "cool-person", 0, _now_iso(), "acct_hash_1"),
+    )
+    conn.commit()
+
+    payload = generate_climate(conn, TARGET, window_days=30, out_dir=str(tmp_path), fmt="both")
+
+    assert "account_labels" in payload
+    acct = payload["account_labels"]
+    assert acct["total_active"] == 1
+    assert acct["active"][0]["val"] == "cool-person"
+    assert acct["active"][0]["src"] == LABELER1
+    assert acct["coverage"]["source"] == "local_archive"
+    assert acct["coverage"]["labelers_searched"] >= 0
+
+    # HTML should render the account labels section
+    html_content = (tmp_path / "climate.html").read_text()
+    assert "Account Labels" in html_content
+    assert "cool-person" in html_content
+
+
+def test_climate_empty_with_account_labels(tmp_path):
+    """Climate page with no post labels but with account labels still shows them."""
+    conn = _make_db()
+    _seed_labeler(conn, LABELER1, handle="lab1.test")
+    # Only account-level label, no post-level events
+    conn.execute(
+        "INSERT INTO label_events(labeler_did, uri, val, neg, ts, event_hash) "
+        "VALUES(?, ?, ?, ?, ?, ?)",
+        (LABELER1, TARGET, "verified", 0, _now_iso(), "acct_hash_2"),
+    )
+    conn.commit()
+
+    payload = generate_climate(conn, TARGET, window_days=30, out_dir=str(tmp_path), fmt="both")
+
+    # Page is NOT empty because account labels exist
+    assert payload.get("empty") is False
+    assert "account_labels" in payload
+    acct = payload["account_labels"]
+    assert acct["total_active"] == 1
+
+    # HTML should show account labels
+    html_content = (tmp_path / "climate.html").read_text()
+    assert "Account Labels" in html_content
+    assert "verified" in html_content
+
+
+def test_climate_no_account_labels(tmp_path):
+    """Climate page with no account labels shows appropriate message."""
+    conn = _make_db()
+    _seed_and_rollup(conn, _make_basic_events(), [
+        {"labeler_did": LABELER1, "handle": "lab1.test"},
+        {"labeler_did": LABELER2, "handle": "lab2.test"},
+    ])
+
+    payload = generate_climate(conn, TARGET, window_days=30, out_dir=str(tmp_path), fmt="both")
+
+    assert "account_labels" in payload
+    assert payload["account_labels"]["total_active"] == 0
+
+    html_content = (tmp_path / "climate.html").read_text()
+    assert "No account-level labels found" in html_content

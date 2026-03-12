@@ -3,6 +3,9 @@
 Queries rollup tables (derived_author_day, derived_author_labeler_day) and
 raw label_events to assemble a JSON payload and standalone HTML page showing
 what labeling activity has targeted a given DID's posts.
+
+Also includes account-level labels (subject = DID) from labelwatch's own
+label_events table — labels from all ingested labelers, not just subscribed.
 """
 from __future__ import annotations
 
@@ -24,6 +27,10 @@ from .report import (
     _table,
     _write_json,
 )
+from .whatsonme import (
+    compute_label_state,
+    fetch_account_labels_from_db,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +42,7 @@ _PUBLIC_KEYS = frozenset({
     "summary", "week_deltas", "top_labelers", "top_values",
     "daily_series", "generated_at",
     "examples_by_labeler", "examples_by_value",
+    "account_labels",
 })
 
 
@@ -354,12 +362,47 @@ def generate_climate(conn, target_did: str, window_days: int = 30,
 
     summary = _query_summary(conn, target_did, start_day_epoch, end_day_epoch, start_iso)
 
-    if summary["label_actions"] == 0:
+    # Account-level labels (subject = DID, not post-level)
+    acct_raw = fetch_account_labels_from_db(conn, target_did)
+    acct_state = compute_label_state(acct_raw)
+    # Resolve source handles from labelers table
+    acct_src_dids = sorted({l.get("src", "") for l in acct_raw} - {""})
+    acct_source_handles: Dict[str, Optional[str]] = {}
+    for src in acct_src_dids:
+        row = conn.execute(
+            "SELECT handle FROM labelers WHERE labeler_did = ?", (src,),
+        ).fetchone()
+        acct_source_handles[src] = row["handle"] if row and row["handle"] else None
+    ingested_labeler_count = conn.execute(
+        "SELECT COUNT(*) FROM labelers WHERE observed_as_src = 1",
+    ).fetchone()[0]
+    acct_labels_payload = {
+        "active": acct_state["active"],
+        "cleared": acct_state["cleared"],
+        "expired": acct_state["expired"],
+        "total_active": len(acct_state["active"]),
+        "total_sources": len(acct_src_dids),
+        "sources": [
+            {"did": s, "handle": acct_source_handles.get(s)} for s in acct_src_dids
+        ],
+        "coverage": {
+            "source": "local_archive",
+            "labelers_searched": ingested_labeler_count,
+            "is_exhaustive": False,
+            "note": (
+                f"From Labelwatch's local archive of {ingested_labeler_count} "
+                "ingested labelers. May not be exhaustive."
+            ),
+        },
+    }
+
+    if summary["label_actions"] == 0 and acct_labels_payload["total_active"] == 0:
         payload: Dict[str, Any] = {
             "empty": True,
             "target_did": target_did,
             "window_days": window_days,
             "message": f"No label activity found in the last {window_days} days.",
+            "account_labels": acct_labels_payload,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
         if fmt in ("json", "both"):
@@ -390,6 +433,7 @@ def generate_climate(conn, target_did: str, window_days: int = 30,
         "examples_by_value": examples_by_value,
         "daily_series": daily_series,
         "recent_receipts": recent_receipts,
+        "account_labels": acct_labels_payload,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -435,6 +479,82 @@ def _atomic_write_html(out_dir: str, payload: Dict[str, Any],
 # HTML rendering
 # ---------------------------------------------------------------------------
 
+def _render_account_labels_section(payload: Dict[str, Any]) -> List[str]:
+    """Render account-level labels section as HTML fragments."""
+    parts: List[str] = []
+    acct = payload.get("account_labels", {})
+    acct_active = acct.get("active", [])
+    acct_cleared = acct.get("cleared", [])
+    acct_expired = acct.get("expired", [])
+    acct_src_map = {s["did"]: s.get("handle") for s in acct.get("sources", [])}
+
+    def _acct_src(src_did: str) -> str:
+        h = acct_src_map.get(src_did)
+        return f"@{html.escape(h)}" if h else html.escape(src_did)
+
+    acct_coverage = acct.get("coverage", {})
+    coverage_note = html.escape(acct_coverage.get("note", ""))
+
+    if acct_active or acct_cleared or acct_expired:
+        parts.append('<h2>Account Labels</h2>')
+        if coverage_note:
+            parts.append(
+                f'<p class="small" style="opacity:0.6;margin-bottom:0.5rem">{coverage_note}</p>'
+            )
+
+        if acct_active:
+            rows = []
+            for label in acct_active:
+                rows.append([
+                    html.escape(label["val"]),
+                    _acct_src(label["src"]),
+                    html.escape(label["cts"][:19].replace("T", " ")) if label.get("cts") else "\u2014",
+                ])
+            parts.append(
+                '<h3>Active</h3>'
+                + _table(["Label", "Source", "Applied"], rows)
+            )
+
+        if acct_cleared:
+            rows = []
+            for label in acct_cleared:
+                rows.append([
+                    html.escape(label["val"]),
+                    _acct_src(label["src"]),
+                    html.escape(label.get("cleared_at", "")[:19].replace("T", " ")),
+                ])
+            parts.append(
+                '<h3>Cleared</h3>'
+                + _table(["Label", "Source", "Cleared"], rows)
+            )
+
+        if acct_expired:
+            rows = []
+            for label in acct_expired:
+                rows.append([
+                    html.escape(label["val"]),
+                    _acct_src(label["src"]),
+                    html.escape(label.get("expired_at", "")[:19].replace("T", " ")),
+                ])
+            parts.append(
+                '<h3>Expired</h3>'
+                + _table(["Label", "Source", "Expired"], rows)
+            )
+    else:
+        parts.append(
+            '<h2>Account Labels</h2>'
+            '<div class="card" style="text-align:center;padding:1.2rem;">'
+            '<p>No account-level labels found</p>'
+        )
+        if coverage_note:
+            parts.append(
+                f'<p class="small" style="opacity:0.6">{coverage_note}</p>'
+            )
+        parts.append('</div>')
+
+    return parts
+
+
 def _render_html(payload: Dict[str, Any], target_did: str,
                  window_days: int) -> str:
     """Render the climate payload as a standalone HTML page."""
@@ -455,15 +575,18 @@ def _render_html(payload: Dict[str, Any], target_did: str,
             f'{"&handle=" + html.escape(handle) if handle else ""}">{w} days</a>'
             for w in other_windows
         )
-        body = (
-            nav
-            + f'<p class="small">{subtitle_who} — last {window_days} days</p>'
+        parts = [
+            nav,
+            f'<p class="small">{subtitle_who} — last {window_days} days</p>',
             '<div class="card" style="text-align:center;padding:2rem;">'
-            '<p style="font-size:1.3rem;margin-bottom:0.5rem;">No label activity found</p>'
+            '<p style="font-size:1.3rem;margin-bottom:0.5rem;">No post-level label activity found</p>'
             f'<p class="small">No labelers have applied labels to posts by this account in the last {window_days} days.</p>'
             f'<p class="small" style="margin-top:1rem;">Try a different window: {try_links}</p>'
-            '</div>'
-        )
+            '</div>',
+        ]
+        # Still show account labels on empty pages
+        parts.extend(_render_account_labels_section(payload))
+        body = "\n".join(parts)
         return _layout(title, body)
 
     summary = payload["summary"]
@@ -508,6 +631,9 @@ def _render_html(payload: Dict[str, Any], target_did: str,
     </div>
     """
     sections.append(cards)
+
+    # --- Account Labels ---
+    sections.extend(_render_account_labels_section(payload))
 
     # --- Top Labelers ---
     if payload.get("top_labelers"):
@@ -588,9 +714,10 @@ def _render_html(payload: Dict[str, Any], target_did: str,
     gen_at = html.escape(payload.get("generated_at", ""))
     sections.append(
         '<div class="card" style="margin-top:2rem;font-size:0.85rem;opacity:0.7">'
-        f'<p><strong>Methods:</strong> Data from labelwatch rollup tables '
+        f'<p><strong>Methods:</strong> Post labels from labelwatch rollup tables '
         f'(derived_author_day, derived_author_labeler_day) and raw label_events. '
-        f'Window: {window_days} days. Post-only filter (app.bsky.feed.post). '
+        f'Account labels from label_events where subject = DID. '
+        f'Window: {window_days} days (post labels). '
         f'Generated: {gen_at}.</p>'
         '<p>Want to explore the actual posts behind these labels? '
         'See <a href="https://github.com/unpingable/atproto-stats">atproto-stats</a>.</p>'

@@ -22,7 +22,6 @@ from typing import Any, Dict, Optional
 from . import db
 from .climate import generate_climate, public_climate_payload, _render_html
 from .report import _did_slug
-from . import whatsonme as whatsonme_mod
 
 logger = logging.getLogger(__name__)
 
@@ -231,8 +230,6 @@ class ClimateHandler(BaseHTTPRequestHandler):
         try:
             if path == "/health":
                 self._handle_health()
-            elif "/v1/whatsonme/" in path:
-                self._handle_whatsonme(path, query)
             elif "/v1/climate/" in path:
                 self._handle_climate(path, query)
             else:
@@ -260,132 +257,6 @@ class ClimateHandler(BaseHTTPRequestHandler):
     def _handle_health(self):
         self._last_status = 200
         self._send_json(200, {"ok": True}, {"Cache-Control": "no-store"})
-
-    def _handle_whatsonme(self, path: str, query: dict):
-        """Handle /v1/whatsonme/{identifier} requests."""
-        parts = path.split("/v1/whatsonme/", 1)
-        if len(parts) < 2 or not parts[1]:
-            self._last_status = 400
-            self._send_error(400, "Identifier required")
-            return
-
-        remainder = parts[1]
-        if "/" in remainder:
-            self._last_status = 404
-            self._send_error(404, "Not found")
-            return
-
-        identifier = urllib.parse.unquote(remainder).strip()
-        if not identifier:
-            self._last_status = 400
-            self._send_error(400, "Identifier required")
-            return
-
-        # Validate: must be a DID or handle-shaped string
-        if not identifier.startswith("did:") and not identifier.startswith("@"):
-            # Treat bare strings as handles
-            identifier = "@" + identifier
-
-        if identifier.startswith("did:"):
-            err = _validate_did(identifier)
-            if err:
-                self._last_status = 400
-                self._send_error(400, err)
-                return
-
-        # Panic switch
-        if self.disabled:
-            self._last_status = 503
-            self._send_error(503, "Service disabled")
-            return
-
-        fmt = query.get("format", ["html"])[0]
-        if fmt not in ("json", "html"):
-            fmt = "html"
-
-        sources = query.get("sources", [])
-
-        # Rate limit
-        if self.bucket:
-            wait = self.bucket.consume()
-            if wait > 0:
-                self._last_status = 429
-                self._send_error(429, "Rate limited",
-                                 {"Retry-After": str(int(wait) + 1),
-                                  "Cache-Control": "no-store"})
-                return
-
-        # Concurrency gate
-        if self.semaphore and not self.semaphore.acquire(blocking=False):
-            self._last_status = 503
-            self._send_error(503, "Server busy")
-            return
-
-        try:
-            self._generate_whatsonme(identifier, fmt, sources)
-        finally:
-            if self.semaphore:
-                self.semaphore.release()
-
-    def _generate_whatsonme(self, identifier: str, fmt: str,
-                            sources: list):
-        """Generate and respond with whatsonme data."""
-        result: dict = {}
-        error = [None]
-        done_event = threading.Event()
-
-        def _generate():
-            try:
-                conn = db.connect(self.db_path, readonly=True)
-                try:
-                    payload = whatsonme_mod.generate_whatsonme(
-                        identifier, sources=sources or None, conn=conn,
-                    )
-                    result["payload"] = payload
-                finally:
-                    conn.close()
-            except Exception as e:
-                error[0] = e
-            finally:
-                done_event.set()
-
-        t = threading.Thread(target=_generate, daemon=True)
-        t.start()
-        done_event.wait(timeout=self.generation_timeout)
-
-        if not done_event.is_set():
-            self._last_status = 503
-            self._send_error(503, "Generation timeout")
-            return
-
-        if error[0] is not None:
-            logger.error("Whatsonme generation error: %s", error[0])
-            self._last_status = 500
-            self._send_error(500, "Internal server error")
-            return
-
-        payload = result["payload"]
-
-        if payload.get("error"):
-            self._last_status = 404
-            if fmt == "json":
-                self._send_json(404, payload)
-            else:
-                html_str = whatsonme_mod._render_whatsonme_html(payload)
-                self._send_html(404, html_str.encode("utf-8"))
-            return
-
-        headers = {"Cache-Control": "private, max-age=60"}
-
-        if fmt == "json":
-            # Strip raw_events from public JSON response
-            public = {k: v for k, v in payload.items() if k != "raw_events"}
-            self._last_status = 200
-            self._send_json(200, public, headers)
-        else:
-            html_str = whatsonme_mod._render_whatsonme_html(payload)
-            self._last_status = 200
-            self._send_html(200, html_str.encode("utf-8"), headers)
 
     def _handle_climate(self, path: str, query: dict):
         # Parse DID from path

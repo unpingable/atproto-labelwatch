@@ -1,9 +1,13 @@
 """What's on me? — Account-level label lookup.
 
 Uses labelwatch's own ingested label_events as the primary data source.
-This sees labels from ALL labelers in the registry, not just ones the user
-subscribes to — which is the whole point. queryLabels requires you to already
-know who to ask; labelwatch already knows.
+This sees labels from all ingested labelers, not just ones the user
+subscribes to. queryLabels requires explicit source DIDs; labelwatch
+already knows its registry.
+
+Account labels are integrated into the climate page (/v1/climate/{did}).
+This module provides the query and state-computation functions consumed
+by climate.py. The standalone HTML renderer is kept for CLI use.
 """
 from __future__ import annotations
 
