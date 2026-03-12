@@ -190,7 +190,7 @@ def render_registry_html(payload: Dict[str, Any]) -> str:
     </div>
     <div style="margin-bottom:0.8rem">
       <label style="font-size:0.85rem;margin-right:1rem">
-        <input type="checkbox" id="hide-test-dev"> Hide test/dev
+        <input type="checkbox" id="hide-test-dev" checked> Hide test/dev
       </label>
       <label style="font-size:0.85rem;margin-right:1rem">
         <input type="checkbox" id="hide-inactive"> Hide inactive (0 events 7d)
@@ -315,6 +315,7 @@ def render_registry_html(payload: Dict[str, Any]) -> str:
       search.addEventListener('input', filter);
       hideTest.addEventListener('change', filter);
       hideInactive.addEventListener('change', filter);
+      filter();
     })();
     </script>
     """)
