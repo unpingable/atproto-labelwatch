@@ -21,7 +21,7 @@ labelwatch = "labelwatch.cli:main"
 [project.optional-dependencies]
 export = []
 
-test = ["pytest>=7"]
+test = ["pytest>=7", "pytest-asyncio>=0.21", "anyio>=4"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
