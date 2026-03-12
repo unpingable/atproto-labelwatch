@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 
 from . import db
 from .climate import generate_climate, public_climate_payload, _render_html
+from .registry import generate_registry, render_registry_html
 from .report import _did_slug
 
 logger = logging.getLogger(__name__)
@@ -230,6 +231,8 @@ class ClimateHandler(BaseHTTPRequestHandler):
         try:
             if path == "/health":
                 self._handle_health()
+            elif path == "/v1/registry":
+                self._handle_registry(query)
             elif "/v1/climate/" in path:
                 self._handle_climate(path, query)
             else:
@@ -257,6 +260,83 @@ class ClimateHandler(BaseHTTPRequestHandler):
     def _handle_health(self):
         self._last_status = 200
         self._send_json(200, {"ok": True}, {"Cache-Control": "no-store"})
+
+    def _handle_registry(self, query: dict):
+        """Handle /v1/registry requests."""
+        if self.disabled:
+            self._last_status = 503
+            self._send_error(503, "Service disabled")
+            return
+
+        fmt = query.get("format", ["html"])[0]
+        if fmt not in ("json", "html"):
+            fmt = "html"
+
+        # Rate limit
+        if self.bucket:
+            wait = self.bucket.consume()
+            if wait > 0:
+                self._last_status = 429
+                self._send_error(429, "Rate limited",
+                                 {"Retry-After": str(int(wait) + 1),
+                                  "Cache-Control": "no-store"})
+                return
+
+        # Concurrency gate
+        if self.semaphore and not self.semaphore.acquire(blocking=False):
+            self._last_status = 503
+            self._send_error(503, "Server busy")
+            return
+
+        try:
+            self._generate_registry(fmt)
+        finally:
+            if self.semaphore:
+                self.semaphore.release()
+
+    def _generate_registry(self, fmt: str):
+        """Generate and respond with registry data."""
+        result: dict = {}
+        error = [None]
+        done_event = threading.Event()
+
+        def _generate():
+            try:
+                conn = db.connect(self.db_path, readonly=True)
+                try:
+                    result["payload"] = generate_registry(conn)
+                finally:
+                    conn.close()
+            except Exception as e:
+                error[0] = e
+            finally:
+                done_event.set()
+
+        t = threading.Thread(target=_generate, daemon=True)
+        t.start()
+        done_event.wait(timeout=self.generation_timeout)
+
+        if not done_event.is_set():
+            self._last_status = 503
+            self._send_error(503, "Generation timeout")
+            return
+
+        if error[0] is not None:
+            logger.error("Registry generation error: %s", error[0])
+            self._last_status = 500
+            self._send_error(500, "Internal server error")
+            return
+
+        payload = result["payload"]
+        headers = {"Cache-Control": "private, max-age=300"}
+
+        if fmt == "json":
+            self._last_status = 200
+            self._send_json(200, payload, headers)
+        else:
+            html_str = render_registry_html(payload)
+            self._last_status = 200
+            self._send_html(200, html_str.encode("utf-8"), headers)
 
     def _handle_climate(self, path: str, query: dict):
         # Parse DID from path
