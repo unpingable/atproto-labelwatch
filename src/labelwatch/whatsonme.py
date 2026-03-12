@@ -19,6 +19,8 @@ from .resolve import resolve_handle, resolve_handle_to_did
 
 log = logging.getLogger(__name__)
 
+APPVIEW_BASE = "https://public.api.bsky.app/xrpc"
+
 
 # ---------------------------------------------------------------------------
 # Local DB query (primary source)
