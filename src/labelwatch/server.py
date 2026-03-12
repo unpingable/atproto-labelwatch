@@ -259,14 +259,36 @@ class ClimateHandler(BaseHTTPRequestHandler):
 
     def _handle_health(self):
         from .read_health import get_tracker
+        from .signal_health import signal_health_snapshot
 
         reads = get_tracker().snapshot()
-        degraded = reads["verdict"] in ("DEGRADED",)
+
+        # Signal health (per-labeler EPS baseline)
+        signals = {"verdict": "NO_DATA"}
+        try:
+            conn = db.connect(self.db_path, readonly=True)
+            try:
+                signals = signal_health_snapshot(conn)
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("Signal health query failed", exc_info=True)
+
         self._last_status = 200
         self._send_json(200, {
             "ok": True,
             "reads": reads,
-            "reads_degraded": degraded,
+            "reads_degraded": reads["verdict"] in ("DEGRADED",),
+            "signals": {
+                "verdict": signals["verdict"],
+                "classifications": signals.get("classifications"),
+                "total_observed": signals.get("total_observed"),
+                "overall_7d_30d_ratio": signals.get("overall_7d_30d_ratio"),
+                "gone_dark_count": len(signals.get("gone_dark", [])),
+                "degrading_count": len(signals.get("degrading", [])),
+                "reference_issues": signals.get("reference_issues", []),
+            },
+            "signals_degraded": signals["verdict"] in ("CRITICAL", "DEGRADED"),
         }, {"Cache-Control": "no-store"})
 
     def _handle_registry(self, query: dict):
