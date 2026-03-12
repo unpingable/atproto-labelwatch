@@ -61,6 +61,30 @@ def resolve_label_key(did_doc: dict) -> bool:
     return False
 
 
+def resolve_handle_to_did(handle: str, timeout: int = 10) -> Optional[str]:
+    """Resolve an @handle to a DID via com.atproto.identity.resolveHandle.
+
+    Accepts handles with or without leading '@'. Returns the DID string
+    or None on failure.
+    """
+    handle = handle.lstrip("@").strip()
+    if not handle:
+        return None
+    url = (
+        "https://public.api.bsky.app/xrpc/"
+        "com.atproto.identity.resolveHandle?"
+        f"handle={urllib.request.quote(handle)}"
+    )
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("did")
+    except Exception:
+        log.debug("Failed to resolve handle %s", handle, exc_info=True)
+        return None
+
+
 def resolve_handles_for_labelers(conn, timeout: int = 10) -> int:
     """Resolve handles for all labelers that don't have one yet.
 

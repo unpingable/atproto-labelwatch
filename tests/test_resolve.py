@@ -3,7 +3,12 @@ from unittest.mock import patch, MagicMock
 import json
 
 from labelwatch import db
-from labelwatch.resolve import resolve_handle, resolve_handles_for_labelers, resolve_label_key
+from labelwatch.resolve import (
+    resolve_handle,
+    resolve_handle_to_did,
+    resolve_handles_for_labelers,
+    resolve_label_key,
+)
 
 
 def _make_db():
@@ -139,3 +144,38 @@ def test_resolve_label_key_empty_doc():
 def test_resolve_label_key_no_verification_methods():
     doc = {"service": [{"id": "#atproto_labeler"}]}
     assert resolve_label_key(doc) is False
+
+
+# --- resolve_handle_to_did ---
+
+def test_resolve_handle_to_did_success():
+    resp = MagicMock()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.read.return_value = json.dumps({"did": "did:plc:resolved"}).encode("utf-8")
+
+    with patch("labelwatch.resolve.urllib.request.urlopen", return_value=resp):
+        result = resolve_handle_to_did("alice.bsky.social")
+    assert result == "did:plc:resolved"
+
+
+def test_resolve_handle_to_did_strips_at():
+    resp = MagicMock()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.read.return_value = json.dumps({"did": "did:plc:resolved"}).encode("utf-8")
+
+    with patch("labelwatch.resolve.urllib.request.urlopen", return_value=resp):
+        result = resolve_handle_to_did("@alice.bsky.social")
+    assert result == "did:plc:resolved"
+
+
+def test_resolve_handle_to_did_failure():
+    with patch("labelwatch.resolve.urllib.request.urlopen", side_effect=Exception("404")):
+        result = resolve_handle_to_did("nonexistent.invalid")
+    assert result is None
+
+
+def test_resolve_handle_to_did_empty():
+    assert resolve_handle_to_did("") is None
+    assert resolve_handle_to_did("@") is None

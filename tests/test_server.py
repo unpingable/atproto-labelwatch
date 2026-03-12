@@ -179,10 +179,11 @@ class TestClimateEmpty:
 
 class TestClimateValidation:
     def test_climate_invalid_did(self, seeded_server):
+        # Non-DID strings are now treated as handles for resolution
         status, _, body = _get(f"{seeded_server}/v1/climate/notadid")
-        assert status == 400
+        assert status == 404
         data = json.loads(body)
-        assert "Invalid DID" in data["error"]
+        assert "resolve" in data["error"].lower()
 
     def test_climate_did_too_long(self, seeded_server):
         long_did = "did:plc:" + "x" * 300

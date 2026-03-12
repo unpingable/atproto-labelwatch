@@ -14,6 +14,7 @@ from . import discovery_stream
 from . import report as report_mod
 from . import runner
 from . import server as server_mod
+from . import whatsonme as whatsonme_mod
 from .classify import EvidenceDict, classify_labeler, CLASSIFIER_VERSION
 from .config import load_config
 from .utils import format_ts, now_utc, parse_ts
@@ -279,6 +280,34 @@ def cmd_climate(args) -> None:
         print(json.dumps(payload, indent=2))
 
 
+def cmd_whatsonme(args) -> None:
+    identifier = args.identifier
+    sources = args.sources.split(",") if args.sources else None
+    payload = whatsonme_mod.generate_whatsonme(identifier, sources=sources)
+
+    if payload.get("error"):
+        print(json.dumps(payload, indent=2), file=sys.stderr)
+        raise SystemExit(1)
+
+    if args.out_format == "json":
+        print(json.dumps(payload, indent=2))
+    elif args.out_format == "html":
+        html_str = whatsonme_mod._render_whatsonme_html(payload)
+        out_path = os.path.join(args.out, "whatsonme.html")
+        os.makedirs(args.out, exist_ok=True)
+        with open(out_path, "w") as f:
+            f.write(html_str)
+        print(json.dumps({"wrote": out_path}))
+    else:
+        # both
+        print(json.dumps(payload, indent=2))
+        html_str = whatsonme_mod._render_whatsonme_html(payload)
+        out_path = os.path.join(args.out, "whatsonme.html")
+        os.makedirs(args.out, exist_ok=True)
+        with open(out_path, "w") as f:
+            f.write(html_str)
+
+
 def cmd_serve(args) -> None:
     cfg = load_config(args.config)
     if args.db_path:
@@ -439,6 +468,14 @@ def main(argv: Optional[list] = None) -> None:
     p_climate.add_argument("--format", choices=["json", "html", "both"], default="both",
                            dest="out_format", help="Output format")
     p_climate.set_defaults(func=cmd_climate)
+
+    p_whatsonme = sub.add_parser("whatsonme", help="Look up account labels for a DID or @handle")
+    p_whatsonme.add_argument("identifier", help="DID or @handle to look up")
+    p_whatsonme.add_argument("--sources", help="Comma-separated source DIDs to filter by")
+    p_whatsonme.add_argument("--out", default=".", help="Output directory for HTML")
+    p_whatsonme.add_argument("--format", choices=["json", "html", "both"], default="json",
+                             dest="out_format", help="Output format")
+    p_whatsonme.set_defaults(func=cmd_whatsonme)
 
     p_reclass = sub.add_parser("reclassify", help="Recompute classifications from evidence")
     p_reclass.add_argument("--dry-run", action="store_true", help="Show diff without writing")
