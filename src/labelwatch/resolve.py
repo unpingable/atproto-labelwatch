@@ -16,13 +16,16 @@ def fetch_did_doc(did: str, timeout: int = 10) -> dict | None:
 
     Returns the parsed JSON dict or None on failure.
     """
+    from .read_health import tracked_urlopen
+
     url = f"{PLC_DIRECTORY}/{did}"
+    body = tracked_urlopen("did_doc", url, timeout=timeout)
+    if body is None:
+        return None
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        log.debug("Failed to fetch DID doc for %s", did, exc_info=True)
+        return json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        log.debug("Invalid JSON from DID doc for %s", did)
         return None
 
 
@@ -67,6 +70,8 @@ def resolve_handle_to_did(handle: str, timeout: int = 10) -> Optional[str]:
     Accepts handles with or without leading '@'. Returns the DID string
     or None on failure.
     """
+    from .read_health import tracked_urlopen
+
     handle = handle.lstrip("@").strip()
     if not handle:
         return None
@@ -75,13 +80,14 @@ def resolve_handle_to_did(handle: str, timeout: int = 10) -> Optional[str]:
         "com.atproto.identity.resolveHandle?"
         f"handle={urllib.request.quote(handle)}"
     )
+    body = tracked_urlopen("handle_resolve", url, timeout=timeout)
+    if body is None:
+        return None
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data.get("did")
-    except Exception:
-        log.debug("Failed to resolve handle %s", handle, exc_info=True)
+        data = json.loads(body.decode("utf-8"))
+        return data.get("did")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        log.debug("Invalid JSON from handle resolve for %s", handle)
         return None
 
 

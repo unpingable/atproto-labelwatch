@@ -66,13 +66,16 @@ def fetch_account_labels_from_db(
 
 def fetch_profile(did: str, timeout: int = 10) -> Optional[Dict[str, Any]]:
     """Fetch basic profile info via app.bsky.actor.getProfile."""
+    from .read_health import tracked_urlopen
+
     url = f"{APPVIEW_BASE}/app.bsky.actor.getProfile?actor={urllib.parse.quote(did)}"
+    body = tracked_urlopen("profile_fetch", url, timeout=timeout)
+    if body is None:
+        return None
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        log.debug("getProfile failed for %s", did, exc_info=True)
+        return json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        log.debug("Invalid JSON from getProfile for %s", did)
         return None
 
 

@@ -258,8 +258,16 @@ class ClimateHandler(BaseHTTPRequestHandler):
                 logger.info(msg)
 
     def _handle_health(self):
+        from .read_health import get_tracker
+
+        reads = get_tracker().snapshot()
+        degraded = reads["verdict"] in ("DEGRADED",)
         self._last_status = 200
-        self._send_json(200, {"ok": True}, {"Cache-Control": "no-store"})
+        self._send_json(200, {
+            "ok": True,
+            "reads": reads,
+            "reads_degraded": degraded,
+        }, {"Cache-Control": "no-store"})
 
     def _handle_registry(self, query: dict):
         """Handle /v1/registry requests."""
