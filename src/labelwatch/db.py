@@ -8,7 +8,7 @@ from .utils import get_git_commit
 
 _log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # SCHEMA_TABLES: all CREATE TABLE statements. Safe to run against pre-existing
 # tables (IF NOT EXISTS is a no-op). Used by v0→v1 bootstrap where the table
@@ -305,6 +305,13 @@ CREATE TABLE IF NOT EXISTS boundary_targets (
     config_hash TEXT NOT NULL,
     computed_at TEXT NOT NULL,
     UNIQUE(target_uri, window_start, family_version)
+);
+
+CREATE TABLE IF NOT EXISTS posted_findings (
+    dedupe_key TEXT PRIMARY KEY,
+    finding_type TEXT NOT NULL,
+    post_uri TEXT,
+    posted_at TEXT NOT NULL
 );
 """
 
@@ -937,6 +944,17 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         ])
         set_schema_version(conn, 19)
         current = 19
+    if current == 19 and target >= 20:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS posted_findings (
+                dedupe_key TEXT PRIMARY KEY,
+                finding_type TEXT NOT NULL,
+                post_uri TEXT,
+                posted_at TEXT NOT NULL
+            );
+        """)
+        set_schema_version(conn, 20)
+        current = 20
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
@@ -1158,4 +1176,25 @@ def insert_ingest_outcome(conn: sqlite3.Connection, labeler_did: str, ts: str,
         """,
         (labeler_did, ts, attempt_id, outcome, events_fetched,
          http_status, latency_ms, error_type, error_summary, source),
+    )
+
+
+def has_been_posted(conn: sqlite3.Connection, dedupe_key: str) -> bool:
+    """Check if a finding with this dedupe_key has already been posted."""
+    row = conn.execute(
+        "SELECT 1 FROM posted_findings WHERE dedupe_key = ?", (dedupe_key,)
+    ).fetchone()
+    return row is not None
+
+
+def record_posted(conn: sqlite3.Connection, dedupe_key: str,
+                  finding_type: str, post_uri: str | None = None) -> None:
+    """Record that a finding has been posted."""
+    from .utils import format_ts, now_utc
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO posted_findings (dedupe_key, finding_type, post_uri, posted_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (dedupe_key, finding_type, post_uri, format_ts(now_utc())),
     )

@@ -55,6 +55,7 @@ class FindingPost:
     detail_url: str
     card_title: str
     card_description: str
+    dedupe_key: Optional[str] = None
     thumb_path: Optional[Path] = None
 
     def render_text(self) -> str:
