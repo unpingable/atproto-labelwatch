@@ -415,8 +415,9 @@ def filter_fight_edges(
         FROM boundary_edges
         WHERE edge_type = 'contradiction'
           AND computed_at >= ? AND computed_at <= ?
+          AND family_version = ?
         ORDER BY jsd DESC
-    """, (window_start, window_end)).fetchall()
+    """, (window_start, window_end, FAMILY_VERSION)).fetchall()
 
     # Group by labeler pair, filter by domain
     from collections import defaultdict
@@ -456,8 +457,9 @@ def boundary_summary_for_report(
         FROM boundary_edges
         WHERE edge_type = 'contradiction'
           AND computed_at >= ? AND computed_at <= ?
+          AND family_version = ?
         ORDER BY jsd DESC
-    """, (window_start, window_end)).fetchall()
+    """, (window_start, window_end, FAMILY_VERSION)).fetchall()
 
     fight_edges = []
     novelty_count = 0

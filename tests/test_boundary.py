@@ -72,8 +72,28 @@ def test_normalize_family_passthrough():
     assert normalize_family("My Special Tag") == "my_special_tag"
 
 
+def test_normalize_family_v3_synonyms():
+    """v3 collapses spam/abuse/nsfw variants to eliminate false conflicts."""
+    # Spam variants all collapse to "spam"
+    assert normalize_family("shopping-spam") == "spam"
+    assert normalize_family("general-spam") == "spam"
+    assert normalize_family("reply-link-spam") == "spam"
+    # NSFW variants collapse to "adult-sexual"
+    assert normalize_family("likely-nsfw") == "adult-sexual"
+    assert normalize_family("nsfw-label") == "adult-sexual"
+    # Abuse variants collapse to "harassment"
+    assert normalize_family("coordinated-abuse") == "harassment"
+    assert normalize_family("engagement-abuse") == "harassment"
+    # Slur variants collapse to "hate"
+    assert normalize_family("contains-slur") == "hate"
+    assert normalize_family("new-acct-slurs") == "hate"
+    # Inauthenticity
+    assert normalize_family("inauthentic-fundraising") == "inauthenticity"
+    assert normalize_family("platform-manipulation") == "inauthenticity"
+
+
 def test_family_version():
-    assert FAMILY_VERSION == "v2"
+    assert FAMILY_VERSION == "v3"
 
 
 # ── JSD math tests ───────────────────────────────────────────────────
@@ -496,21 +516,37 @@ def test_run_boundary_pass_no_shared_targets():
 def test_classify_domain_moderation_families():
     """Mapped moderation families return 'moderation'."""
     for fam in ("spam", "adult-sexual", "nudity", "harassment", "hate",
-                "violence", "impersonation", "mod-warn", "mod-hide",
-                "mod-takedown", "mod-gate", "misleading", "graphic-media"):
+                "violence", "impersonation", "inauthenticity",
+                "mod-warn", "mod-hide", "mod-takedown", "mod-gate",
+                "misleading", "graphic-media"):
         assert classify_domain(fam) == "moderation", f"{fam} should be moderation"
 
 
 def test_classify_domain_metadata_families():
     """Mapped metadata families return 'metadata'."""
     for fam in ("handle-changed", "bot-reply", "site-standard",
-                "some-blocks", "modlist-author"):
+                "some-blocks", "modlist-author",
+                # Behavioral/stats families
+                "bulk-following", "follow-farming", "mass-follow-high",
+                "posting-daily-made-over-25-posts-yesterday",
+                "no-gap-more-than-four-hours",
+                "high-metadata-changes-five", "metadata-monthly-changes-low",
+                "posted-same-url-high", "low-quality-replies",
+                "internal-independent", "internal-other"):
         assert classify_domain(fam) == "metadata", f"{fam} should be metadata"
 
 
 def test_classify_domain_political():
-    assert classify_domain("uspol") == "political"
-    assert classify_domain("government") == "political"
+    for fam in ("uspol", "government", "trump", "trumpface",
+                "maga-trump", "inverted-red-triangle", "hammer-sickle"):
+        assert classify_domain(fam) == "political", f"{fam} should be political"
+
+
+def test_classify_domain_identity():
+    """Identity labels for community boundaries."""
+    for fam in ("gay-post", "trans-post", "sapphic", "religion",
+                "hehim", "sheher", "theythem"):
+        assert classify_domain(fam) == "identity", f"{fam} should be identity"
 
 
 def test_classify_domain_novelty_fallback():
@@ -518,13 +554,24 @@ def test_classify_domain_novelty_fallback():
     assert classify_domain("cool-badge") == "novelty"
     assert classify_domain("emoji-collector") == "novelty"
     assert classify_domain("") == "novelty"
+    # Badge/death-cause labels must not match moderation keywords
+    assert classify_domain("crushed-piano") == "novelty"
+    assert classify_domain("exhausted-dancing") == "novelty"
 
 
 def test_classify_domain_keyword_heuristic():
-    """Unmapped families with moderation keywords get 'moderation'."""
-    assert classify_domain("custom-spam-filter") == "moderation"  # "spam" in name
+    """Unmapped families with moderation keywords (word boundaries) get 'moderation'."""
+    assert classify_domain("custom-spam-filter") == "moderation"
     assert classify_domain("nsfw-detector") == "moderation"
     assert classify_domain("abuse-report") == "moderation"
+
+
+def test_classify_domain_keyword_word_boundary():
+    """Keyword heuristic uses word boundaries — substrings don't match."""
+    # "ai-hater" should NOT match "hate" (it's "hater", not "hate")
+    assert classify_domain("ai-hater") == "novelty"
+    # "exhausted" should NOT match anything
+    assert classify_domain("exhausted-dancing") == "novelty"
 
 
 def test_classify_domain_bang_prefix():
