@@ -209,11 +209,6 @@ def cmd_discover_stream(args) -> None:
         cfg.db_path = args.db_path
     if not os.path.exists(cfg.db_path):
         raise SystemExit(f"Database not found: {cfg.db_path}")
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        stream=sys.stderr,
-    )
     asyncio.run(discovery_stream.run(cfg.db_path, args.backstop_interval))
 
 
@@ -440,6 +435,12 @@ def cmd_db_optimize(args) -> None:
 
 
 def main(argv: Optional[list] = None) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        stream=sys.stderr,
+    )
+
     parser = argparse.ArgumentParser(prog="labelwatch")
     parser.add_argument("--config", help="Path to config.toml")
     parser.add_argument("--db-path", "--db", dest="db_path", help="Override db_path")
