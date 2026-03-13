@@ -150,6 +150,10 @@ th, td { border-bottom: 1px solid var(--border); padding: 0.5rem; text-align: le
 .card { border: 1px solid var(--card-border); padding: 1rem; border-radius: 6px; background: var(--card-bg); }
 a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
+.hero { margin-bottom: 1.5rem; }
+.hero-pitch { font-size: 1.15rem; line-height: 1.5; margin-bottom: 0.5rem; }
+.explainer-details > summary { cursor: pointer; font-family: "Gill Sans", "Trebuchet MS", sans-serif; font-weight: bold; margin-bottom: 0.5rem; color: var(--fg-muted); }
+.explainer-details > summary:hover { color: var(--fg); }
 code { font-family: "Courier New", monospace; }
 pre { background: var(--pre-bg); padding: 0.5rem; border-radius: 4px; overflow-x: auto; }
 .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 3px; font-size: 0.8rem; font-weight: bold; margin-right: 0.3rem; }
@@ -1639,40 +1643,54 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
     if naive_count > 0:
         naive_banner = f"<p class=\"small\">Note: {naive_count} timestamps lacked timezone info and were assumed UTC.</p>"
 
-    explainer_html = f"""
-<div class="explainer">
-  <p>Bluesky doesn\u2019t have a single moderation team deciding what you see.
-  Instead, it has <dfn>labelers</dfn> \u2014 independent services that tag posts and accounts
-  with metadata. Your app then decides what to do with those tags: show them, warn you,
-  or hide them. It\u2019s moderation as a protocol, not a policy.</p>
-  <p>That\u2019s a genuinely new architecture. It also means nobody\u2019s watching the watchers.
-  There are currently {len(labelers)} labelers on the network. Some do safety moderation.
-  Some tag K-pop stans. Some are test instances someone spun up and forgot about.
-  A few show behavioral patterns \u2014 rapid label-then-unlabel cycles, burst targeting of
-  specific accounts, unexplained gaps in coverage \u2014 that are worth paying attention to
-  whether they\u2019re bugs or policy.</p>
-  <p>Labelwatch observes this layer. It doesn\u2019t moderate anything. It ingests label events
-  from every declared labeler on the network, runs anomaly detection, and surfaces behavioral
-  patterns so you can decide what they mean. Think of it as an audit log for the governance
-  layer itself.</p>
-</div>
-<div class="explainer" style="margin-top:0.75rem;">
-  <p style="margin-bottom:0.5rem;"><strong>Behavioral tags at a glance</strong></p>
-  <table style="font-size:0.9rem;margin:0;">
-    <tr><td><span class="badge badge-stable">Stable</span></td><td>Consistent labeling pattern, no anomalous regime changes</td></tr>
-    <tr><td><span class="badge badge-burst">Burst-prone</span></td><td>Issues many labels in short spikes rather than steadily</td></tr>
-    <tr><td><span class="badge badge-churn">High churn</span></td><td>Frequently adds then removes labels (high turnover rate)</td></tr>
-    <tr><td><span class="badge badge-flipflop">Reversal-heavy</span></td><td>Labels things, then unlabels them at unusually high rates</td></tr>
-    <tr><td><span class="badge badge-fixated">Target-fixated</span></td><td>Concentrates labels on a small number of accounts</td></tr>
-    <tr><td><span class="badge badge-flipflop">Flappy</span></td><td>Rapidly alternates between labeling and unlabeling the same targets</td></tr>
-    <tr><td><span class="badge badge-obs">Obs: gap</span></td><td>We can\u2019t see this labeler clearly right now (ingest failures). <em>Ongoing</em> = still degraded; <em>recovered</em> = gap was in last 7d but coverage restored</td></tr>
-  </table>
+    # --- Hero: what is this, why should I care, what do I click ---
+    hero_html = f"""
+<div class="hero">
+  <p class="hero-pitch">Labelwatch tracks Bluesky\u2019s labeler ecosystem \u2014 activity, coverage,
+  and disagreement across {len(labelers)} independent moderation services.</p>
+  <p>Use it to answer concrete questions: Which labelers are active? What are they classifying?
+  Where do two labelers describe the same targets differently?</p>
 </div>
 """
 
+    # --- Explainer: more context for those who want it ---
+    explainer_html = f"""
+<details class="explainer-details">
+  <summary>How Bluesky labeling works</summary>
+  <div class="explainer">
+    <p>Bluesky doesn\u2019t have a single moderation team deciding what you see.
+    Instead, it has <dfn>labelers</dfn> \u2014 independent services that tag posts and accounts
+    with metadata. Your app then decides what to do with those tags: show them, warn you,
+    or hide them. It\u2019s moderation as a protocol, not a policy.</p>
+    <p>That\u2019s a genuinely new architecture. It also means nobody\u2019s watching the watchers.
+    There are currently {len(labelers)} labelers on the network. Some do safety moderation.
+    Some tag K-pop stans. Some are test instances someone spun up and forgot about.
+    A few show behavioral patterns \u2014 rapid label-then-unlabel cycles, burst targeting of
+    specific accounts, unexplained gaps in coverage \u2014 that are worth paying attention to
+    whether they\u2019re bugs or policy.</p>
+    <p>Labelwatch observes this layer. It doesn\u2019t moderate anything. It ingests label events
+    from every declared labeler on the network, runs anomaly detection, and surfaces behavioral
+    patterns so you can decide what they mean. Think of it as an audit log for the governance
+    layer itself.</p>
+  </div>
+  <div class="explainer" style="margin-top:0.75rem;">
+    <p style="margin-bottom:0.5rem;"><strong>Behavioral tags at a glance</strong></p>
+    <table style="font-size:0.9rem;margin:0;">
+      <tr><td><span class="badge badge-stable">Stable</span></td><td>Consistent labeling pattern, no anomalous regime changes</td></tr>
+      <tr><td><span class="badge badge-burst">Burst-prone</span></td><td>Issues many labels in short spikes rather than steadily</td></tr>
+      <tr><td><span class="badge badge-churn">High churn</span></td><td>Frequently adds then removes labels (high turnover rate)</td></tr>
+      <tr><td><span class="badge badge-flipflop">Reversal-heavy</span></td><td>Labels things, then unlabels them at unusually high rates</td></tr>
+      <tr><td><span class="badge badge-fixated">Target-fixated</span></td><td>Concentrates labels on a small number of accounts</td></tr>
+      <tr><td><span class="badge badge-flipflop">Flappy</span></td><td>Rapidly alternates between labeling and unlabeling the same targets</td></tr>
+      <tr><td><span class="badge badge-obs">Obs: gap</span></td><td>We can\u2019t see this labeler clearly right now (ingest failures). <em>Ongoing</em> = still degraded; <em>recovered</em> = gap was in last 7d but coverage restored</td></tr>
+    </table>
+  </div>
+</details>
+"""
+
     overview_html = _layout(
-        "Labelwatch overview",
-        explainer_html + staleness_cards + climate_card + registry_card + naive_banner + warmup_banner + coverage_card + reference_lane +
+        "Labelwatch",
+        hero_html + climate_card + registry_card + explainer_html + staleness_cards + naive_banner + warmup_banner + coverage_card + reference_lane +
         boundary_section + build_table + overview_tables + labeler_section + alert_links + METHODS_HTML + TRIAGE_JS,
     )
     _write(os.path.join(tmp_dir, "index.html"), overview_html)

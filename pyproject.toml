@@ -13,6 +13,7 @@ authors = [{name = "Labelwatch"}]
 dependencies = [
     "tomli>=2; python_version < '3.11'",
     "websockets>=10",
+    "atproto>=0.0.50",
 ]
 
 [project.scripts]

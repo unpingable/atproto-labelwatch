@@ -424,6 +424,34 @@ def cmd_coverage_delta(args) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_post(args) -> None:
+    from .posting import BlueskyConfig, BlueskyPublisher, LinkCard
+
+    app_password = args.app_password or os.environ.get("LABELWATCH_APP_PASSWORD")
+    if not app_password:
+        raise SystemExit(
+            "App password required: --app-password or LABELWATCH_APP_PASSWORD env var"
+        )
+    cfg = BlueskyConfig(
+        handle=args.handle,
+        app_password=app_password,
+        dry_run=args.dry_run,
+    )
+    publisher = BlueskyPublisher(cfg)
+
+    if args.link_url:
+        card = LinkCard(
+            url=args.link_url,
+            title=args.link_title or "",
+            description=args.link_description or "",
+        )
+        result = publisher.post_link_card(args.text, card)
+    else:
+        result = publisher.post_text(args.text)
+
+    print(json.dumps(result if isinstance(result, dict) else {"uri": str(result.uri), "cid": str(result.cid)}, indent=2))
+
+
 def cmd_db_optimize(args) -> None:
     cfg = load_config(args.config)
     if args.db_path:
@@ -530,6 +558,16 @@ def main(argv: Optional[list] = None) -> None:
 
     p_dbopt = sub.add_parser("db-optimize", help="Run ANALYZE and query planner optimization")
     p_dbopt.set_defaults(func=cmd_db_optimize)
+
+    p_post = sub.add_parser("post", help="Post to Bluesky via labelwatch account")
+    p_post.add_argument("text", help="Post text (max 300 graphemes)")
+    p_post.add_argument("--link-url", help="External link card URL")
+    p_post.add_argument("--link-title", help="Link card title")
+    p_post.add_argument("--link-description", help="Link card description")
+    p_post.add_argument("--dry-run", action="store_true", help="Log payload without posting")
+    p_post.add_argument("--handle", default="labelwatch.bsky.social", help="Account handle")
+    p_post.add_argument("--app-password", help="App password (or set LABELWATCH_APP_PASSWORD)")
+    p_post.set_defaults(func=cmd_post)
 
     p_run = sub.add_parser("run", help="Run ingest/scan loop")
     p_run.add_argument("--ingest-interval", type=int, default=120, help="Seconds between ingest runs")
