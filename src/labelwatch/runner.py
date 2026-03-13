@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import gc
 import logging
+import threading
 import time
 import urllib.error
 from typing import Optional
@@ -50,6 +51,33 @@ def _release_memory(conn) -> None:
     log.info("rss=%s", _rss_mb())
 
 
+def _report_loop(db_path: str, report_out: str, interval: int) -> None:
+    """Dedicated report generation thread.
+
+    Uses its own readonly DB connection so report generation is never
+    blocked by long-running ingest passes in the main loop.
+    """
+    log.info("Report thread started (interval=%ds, out=%s)", interval, report_out)
+    while True:
+        try:
+            conn = db.connect(db_path, readonly=True)
+            try:
+                report_mod.generate_report(conn, report_out, now=now_utc())
+            finally:
+                conn.close()
+            log.info("Report generated successfully")
+            # Heartbeat via a separate writable connection
+            try:
+                wconn = db.connect(db_path)
+                _heartbeat(wconn, "last_report_ok_ts")
+                wconn.close()
+            except Exception:
+                pass  # non-critical
+        except Exception:
+            log.error("Report generation failed", exc_info=True)
+        time.sleep(interval)
+
+
 def run_loop(
     cfg: Config,
     ingest_interval: int,
@@ -66,6 +94,17 @@ def run_loop(
     discovery_interval = cfg.discovery_interval_hours * 3600
     derive_interval = cfg.derive_interval_minutes * 60
     primary_ingest_disabled = False
+
+    # Start report generation on its own thread so it's never blocked by ingest
+    if report_out:
+        report_interval = max(scan_interval, 300)  # at least every 5 min
+        t = threading.Thread(
+            target=_report_loop,
+            args=(cfg.db_path, report_out, report_interval),
+            daemon=True,
+            name="report-gen",
+        )
+        t.start()
 
     while True:
         now_mono = time.monotonic()
@@ -115,7 +154,7 @@ def run_loop(
             _release_memory(conn)
             last_ingest = now_mono
 
-        # Scan + report pass
+        # Scan + derive pass (report moved to its own thread)
         if scan_interval > 0 and now_mono - last_scan >= scan_interval:
             try:
                 scan_time = now_utc()
@@ -129,12 +168,8 @@ def run_loop(
                     _heartbeat(conn, "last_derive_ok_ts")
                     last_derive = now_mono
                     _release_memory(conn)
-
-                if report_out:
-                    report_mod.generate_report(conn, report_out, now=scan_time)
-                    _heartbeat(conn, "last_report_ok_ts")
             except Exception:
-                log.error("Scan/report failed", exc_info=True)
+                log.error("Scan/derive failed", exc_info=True)
             _release_memory(conn)
             last_scan = now_mono
 
