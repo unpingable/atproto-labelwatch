@@ -37,15 +37,16 @@ def _classify_disagreement(family_a: str, family_b: str) -> str:
 
 
 def _dedupe_key(labeler_a: str, labeler_b: str, family_a: str,
-                family_b: str, date_str: str) -> str:
-    """Stable dedupe key for a fight-pair finding on a given date.
+                family_b: str) -> str:
+    """Stable dedupe key for a fight-pair finding.
 
-    Same pair + same families + same date = same finding. If the families
-    change (fight evolves), it's a new finding.
+    Fight identity = sorted pair + sorted families. No date component —
+    the same fight gets the same key forever. Cooldown logic (separate
+    from identity) decides whether to repost if the fight persists.
     """
     pair = tuple(sorted([labeler_a, labeler_b]))
     families = tuple(sorted([family_a, family_b]))
-    raw = f"{pair[0]}|{pair[1]}|{families[0]}|{families[1]}|{date_str}"
+    raw = f"{pair[0]}|{pair[1]}|{families[0]}|{families[1]}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -73,7 +74,6 @@ def format_fight_pair(
     labeler_a: str,
     labeler_b: str,
     edges: list[dict],
-    date_str: str,
 ) -> FindingPost | None:
     """Format a single fight pair into a FindingPost.
 
@@ -82,7 +82,6 @@ def format_fight_pair(
         labeler_a: DID of first labeler
         labeler_b: DID of second labeler
         edges: list of contradiction edge dicts for this pair
-        date_str: YYYY-MM-DD date string for dedupe
 
     Returns:
         FindingPost or None if the pair isn't interesting enough to post.
@@ -131,7 +130,7 @@ def format_fight_pair(
             f"\u201c{top_family_b}\u201d on {n_targets} targets"
         ),
         dedupe_key=_dedupe_key(labeler_a, labeler_b, top_family_a,
-                               top_family_b, date_str),
+                               top_family_b),
     )
 
 
@@ -151,7 +150,6 @@ def find_postable_fights(
 
     window_end = format_ts(now)
     window_start = format_ts(now - timedelta(days=7))
-    date_str = now.strftime("%Y-%m-%d")
 
     rows = conn.execute("""
         SELECT target_uri, labeler_a, labeler_b,
@@ -180,7 +178,7 @@ def find_postable_fights(
         distinct_targets = len({e["target_uri"] for e in edges})
         if distinct_targets < min_targets:
             continue
-        finding = format_fight_pair(conn, la, lb, edges, date_str)
+        finding = format_fight_pair(conn, la, lb, edges)
         if finding is not None:
             findings.append(finding)
 

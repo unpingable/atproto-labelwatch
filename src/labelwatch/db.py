@@ -1179,11 +1179,28 @@ def insert_ingest_outcome(conn: sqlite3.Connection, labeler_did: str, ts: str,
     )
 
 
-def has_been_posted(conn: sqlite3.Connection, dedupe_key: str) -> bool:
-    """Check if a finding with this dedupe_key has already been posted."""
-    row = conn.execute(
-        "SELECT 1 FROM posted_findings WHERE dedupe_key = ?", (dedupe_key,)
-    ).fetchone()
+def has_been_posted(conn: sqlite3.Connection, dedupe_key: str,
+                    cooldown_days: int = 0) -> bool:
+    """Check if a finding with this dedupe_key has been posted (recently).
+
+    Args:
+        dedupe_key: The finding's identity key.
+        cooldown_days: If >0, only returns True if posted within this many
+            days. A fight posted 10 days ago with cooldown_days=7 returns
+            False (eligible for repost). If 0, any prior post = True.
+    """
+    if cooldown_days > 0:
+        from .utils import format_ts, now_utc
+        from datetime import timedelta
+        cutoff = format_ts(now_utc() - timedelta(days=cooldown_days))
+        row = conn.execute(
+            "SELECT 1 FROM posted_findings WHERE dedupe_key = ? AND posted_at >= ?",
+            (dedupe_key, cutoff),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT 1 FROM posted_findings WHERE dedupe_key = ?", (dedupe_key,)
+        ).fetchone()
     return row is not None
 
 

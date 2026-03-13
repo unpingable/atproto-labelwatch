@@ -70,27 +70,28 @@ def test_classify_same_family():
 # --- dedupe_key ---
 
 def test_dedupe_key_stable():
-    k1 = _dedupe_key("did:a", "did:b", "spam", "inauthenticity", "2026-03-13")
-    k2 = _dedupe_key("did:a", "did:b", "spam", "inauthenticity", "2026-03-13")
+    k1 = _dedupe_key("did:a", "did:b", "spam", "inauthenticity")
+    k2 = _dedupe_key("did:a", "did:b", "spam", "inauthenticity")
     assert k1 == k2
 
 
 def test_dedupe_key_order_independent():
-    k1 = _dedupe_key("did:a", "did:b", "spam", "inauthenticity", "2026-03-13")
-    k2 = _dedupe_key("did:b", "did:a", "inauthenticity", "spam", "2026-03-13")
+    k1 = _dedupe_key("did:a", "did:b", "spam", "inauthenticity")
+    k2 = _dedupe_key("did:b", "did:a", "inauthenticity", "spam")
     assert k1 == k2
 
 
-def test_dedupe_key_changes_with_date():
-    k1 = _dedupe_key("did:a", "did:b", "spam", "inauthenticity", "2026-03-13")
-    k2 = _dedupe_key("did:a", "did:b", "spam", "inauthenticity", "2026-03-14")
-    assert k1 != k2
-
-
 def test_dedupe_key_changes_with_families():
-    k1 = _dedupe_key("did:a", "did:b", "spam", "inauthenticity", "2026-03-13")
-    k2 = _dedupe_key("did:a", "did:b", "spam", "hate", "2026-03-13")
+    k1 = _dedupe_key("did:a", "did:b", "spam", "inauthenticity")
+    k2 = _dedupe_key("did:a", "did:b", "spam", "hate")
     assert k1 != k2
+
+
+def test_dedupe_key_same_across_days():
+    """Same fight = same key regardless of when you look at it."""
+    k1 = _dedupe_key("did:a", "did:b", "spam", "inauthenticity")
+    k2 = _dedupe_key("did:a", "did:b", "spam", "inauthenticity")
+    assert k1 == k2
 
 
 # --- handle_or_short_did ---
@@ -126,7 +127,7 @@ def test_format_fight_pair_basic():
          "n_events_a": 2, "n_events_b": 2},
     ]
 
-    finding = format_fight_pair(conn, "did:a", "did:b", edges, "2026-03-13")
+    finding = format_fight_pair(conn, "did:a", "did:b", edges)
     assert finding is not None
     assert "skywatch.blue" in finding.headline
     assert "labeler.hailey.at" in finding.headline
@@ -139,7 +140,7 @@ def test_format_fight_pair_basic():
 
 def test_format_fight_pair_empty_edges():
     conn = _make_conn()
-    assert format_fight_pair(conn, "did:a", "did:b", [], "2026-03-13") is None
+    assert format_fight_pair(conn, "did:a", "did:b", []) is None
 
 
 def test_format_fight_pair_includes_disagreement_type():
@@ -154,7 +155,7 @@ def test_format_fight_pair_includes_disagreement_type():
          "n_events_a": 1, "n_events_b": 1},
     ]
 
-    finding = format_fight_pair(conn, "did:a", "did:b", edges, "2026-03-13")
+    finding = format_fight_pair(conn, "did:a", "did:b", edges)
     assert finding is not None
     # taxonomy_shear: both moderation domain
     assert "categorize it differently" in finding.summary
@@ -173,7 +174,7 @@ def test_format_substantive_disagreement_text():
          "n_events_a": 1, "n_events_b": 1},
     ]
 
-    finding = format_fight_pair(conn, "did:a", "did:b", edges, "2026-03-13")
+    finding = format_fight_pair(conn, "did:a", "did:b", edges)
     assert finding is not None
     assert "different claims" in finding.summary
 
@@ -191,7 +192,7 @@ def test_finding_renders_to_post_text():
         for i in range(5)
     ]
 
-    finding = format_fight_pair(conn, "did:a", "did:b", edges, "2026-03-13")
+    finding = format_fight_pair(conn, "did:a", "did:b", edges)
     text = finding.render_text()
     # Should have headline, summary, and URL
     assert "skywatch.blue" in text
@@ -303,3 +304,26 @@ def test_finding_dedupe_key_checks_ledger():
 
     # Now check: the key is in the ledger
     assert has_been_posted(conn, findings[0].dedupe_key) is True
+
+
+def test_cooldown_recent_post_blocked():
+    """A finding posted today is still in cooldown at 7 days."""
+    conn = _make_conn()
+    record_posted(conn, "recent", "boundary_fight")
+    conn.commit()
+    assert has_been_posted(conn, "recent", cooldown_days=7) is True
+
+
+def test_cooldown_old_post_eligible():
+    """A finding posted 10 days ago is outside a 7-day cooldown."""
+    conn = _make_conn()
+    # Manually insert with an old posted_at
+    conn.execute(
+        "INSERT INTO posted_findings (dedupe_key, finding_type, posted_at) VALUES (?, ?, ?)",
+        ("old-fight", "boundary_fight", "2026-03-01T00:00:00Z"),
+    )
+    conn.commit()
+    # With cooldown=7 and "now" being 2026-03-13, 12 days ago = eligible
+    assert has_been_posted(conn, "old-fight", cooldown_days=7) is False
+    # Without cooldown, still blocked
+    assert has_been_posted(conn, "old-fight", cooldown_days=0) is True
