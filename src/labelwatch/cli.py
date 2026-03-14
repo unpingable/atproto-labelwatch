@@ -565,7 +565,7 @@ def main(argv: Optional[list] = None) -> None:
     p_post.add_argument("--link-title", help="Link card title")
     p_post.add_argument("--link-description", help="Link card description")
     p_post.add_argument("--dry-run", action="store_true", help="Log payload without posting")
-    p_post.add_argument("--handle", default="labelwatch.bsky.social", help="Account handle")
+    p_post.add_argument("--handle", default="labelwatch.neutral.zone", help="Account handle")
     p_post.add_argument("--app-password", help="App password (or set LABELWATCH_APP_PASSWORD)")
     p_post.set_defaults(func=cmd_post)
 
