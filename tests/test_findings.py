@@ -8,6 +8,7 @@ from labelwatch.findings import (
     _classify_disagreement,
     _dedupe_key,
     _handle_or_short_did,
+    _is_protocol_action,
     find_postable_fights,
     format_fight_pair,
 )
@@ -208,8 +209,8 @@ def test_find_postable_fights_with_data():
     _insert_labeler(conn, "did:a", "skywatch.blue")
     _insert_labeler(conn, "did:b", "labeler.hailey.at")
 
-    # Insert moderation-domain edges with 3 shared targets
-    for i in range(3):
+    # Insert moderation-domain edges with 12 shared targets (above min_targets=10)
+    for i in range(12):
         _insert_edge(conn, "did:a", "did:b", f"at://target/{i}",
                      "inauthenticity", "spam")
 
@@ -240,7 +241,7 @@ def test_find_postable_fights_min_targets():
     _insert_labeler(conn, "did:a", "labeler-a.test")
     _insert_labeler(conn, "did:b", "labeler-b.test")
 
-    # Only 1 shared target — below default min_targets=2
+    # Only 1 shared target — below default min_targets=10
     _insert_edge(conn, "did:a", "did:b", "at://single",
                  "spam", "harassment")
 
@@ -254,6 +255,30 @@ def test_find_postable_fights_empty_db():
     now = datetime(2026, 3, 13, 12, 30, 0, tzinfo=timezone.utc)
     findings = find_postable_fights(conn, now=now)
     assert findings == []
+
+
+def test_find_postable_fights_filters_protocol_actions():
+    """Pairs where the dominant family is a protocol action (!-prefix) are filtered."""
+    conn = _make_conn()
+    _insert_labeler(conn, "did:a", "nunnybabbit.test")
+    _insert_labeler(conn, "did:b", "skywatch.test")
+
+    # !classification-forced is a protocol action, not a policy claim
+    for i in range(15):
+        _insert_edge(conn, "did:a", "did:b", f"at://target/{i}",
+                     "!classification-forced", "harassment")
+
+    now = datetime(2026, 3, 13, 12, 30, 0, tzinfo=timezone.utc)
+    findings = find_postable_fights(conn, now=now)
+    assert len(findings) == 0
+
+
+def test_is_protocol_action():
+    assert _is_protocol_action("!classification-forced") is True
+    assert _is_protocol_action("!hide") is True
+    assert _is_protocol_action("!warn") is True
+    assert _is_protocol_action("spam") is False
+    assert _is_protocol_action("inauthenticity") is False
 
 
 # --- sent-post ledger ---
@@ -290,7 +315,7 @@ def test_finding_dedupe_key_checks_ledger():
     _insert_labeler(conn, "did:a", "skywatch.blue")
     _insert_labeler(conn, "did:b", "labeler.hailey.at")
 
-    for i in range(3):
+    for i in range(12):
         _insert_edge(conn, "did:a", "did:b", f"at://target/{i}",
                      "inauthenticity", "spam")
 

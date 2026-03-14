@@ -134,10 +134,20 @@ def format_fight_pair(
     )
 
 
+def _is_protocol_action(family: str) -> bool:
+    """Check if a family is an ATProto protocol action, not a policy claim.
+
+    Families starting with ! are protocol/mechanical actions
+    (e.g. !classification-forced, !hide, !warn). They're moderation-domain
+    by routing but don't represent a labeler's policy stance on content.
+    """
+    return family.startswith("!")
+
+
 def find_postable_fights(
     conn,
     now: datetime | None = None,
-    min_targets: int = 2,
+    min_targets: int = 10,
 ) -> list[FindingPost]:
     """Scan boundary edges for fight pairs worth posting about.
 
@@ -177,6 +187,17 @@ def find_postable_fights(
     for (la, lb), edges in pair_edges.items():
         distinct_targets = len({e["target_uri"] for e in edges})
         if distinct_targets < min_targets:
+            continue
+        # Skip pairs where the dominant family on either side is a protocol
+        # action (e.g. !classification-forced) — those are mechanical, not policy
+        fam_counts_a: dict[str, int] = defaultdict(int)
+        fam_counts_b: dict[str, int] = defaultdict(int)
+        for e in edges:
+            fam_counts_a[e["top_family_a"]] += 1
+            fam_counts_b[e["top_family_b"]] += 1
+        top_a = max(fam_counts_a, key=fam_counts_a.get)  # type: ignore[arg-type]
+        top_b = max(fam_counts_b, key=fam_counts_b.get)  # type: ignore[arg-type]
+        if _is_protocol_action(top_a) or _is_protocol_action(top_b):
             continue
         finding = format_fight_pair(conn, la, lb, edges)
         if finding is not None:
