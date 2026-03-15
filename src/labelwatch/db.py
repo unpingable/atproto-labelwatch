@@ -337,6 +337,7 @@ CREATE INDEX IF NOT EXISTS idx_discovery_events_ts ON discovery_events(discovere
 CREATE INDEX IF NOT EXISTS idx_boundary_edges_target ON boundary_edges(target_uri);
 CREATE INDEX IF NOT EXISTS idx_boundary_edges_computed ON boundary_edges(computed_at);
 CREATE INDEX IF NOT EXISTS idx_boundary_targets_computed ON boundary_targets(computed_at);
+CREATE INDEX IF NOT EXISTS idx_label_events_hide ON label_events(src, ts, uri) WHERE val = '!hide' AND neg = 0;
 """
 
 # Full schema = tables + indexes. Used for fresh DB init.

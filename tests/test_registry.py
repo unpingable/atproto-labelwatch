@@ -1,6 +1,8 @@
 """Tests for labeler registry page."""
+import hashlib
+
 from labelwatch import db
-from labelwatch.registry import generate_registry, render_registry_html
+from labelwatch.registry import _query_hide_stats, generate_registry, render_registry_html
 
 
 def _make_db():
@@ -112,3 +114,73 @@ def test_registry_summary_counts():
     assert s["with_service"] == 5
     assert s["test_dev"] == 1
     assert s["total_events_7d"] == sum(i * 10 for i in range(7))
+
+
+def _insert_event(conn, src, uri, val, ts, neg=0):
+    h = hashlib.sha256(f"{src}{uri}{val}{ts}{neg}".encode()).hexdigest()
+    conn.execute("""
+        INSERT OR IGNORE INTO label_events
+            (labeler_did, src, uri, cid, val, neg, ts, event_hash)
+        VALUES (?, ?, ?, 'cid', ?, ?, ?, ?)
+    """, (src, src, uri, val, neg, ts, h))
+
+
+def test_hide_stats_basic():
+    conn = _make_db()
+    did = "did:plc:hidetest"
+    _seed_labelers(conn, [{"did": did, "handle": "hidetest.lab"}])
+
+    _insert_event(conn, did, "at://did:a/post/1", "!hide", "2026-03-01T00:00:00Z")
+    _insert_event(conn, did, "at://did:b/post/2", "!hide", "2026-03-02T00:00:00Z")
+    _insert_event(conn, did, "at://did:a/post/1", "!hide", "2026-03-03T00:00:00Z")  # same target
+    _insert_event(conn, did, "at://did:c/post/3", "spam", "2026-03-01T00:00:00Z")  # not !hide
+    _insert_event(conn, did, "at://did:d/post/4", "!hide", "2026-03-01T00:00:00Z", neg=1)  # unhide
+    conn.commit()
+
+    stats = _query_hide_stats(conn, "2025-03-14T00:00:00Z")
+    assert did in stats
+    s = stats[did]
+    assert s["hide_total"] == 3
+    assert s["hide_subjects_total"] == 2
+
+
+def test_hide_stats_windowed():
+    conn = _make_db()
+    did = "did:plc:hidewindow"
+    _seed_labelers(conn, [{"did": did, "handle": "hidewindow.lab"}])
+
+    _insert_event(conn, did, "at://did:a/post/1", "!hide", "2024-01-01T00:00:00Z")  # old
+    _insert_event(conn, did, "at://did:b/post/2", "!hide", "2026-03-01T00:00:00Z")  # recent
+    conn.commit()
+
+    stats = _query_hide_stats(conn, "2025-03-14T00:00:00Z")
+    s = stats[did]
+    assert s["hide_total"] == 2
+    assert s["hide_365d"] == 1
+
+
+def test_hide_stats_in_registry_payload():
+    conn = _make_db()
+    did = "did:plc:hidepayload"
+    _seed_labelers(conn, [{"did": did, "handle": "hidepayload.lab"}])
+
+    _insert_event(conn, did, "at://did:a/post/1", "!hide", "2026-03-01T00:00:00Z")
+    _insert_event(conn, did, "at://did:b/post/2", "!hide", "2026-03-02T00:00:00Z")
+    conn.commit()
+
+    payload = generate_registry(conn)
+    lab = next(l for l in payload["labelers"] if l["labeler_did"] == did)
+    assert lab["hide_total"] == 2
+    assert lab["hide_subjects_total"] == 2
+
+
+def test_hide_stats_zero_for_labeler_without_hides():
+    conn = _make_db()
+    did = "did:plc:nohides"
+    _seed_labelers(conn, [{"did": did, "handle": "nohides.lab"}])
+    conn.commit()
+
+    payload = generate_registry(conn)
+    lab = next(l for l in payload["labelers"] if l["labeler_did"] == did)
+    assert lab["hide_total"] == 0
+    assert lab["hide_365d"] == 0

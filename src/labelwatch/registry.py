@@ -44,6 +44,22 @@ def _query_registry(conn) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def _query_hide_stats(conn, cutoff_ts: str) -> Dict[str, Dict[str, Any]]:
+    """Per-labeler !hide stats: total and windowed counts."""
+    rows = conn.execute("""
+        SELECT src,
+            COUNT(*) AS hide_total,
+            SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS hide_365d,
+            COUNT(DISTINCT uri) AS hide_subjects_total,
+            COUNT(DISTINCT CASE WHEN ts >= ? THEN uri END) AS hide_subjects_365d,
+            MAX(ts) AS hide_last_seen
+        FROM label_events
+        WHERE val = '!hide' AND neg = 0
+        GROUP BY src
+    """, (cutoff_ts, cutoff_ts)).fetchall()
+    return {r["src"]: dict(r) for r in rows}
+
+
 def _query_summary(conn) -> Dict[str, Any]:
     """Aggregate registry statistics."""
     total = conn.execute("SELECT COUNT(*) FROM labelers").fetchone()[0]
@@ -85,6 +101,18 @@ def generate_registry(conn) -> Dict[str, Any]:
     """Generate registry payload from DB."""
     labelers = _query_registry(conn)
     summary = _query_summary(conn)
+
+    now = datetime.now(timezone.utc)
+    from datetime import timedelta
+    cutoff = (now - timedelta(days=365)).isoformat() + "Z"
+    hide_stats = _query_hide_stats(conn, cutoff)
+
+    for lab in labelers:
+        stats = hide_stats.get(lab["labeler_did"], {})
+        lab["hide_total"] = stats.get("hide_total", 0)
+        lab["hide_365d"] = stats.get("hide_365d", 0)
+        lab["hide_subjects_total"] = stats.get("hide_subjects_total", 0)
+        lab["hide_subjects_365d"] = stats.get("hide_subjects_365d", 0)
 
     return {
         "summary": summary,
@@ -233,6 +261,8 @@ def render_registry_html(payload: Dict[str, Any]) -> str:
         tgt7 = _format_count(lab.get("unique_targets_7d"))
 
         audit = _risk_badge(lab.get("auditability_risk_band"))
+        hide_total = _format_count(lab.get("hide_total"))
+        hide_365d = _format_count(lab.get("hide_365d"))
 
         test_dev = lab.get("likely_test_dev", 0)
         inactive = 1 if (lab.get("events_7d") or 0) == 0 else 0
@@ -250,6 +280,8 @@ def render_registry_html(payload: Dict[str, Any]) -> str:
             f'<td style="text-align:right">{ev7}</td>'
             f'<td style="text-align:right">{ev30}</td>'
             f'<td style="text-align:right">{tgt7}</td>'
+            f'<td style="text-align:right">{hide_total}</td>'
+            f'<td style="text-align:right">{hide_365d}</td>'
             f'<td>{audit}</td>'
             f'</tr>'
         )
@@ -263,6 +295,8 @@ def render_registry_html(payload: Dict[str, Any]) -> str:
         '<span title="Label events in last 7 days">7d</span>',
         '<span title="Label events in last 30 days">30d</span>',
         '<span title="Unique targets in last 7 days">Tgt 7d</span>',
+        '<span title="Total !hide events (content removals)">Hides</span>',
+        '<span title="!hide events in last 365 days">Hides 1y</span>',
         '<span title="Auditability risk band: how legible is this operator?">Audit</span>',
     ]
     header_html = "<tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>"
