@@ -104,7 +104,7 @@ def generate_registry(conn) -> Dict[str, Any]:
 
     now = datetime.now(timezone.utc)
     from datetime import timedelta
-    cutoff = (now - timedelta(days=365)).isoformat() + "Z"
+    cutoff = (now - timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
     hide_stats = _query_hide_stats(conn, cutoff)
 
     for lab in labelers:
@@ -113,6 +113,7 @@ def generate_registry(conn) -> Dict[str, Any]:
         lab["hide_365d"] = stats.get("hide_365d", 0)
         lab["hide_subjects_total"] = stats.get("hide_subjects_total", 0)
         lab["hide_subjects_365d"] = stats.get("hide_subjects_365d", 0)
+        lab["hide_last_seen"] = stats.get("hide_last_seen")
 
     return {
         "summary": summary,
@@ -295,8 +296,8 @@ def render_registry_html(payload: Dict[str, Any]) -> str:
         '<span title="Label events in last 7 days">7d</span>',
         '<span title="Label events in last 30 days">30d</span>',
         '<span title="Unique targets in last 7 days">Tgt 7d</span>',
-        '<span title="Total !hide events (content removals)">Hides</span>',
-        '<span title="!hide events in last 365 days">Hides 1y</span>',
+        '<span title="Total !hide labels issued">Hides</span>',
+        '<span title="!hide labels issued in last 365 days">Hides 1y</span>',
         '<span title="Auditability risk band: how legible is this operator?">Audit</span>',
     ]
     header_html = "<tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>"
