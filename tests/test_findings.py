@@ -12,7 +12,7 @@ from labelwatch.findings import (
     find_postable_fights,
     format_fight_pair,
 )
-from labelwatch.label_family import FAMILY_VERSION
+from labelwatch.label_family import FAMILY_VERSION, classify_kind, classify_polarity
 
 
 def _make_conn():
@@ -53,6 +53,82 @@ def _insert_edge(conn, labeler_a, labeler_b, target_uri,
 
 # --- classify_disagreement ---
 
+def test_polarity_negative():
+    for f in ["spam", "harassment", "hate", "violence", "adult-sexual",
+              "misleading", "impersonation", "inauthenticity", "mod-hide", "mod-takedown"]:
+        assert classify_polarity(f) == "negative", f
+
+
+def test_polarity_cautionary():
+    for f in ["nudity", "graphic-media", "mod-warn", "mod-gate"]:
+        assert classify_polarity(f) == "cautionary", f
+
+
+def test_polarity_badge():
+    # Novelty-domain families fall back to badge
+    assert classify_polarity("crushed-piano") == "badge"
+    assert classify_polarity("oracle-pick") == "badge"
+
+
+def test_polarity_unknown():
+    # Metadata/political/identity families get unknown
+    assert classify_polarity("handle-changed") == "unknown"
+    assert classify_polarity("trumpface") == "unknown"
+    assert classify_polarity("gay-post") == "unknown"
+
+
+def test_kind_policy_claim():
+    for f in ["spam", "harassment", "hate", "violence", "adult-sexual",
+              "misleading", "impersonation", "inauthenticity", "nudity", "graphic-media"]:
+        assert classify_kind(f) == "policy_claim", f
+
+
+def test_kind_protocol_action():
+    for f in ["mod-warn", "mod-hide", "mod-gate", "mod-takedown"]:
+        assert classify_kind(f) == "protocol_action", f
+    # ! prefix fallback
+    assert classify_kind("!classification-forced") == "protocol_action"
+
+
+def test_kind_status_signal():
+    for f in ["handle-changed", "some-blocks", "bulk-following", "bot",
+              "posting-daily-made-over-25-posts-yesterday"]:
+        assert classify_kind(f) == "status_signal", f
+
+
+def test_kind_decorative():
+    assert classify_kind("crushed-piano") == "decorative"
+    assert classify_kind("oracle-pick") == "decorative"
+
+
+def test_kind_political_identity_are_claims():
+    assert classify_kind("trumpface") == "policy_claim"
+    assert classify_kind("gay-post") == "policy_claim"
+
+
+def test_classify_claim_vs_action():
+    # Policy claim vs protocol action in same domain
+    assert _classify_disagreement("spam", "mod-hide") == "claim_vs_action"
+    assert _classify_disagreement("harassment", "mod-warn") == "claim_vs_action"
+    assert _classify_disagreement("nudity", "mod-gate") == "claim_vs_action"
+
+
+def test_classify_disagreement_is_commutative():
+    """Argument order must not affect disagreement type."""
+    pairs = [
+        ("spam", "inauthenticity"),
+        ("spam", "mod-hide"),
+        ("nudity", "adult-sexual"),
+        ("mod-warn", "mod-hide"),
+        ("spam", "trump"),
+        ("harassment", "!classification-forced"),
+        ("graphic-media", "violence"),
+    ]
+    for a, b in pairs:
+        assert _classify_disagreement(a, b) == _classify_disagreement(b, a), \
+            f"Not commutative: {a} vs {b}"
+
+
 def test_classify_taxonomy_shear():
     # Same domain (moderation), different families
     assert _classify_disagreement("spam", "inauthenticity") == "taxonomy_shear"
@@ -66,6 +142,25 @@ def test_classify_substantive_disagreement():
 def test_classify_same_family():
     # Same family = taxonomy_shear (trivially)
     assert _classify_disagreement("spam", "spam") == "taxonomy_shear"
+
+
+def test_classify_severity_difference():
+    # Same domain, cautionary vs negative = severity difference
+    assert _classify_disagreement("nudity", "adult-sexual") == "severity_difference"
+    assert _classify_disagreement("graphic-media", "violence") == "severity_difference"
+    assert _classify_disagreement("mod-warn", "mod-hide") == "severity_difference"
+
+
+def test_classify_negative_vs_negative_is_taxonomy():
+    # Same polarity (both negative) = taxonomy shear, not severity
+    assert _classify_disagreement("spam", "harassment") == "taxonomy_shear"
+    assert _classify_disagreement("mod-hide", "mod-takedown") == "taxonomy_shear"
+
+
+def test_classify_protocol_action_vs_claim():
+    # !classification-forced is protocol_action, harassment is policy_claim
+    # Both moderation domain, but different kinds → claim_vs_action
+    assert _classify_disagreement("!classification-forced", "harassment") == "claim_vs_action"
 
 
 # --- dedupe_key ---
@@ -234,6 +329,22 @@ def test_find_postable_fights_filters_novelty():
     now = datetime(2026, 3, 13, 12, 30, 0, tzinfo=timezone.utc)
     findings = find_postable_fights(conn, now=now)
     assert len(findings) == 0
+
+
+def test_find_postable_fights_filters_metadata_vs_moderation():
+    """Metadata-domain families (some-blocks, bulk-following) must not leak into fights."""
+    conn = _make_conn()
+    _insert_labeler(conn, "did:a", "skywatch.test")
+    _insert_labeler(conn, "did:b", "hailey.test")
+
+    # Insert metadata-vs-moderation edges (should be filtered out)
+    for i in range(12):
+        _insert_edge(conn, "did:a", "did:b", f"at://target/{i}",
+                     "inauthenticity", "some-blocks")
+
+    now = datetime(2026, 3, 13, 12, 30, 0, tzinfo=timezone.utc)
+    findings = find_postable_fights(conn, now=now)
+    assert len(findings) == 0, "metadata-vs-moderation pairs should not be postable fights"
 
 
 def test_find_postable_fights_min_targets():

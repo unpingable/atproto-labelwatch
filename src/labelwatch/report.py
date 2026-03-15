@@ -11,7 +11,11 @@ from html import escape
 from typing import Any, Dict, List, Optional
 
 from . import db
-from .boundary import boundary_summary_for_report
+from .boundary import (
+    boundary_summary_for_report,
+    classify_disagreement,
+    human_disagreement_type,
+)
 from .derive import burstiness_index
 from .label_family import classify_domain
 from .receipts import config_hash as config_hash_fn
@@ -1498,6 +1502,7 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
             fight_table = ""
             if top_pairs:
                 fight_rows = []
+                dtype_counts: dict[str, int] = defaultdict(int)
                 for (did_a, did_b), target_count in top_pairs:
                     name_a = _labeler_link(did_a, handles, display_names)
                     name_b = _labeler_link(did_b, handles, display_names)
@@ -1511,16 +1516,59 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
                     fam_a_str = ", ".join(sorted(families_a)[:3])
                     fam_b_str = ", ".join(sorted(families_b)[:3])
                     avg_jsd = sum(e["jsd"] for e in pair_edges) / len(pair_edges) if pair_edges else 0
+                    # Classify disagreement from dominant families
+                    top_fam_a = max(families_a, key=lambda f: sum(1 for e in pair_edges if e["top_family_a"] == f)) if families_a else ""
+                    top_fam_b = max(families_b, key=lambda f: sum(1 for e in pair_edges if e["top_family_b"] == f)) if families_b else ""
+                    dtype = classify_disagreement(top_fam_a, top_fam_b)
+                    dtype_counts[dtype] += 1
+                    dtype_label = human_disagreement_type(dtype)
+                    dtype_html = (
+                        f'<span title="{escape(dtype_label)}">'
+                        f'{escape(dtype.replace("_", " "))}</span>'
+                    )
                     fight_rows.append([
                         name_a, escape(fam_a_str),
                         name_b, escape(fam_b_str),
+                        dtype_html,
                         f"{avg_jsd:.2f}", str(target_count),
                     ])
+                # Composition-aware summary note
+                substantive_note = ""
+                if fight_rows and not dtype_counts.get("substantive_disagreement"):
+                    n_tax = dtype_counts.get("taxonomy_shear", 0)
+                    n_cva = dtype_counts.get("claim_vs_action", 0)
+                    n_sev = dtype_counts.get("severity_difference", 0)
+                    if n_tax and not n_cva and not n_sev:
+                        detail = (
+                            'All active conflicts are taxonomic &mdash; labelers agree '
+                            'content is bad but categorize it differently.'
+                        )
+                    else:
+                        parts = []
+                        if n_tax:
+                            parts.append(f'{n_tax} taxonomic')
+                        if n_cva:
+                            parts.append(f'{n_cva} claim-vs-action')
+                        if n_sev:
+                            parts.append(f'{n_sev} severity')
+                        detail = (
+                            f'Active conflicts: {", ".join(parts)}. '
+                            'No opposing moderation domains.'
+                        )
+                    substantive_note = (
+                        '<p class="small" style="margin-top:0.5rem;opacity:0.7">'
+                        f'No substantive disagreements above threshold. {detail}</p>'
+                    )
                 fight_table = (
                     '<h3>Active moderation conflicts</h3>'
                     '<p class="labeler-context">Labeler pairs applying different moderation-family labels '
                     'to the same targets. Only pairs with 2+ shared targets shown.</p>'
-                    + _table(["Labeler A", "Families", "Labeler B", "Families", "Avg JSD", "Targets"], fight_rows)
+                    + _table(
+                        ["Labeler A", "Families", "Labeler B", "Families",
+                         "Type", "Avg JSD", "Targets"],
+                        fight_rows,
+                    )
+                    + substantive_note
                 )
 
             # Collapsed novelty section

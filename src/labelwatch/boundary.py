@@ -13,7 +13,13 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from .config import Config
-from .label_family import FAMILY_VERSION, classify_domain, normalize_family
+from .label_family import (
+    FAMILY_VERSION,
+    classify_domain,
+    classify_kind,
+    classify_polarity,
+    normalize_family,
+)
 from .receipts import config_hash
 from .utils import format_ts, parse_ts, stable_json
 
@@ -394,6 +400,52 @@ def classify_edge_domains(edge: dict) -> tuple[str, str]:
         classify_domain(edge.get("top_family_a") or ""),
         classify_domain(edge.get("top_family_b") or ""),
     )
+
+
+def classify_disagreement(family_a: str, family_b: str) -> str:
+    """Classify the type of disagreement between two families.
+
+    Returns one of:
+      - 'taxonomy_shear' — same domain, same kind, different labels
+      - 'severity_difference' — same domain, cautionary vs negative
+      - 'claim_vs_action' — policy claim vs protocol action
+      - 'substantive_disagreement' — different domains
+    """
+    domain_a = classify_domain(family_a)
+    domain_b = classify_domain(family_b)
+    if domain_a != domain_b:
+        return "substantive_disagreement"
+
+    # Same domain — check if comparing claim to action
+    kind_a = classify_kind(family_a)
+    kind_b = classify_kind(family_b)
+    if kind_a != kind_b and kind_a != "unknown" and kind_b != "unknown":
+        claim_action = {"policy_claim", "protocol_action"}
+        if {kind_a, kind_b} == claim_action:
+            return "claim_vs_action"
+
+    # Same domain, same kind — check polarity for severity split
+    pol_a = classify_polarity(family_a)
+    pol_b = classify_polarity(family_b)
+    if pol_a != pol_b and pol_a != "unknown" and pol_b != "unknown":
+        severity_set = {"cautionary", "negative"}
+        if {pol_a, pol_b} == severity_set:
+            return "severity_difference"
+
+    return "taxonomy_shear"
+
+
+def human_disagreement_type(dtype: str) -> str:
+    """One-phrase explanation of disagreement type."""
+    if dtype == "taxonomy_shear":
+        return "Same moderation domain, different labels"
+    if dtype == "severity_difference":
+        return "Same domain, different severity (warn vs remove)"
+    if dtype == "claim_vs_action":
+        return "Policy claim vs enforcement action"
+    if dtype == "substantive_disagreement":
+        return "Different moderation domains"
+    return ""
 
 
 def filter_fight_edges(

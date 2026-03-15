@@ -13,6 +13,7 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 
+from .boundary import classify_disagreement, human_disagreement_type
 from .label_family import FAMILY_VERSION, classify_domain
 from .posting import FindingPost
 from .utils import format_ts
@@ -26,14 +27,9 @@ SITE_URL = "https://labelwatch.neutral.zone"
 def _classify_disagreement(family_a: str, family_b: str) -> str:
     """Classify the type of disagreement between two families.
 
-    Returns: 'taxonomy_shear' or 'substantive_disagreement'.
-    (severity_difference requires polarity model — not yet implemented.)
+    Delegates to boundary.classify_disagreement — single source of truth.
     """
-    domain_a = classify_domain(family_a)
-    domain_b = classify_domain(family_b)
-    if domain_a != domain_b:
-        return "substantive_disagreement"
-    return "taxonomy_shear"
+    return classify_disagreement(family_a, family_b)
 
 
 def _dedupe_key(labeler_a: str, labeler_b: str, family_a: str,
@@ -61,9 +57,17 @@ def _handle_or_short_did(conn, did: str) -> str:
 
 
 def _human_disagreement_type(dtype: str) -> str:
-    """One-phrase explanation of disagreement type."""
+    """Posting-oriented phrasing of disagreement type.
+
+    Longer than boundary.human_disagreement_type — tuned for social posts,
+    not dashboard columns.
+    """
     if dtype == "taxonomy_shear":
         return "Both agree the content is bad \u2014 they just categorize it differently."
+    if dtype == "severity_difference":
+        return "They agree on the category but disagree on severity \u2014 warn vs remove."
+    if dtype == "claim_vs_action":
+        return "One labels what the content is; the other labels what to do about it."
     if dtype == "substantive_disagreement":
         return "They make different claims about what the content actually is."
     return ""

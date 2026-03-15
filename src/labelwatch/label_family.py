@@ -1,13 +1,14 @@
-"""Label family normalization + domain classification (versioned).
+"""Label family normalization, domain/polarity/kind classification (versioned).
 
 Maps raw label values to coarser "families" for cross-labeler comparison.
 Two-step process:
   1. canonicalize(val) — strip/lower/underscore
   2. map_to_family(canon) — collapse synonyms via FAMILY_MAP
 
-Domain classification adds a third axis: moderation / metadata / novelty.
-Used by boundary Phase 2 to separate real moderation conflicts from
-badge-ecosystem orthogonality.
+Three classification axes on families:
+  - Domain:   moderation / metadata / novelty / political / identity
+  - Polarity: negative / cautionary / positive / badge / unknown
+  - Kind:     policy_claim / protocol_action / status_signal / decorative / unknown
 
 FAMILY_MAP is versioned. Bump FAMILY_VERSION when changing the map so
 derived artifacts (edges, summaries) are keyed by the version that produced them.
@@ -206,6 +207,153 @@ _MODERATION_KEYWORDS_RE = re.compile(
     r"(?:[-_]|$)",  # separator or end of string
     re.IGNORECASE,
 )
+
+
+# Polarity classification: what a label *does* to its target.
+# Only covers families where polarity is unambiguous. Families not in this
+# map get "unknown" — better than guessing wrong.
+POLARITY_MAP: dict[str, str] = {
+    # ── Negative: restrictive, punitive, or removal-intent ──
+    "spam": "negative",
+    "harassment": "negative",
+    "hate": "negative",
+    "violence": "negative",
+    "adult-sexual": "negative",
+    "misleading": "negative",
+    "impersonation": "negative",
+    "inauthenticity": "negative",
+    "mod-hide": "negative",
+    "mod-takedown": "negative",
+
+    # ── Cautionary: informational warning, not removal ──
+    "nudity": "cautionary",
+    "graphic-media": "cautionary",
+    "mod-warn": "cautionary",
+    "mod-gate": "cautionary",
+
+    # ── Badge: decorative / community / gamification ──
+    # (Novelty-domain families default to badge via classify_polarity fallback)
+}
+
+
+# Kind classification: what sort of thing a label IS.
+# policy_claim = assertion about content/account (diagnosis)
+# protocol_action = enforcement/consumer instruction (action)
+# status_signal = observable behavioral metric (measurement)
+# decorative = badge/flair/community marker
+# unknown = can't tell
+KIND_MAP: dict[str, str] = {
+    # ── Policy claims: assertions about content character ──
+    "spam": "policy_claim",
+    "harassment": "policy_claim",
+    "hate": "policy_claim",
+    "violence": "policy_claim",
+    "adult-sexual": "policy_claim",
+    "nudity": "policy_claim",
+    "graphic-media": "policy_claim",
+    "misleading": "policy_claim",
+    "impersonation": "policy_claim",
+    "inauthenticity": "policy_claim",
+
+    # ── Protocol actions: enforcement instructions to consumers ──
+    "mod-warn": "protocol_action",
+    "mod-hide": "protocol_action",
+    "mod-gate": "protocol_action",
+    "mod-takedown": "protocol_action",
+
+    # ── Status signals: behavioral measurements ──
+    "handle-changed": "status_signal",
+    "many-handle-chgs": "status_signal",
+    "some-blocks": "status_signal",
+    "mass-blocks": "status_signal",
+    "bot-reply": "status_signal",
+    "bot": "status_signal",
+    "modlist-author": "status_signal",
+    "new-acct-replies": "status_signal",
+    "no-dms": "status_signal",
+    "bulk-following": "status_signal",
+    "follow-farming": "status_signal",
+    "mass-follow-high": "status_signal",
+    "mass-follow-mid": "status_signal",
+    "high-follow-churn-one-hundred": "status_signal",
+    "high-follow-churn-five-hundred": "status_signal",
+    "weekly-high-churn-12000": "status_signal",
+    "low-quality-replies": "status_signal",
+    "fringe-media": "status_signal",
+    "amplifier": "status_signal",
+    "engagementfarmer": "status_signal",
+    "site-standard": "status_signal",
+    "internal-independent": "status_signal",
+    "internal-other": "status_signal",
+    # Posting stats
+    "posting-daily-made-over-25-posts-yesterday": "status_signal",
+    "posting-daily-made-over-25-replies-yesterday": "status_signal",
+    "posting-daily-made-over-100-posts-yesterday": "status_signal",
+    "posting-daily-made-over-100-replies-yesterday": "status_signal",
+    "posting-monthly-posts-more-than-10-per-day": "status_signal",
+    "posting-monthly-posts-more-than-20-per-day": "status_signal",
+    "posting-monthly-replies-more-than-10-per-day": "status_signal",
+    "posting-monthly-replies-more-than-20-per-day": "status_signal",
+    "no-gap-more-than-one-hours": "status_signal",
+    "no-gap-more-than-two-hours": "status_signal",
+    "no-gap-more-than-four-hours": "status_signal",
+    "high-metadata-changes-five": "status_signal",
+    "high-metadata-changes-ten": "status_signal",
+    "high-metadata-changes-fifty": "status_signal",
+    "metadata-monthly-changes-low": "status_signal",
+    "metadata-monthly-changes-medium": "status_signal",
+    "metadata-monthly-changes-high": "status_signal",
+    "posted-same-url-low": "status_signal",
+    "posted-same-url-mid": "status_signal",
+    "posted-same-url-high": "status_signal",
+}
+
+
+def classify_kind(family: str) -> str:
+    """Classify what sort of thing a label family is.
+
+    Returns: policy_claim, protocol_action, status_signal, decorative, or unknown.
+
+    Static map first. Falls back based on domain and prefix patterns.
+    """
+    kind = KIND_MAP.get(family)
+    if kind:
+        return kind
+
+    # ! prefix = protocol/enforcement action
+    if family.startswith("!"):
+        return "protocol_action"
+
+    # Novelty-domain families are decorative
+    domain = classify_domain(family)
+    if domain == "novelty":
+        return "decorative"
+
+    # Political and identity labels are claims (tagging, not enforcement)
+    if domain in ("political", "identity"):
+        return "policy_claim"
+
+    return "unknown"
+
+
+def classify_polarity(family: str) -> str:
+    """Classify a family's polarity: what a label does to its target.
+
+    Returns: negative, cautionary, positive, badge, or unknown.
+
+    Static map first. Falls back to badge for novelty-domain families,
+    unknown for everything else.
+    """
+    pol = POLARITY_MAP.get(family)
+    if pol:
+        return pol
+
+    # Novelty-domain families are decorative by nature
+    domain = classify_domain(family)
+    if domain == "novelty":
+        return "badge"
+
+    return "unknown"
 
 
 def classify_domain(family: str) -> str:
