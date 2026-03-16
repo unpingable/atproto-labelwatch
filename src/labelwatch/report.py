@@ -460,6 +460,8 @@ _OG_DESCRIPTION = (
     "labeling, and whether their behavior is stable, bursty, or going dark."
 )
 
+SITE_URL = os.environ.get("LABELWATCH_SITE_URL", "https://labelwatch.neutral.zone")
+
 
 def _layout(title: str, body: str, canonical: str = "", description: str = "") -> str:
     """Wrap body in a full HTML page. Title and canonical are escaped here.
@@ -2028,5 +2030,42 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
             f"<p><a href=\"../index.html\">Overview</a></p>" + receipt_table + "<h2>Evidence events</h2>" + events_table,
         )
         _write(os.path.join(tmp_dir, "alert", f"{row['id']}.html"), html)
+
+    # --- robots.txt ---
+    robots_txt = (
+        "User-agent: *\n"
+        "Allow: /\n"
+        "\n"
+        "# Per-user lookups — infinite URL space, don't crawl\n"
+        "Disallow: /v1/climate/\n"
+        "\n"
+        "# Internal alert receipts\n"
+        "Disallow: /alert/\n"
+        "\n"
+        f"Sitemap: {SITE_URL}/sitemap.xml\n"
+    )
+    _write(os.path.join(tmp_dir, "robots.txt"), robots_txt)
+
+    # --- sitemap.xml ---
+    sitemap_urls = [
+        ("index.html", "daily", "1.0"),
+        ("v1/registry", "daily", "0.8"),
+        ("census.html", "daily", "0.7"),
+    ]
+    for row in labelers:
+        slug = _did_slug(row["labeler_did"])
+        sitemap_urls.append((f"labeler/{slug}.html", "daily", "0.5"))
+    sitemap_lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ]
+    for path, freq, priority in sitemap_urls:
+        sitemap_lines.append(
+            f"  <url><loc>{escape(SITE_URL)}/{escape(path)}</loc>"
+            f"<changefreq>{freq}</changefreq>"
+            f"<priority>{priority}</priority></url>"
+        )
+    sitemap_lines.append("</urlset>")
+    _write(os.path.join(tmp_dir, "sitemap.xml"), "\n".join(sitemap_lines) + "\n")
 
     _commit_out_dir(tmp_dir, out_dir)
