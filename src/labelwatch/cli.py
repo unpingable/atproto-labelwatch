@@ -424,6 +424,100 @@ def cmd_coverage_delta(args) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_assess(args) -> None:
+    """Assess current findings for publication readiness."""
+    from collections import defaultdict
+    from datetime import datetime, timedelta
+
+    from .findings import find_postable_fights, format_fight_pair
+    from .label_family import FAMILY_VERSION, classify_domain
+    from .publication import assess_finding, format_assessment
+    from .utils import format_ts, now_utc
+
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    conn = db.connect(cfg.db_path)
+    db.init_db(conn)
+
+    now = now_utc()
+    window_end = format_ts(now)
+    window_start = format_ts(now - timedelta(days=7))
+
+    # Get edges, group by pair (same logic as find_postable_fights)
+    rows = conn.execute("""
+        SELECT target_uri, labeler_a, labeler_b,
+               jsd, top_family_a, top_share_a, top_family_b, top_share_b,
+               n_events_a, n_events_b, computed_at
+        FROM boundary_edges
+        WHERE edge_type = 'contradiction'
+          AND computed_at >= ? AND computed_at <= ?
+          AND family_version = ?
+        ORDER BY jsd DESC
+    """, (window_start, window_end, FAMILY_VERSION)).fetchall()
+
+    pair_edges: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for r in rows:
+        edge = dict(r)
+        domain_a = classify_domain(edge["top_family_a"])
+        domain_b = classify_domain(edge["top_family_b"])
+        if domain_a != "moderation" or domain_b != "moderation":
+            continue
+        pair_key = (edge["labeler_a"], edge["labeler_b"])
+        pair_edges[pair_key].append(edge)
+
+    assessments = []
+    for (la, lb), edges in pair_edges.items():
+        distinct_targets = len({e["target_uri"] for e in edges})
+        if distinct_targets < 2:
+            continue
+        finding = format_fight_pair(conn, la, lb, edges)
+        if finding is None:
+            continue
+        posted = db.is_finding_posted(conn, finding.dedupe_key, args.cooldown_days)
+        assessment = assess_finding(conn, la, lb, edges, finding, posted)
+        if args.tier and assessment.tier != args.tier:
+            continue
+        assessments.append(assessment)
+
+    tier_order = {"ready": 0, "reviewable": 1, "internal": 2}
+    assessments.sort(key=lambda a: (tier_order.get(a.tier, 9), -a.n_targets))
+
+    if args.json_output:
+        output = []
+        for a in assessments:
+            output.append({
+                "tier": a.tier,
+                "headline": a.finding.headline,
+                "disagreement_type": a.disagreement_type,
+                "n_targets": a.n_targets,
+                "median_jsd": round(a.median_jsd, 3),
+                "top_share_a": round(a.top_share_a, 3),
+                "top_share_b": round(a.top_share_b, 3),
+                "n_windows": a.n_windows,
+                "previously_posted": a.previously_posted,
+                "reasons": list(a.reasons),
+                "promotions": list(a.promotions),
+                "draft": a.finding.render_text() if a.tier != "internal" else None,
+                "dedupe_key": a.finding.dedupe_key,
+            })
+        print(json.dumps(output, indent=2))
+    else:
+        if not assessments:
+            print("No findings to assess.")
+            return
+        for a in assessments:
+            print(format_assessment(a))
+
+    counts = defaultdict(int)
+    for a in assessments:
+        counts[a.tier] += 1
+    if not args.json_output:
+        print(f"Summary: {counts.get('ready', 0)} ready, "
+              f"{counts.get('reviewable', 0)} reviewable, "
+              f"{counts.get('internal', 0)} internal")
+
+
 def cmd_post(args) -> None:
     from .posting import BlueskyConfig, BlueskyPublisher, LinkCard
 
@@ -558,6 +652,15 @@ def main(argv: Optional[list] = None) -> None:
 
     p_dbopt = sub.add_parser("db-optimize", help="Run ANALYZE and query planner optimization")
     p_dbopt.set_defaults(func=cmd_db_optimize)
+
+    p_assess = sub.add_parser("assess", help="Assess findings for publication readiness")
+    p_assess.add_argument("--tier", choices=["internal", "reviewable", "ready"],
+                          help="Only show findings at this tier")
+    p_assess.add_argument("--cooldown-days", type=int, default=7,
+                          help="Suppress findings posted within N days")
+    p_assess.add_argument("--json", action="store_true", dest="json_output",
+                          help="Output as JSON instead of human-readable")
+    p_assess.set_defaults(func=cmd_assess)
 
     p_post = sub.add_parser("post", help="Post to Bluesky via labelwatch account")
     p_post.add_argument("text", help="Post text (max 300 graphemes)")
