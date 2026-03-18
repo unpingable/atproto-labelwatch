@@ -546,6 +546,58 @@ def cmd_post(args) -> None:
     print(json.dumps(result if isinstance(result, dict) else {"uri": str(result.uri), "cid": str(result.cid)}, indent=2))
 
 
+def cmd_hosting_locus(args) -> None:
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    conn = db.connect(cfg.db_path)
+    db.init_db(conn)
+
+    from .hosting import attach_facts, detach_facts, query_hosting_summary, query_labeled_targets_by_host
+
+    facts_path = args.facts or cfg.driftwatch_facts_path
+    if not attach_facts(conn, facts_path):
+        print("ERROR: could not attach facts DB. Use --facts or set driftwatch_facts_path in config.")
+        return
+
+    try:
+        if args.json_output:
+            summary = query_hosting_summary(conn, days=args.days)
+            print(json.dumps(summary, indent=2))
+        else:
+            summary = query_hosting_summary(conn, days=args.days)
+            if summary.get("status") == "no_data":
+                print("No labeled target data found.")
+                return
+
+            print(f"\n=== Hosting Locus ({args.days}d) ===\n")
+            print(f"  Total labeled targets:  {summary['total_labeled_targets']:,}")
+            print(f"  Resolved coverage:      {summary['resolved_pct']}%")
+            print(f"  Major provider share:   {summary['major_provider_pct']}%")
+            print(f"  Non-major targets:      {summary['non_major_targets']:,}")
+            print(f"  Non-major hosts:        {summary['non_major_hosts']}")
+            print(f"  Non-major host families: {summary['non_major_host_families']}")
+            print(f"  Invalid handles:        {summary['invalid_handle_count']:,}")
+            print(f"  Unresolved:             {summary['unresolved_count']:,}")
+
+            if summary.get("top_non_major_families"):
+                print(f"\n  Top non-major host families:")
+                for fam, count in summary["top_non_major_families"]:
+                    print(f"    {fam:40s} {count:>8,}")
+
+            if summary.get("top_non_major_hosts"):
+                print(f"\n  Top non-major hosts:")
+                print(f"    {'Host':40s} {'Targets':>8s} {'Accounts':>8s} {'Bad Handle':>10s} {'Group':>12s}")
+                print(f"    {'─' * 40} {'─' * 8} {'─' * 8} {'─' * 10} {'─' * 12}")
+                for h in summary["top_non_major_hosts"]:
+                    print(f"    {(h['host'] or 'None'):40s} {h['targets']:>8,} {h['accounts']:>8,} "
+                          f"{h['invalid_handles']:>10,} {h['group']:>12s}")
+
+            print()
+    finally:
+        detach_facts(conn)
+
+
 def cmd_db_optimize(args) -> None:
     cfg = load_config(args.config)
     if args.db_path:
@@ -652,6 +704,12 @@ def main(argv: Optional[list] = None) -> None:
 
     p_dbopt = sub.add_parser("db-optimize", help="Run ANALYZE and query planner optimization")
     p_dbopt.set_defaults(func=cmd_db_optimize)
+
+    p_hosting = sub.add_parser("hosting-locus", help="Analyze PDS hosting distribution of labeled targets")
+    p_hosting.add_argument("--days", type=int, default=7, help="Lookback window in days")
+    p_hosting.add_argument("--facts", help="Path to facts.sqlite (overrides config)")
+    p_hosting.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
+    p_hosting.set_defaults(func=cmd_hosting_locus)
 
     p_assess = sub.add_parser("assess", help="Assess findings for publication readiness")
     p_assess.add_argument("--tier", choices=["internal", "reviewable", "ready"],

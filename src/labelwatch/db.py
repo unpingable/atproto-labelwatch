@@ -8,7 +8,7 @@ from .utils import get_git_commit
 
 _log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 # SCHEMA_TABLES: all CREATE TABLE statements. Safe to run against pre-existing
 # tables (IF NOT EXISTS is a no-op). Used by v0→v1 bootstrap where the table
@@ -312,6 +312,14 @@ CREATE TABLE IF NOT EXISTS posted_findings (
     finding_type TEXT NOT NULL,
     post_uri TEXT,
     posted_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS provider_registry (
+    host_pattern TEXT PRIMARY KEY,
+    match_type TEXT NOT NULL,        -- 'exact' | 'suffix'
+    provider_group TEXT NOT NULL,    -- bluesky | known_alt | one_off | unknown
+    provider_label TEXT NOT NULL,    -- human-readable
+    is_major_provider INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -956,6 +964,30 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         """)
         set_schema_version(conn, 20)
         current = 20
+    if current == 20 and target >= 21:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS provider_registry (
+                host_pattern TEXT PRIMARY KEY,
+                match_type TEXT NOT NULL,
+                provider_group TEXT NOT NULL,
+                provider_label TEXT NOT NULL,
+                is_major_provider INTEGER NOT NULL DEFAULT 0
+            );
+        """)
+        # Seed known providers
+        conn.executemany(
+            "INSERT OR IGNORE INTO provider_registry VALUES (?, ?, ?, ?, ?)",
+            [
+                ("host.bsky.network", "suffix", "bluesky", "Bluesky-hosted", 1),
+                ("bsky.social", "exact", "bluesky", "Bluesky-hosted", 1),
+                ("bsky.network", "suffix", "bluesky", "Bluesky-hosted", 1),
+                ("blacksky.app", "suffix", "known_alt", "Blacksky", 1),
+                ("atproto.brid.gy", "exact", "known_alt", "Bridgy Fed", 1),
+                ("pds.rip", "suffix", "known_alt", "pds.rip", 0),
+            ],
+        )
+        set_schema_version(conn, 21)
+        current = 21
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
