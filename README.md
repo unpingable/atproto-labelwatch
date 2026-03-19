@@ -200,7 +200,7 @@ downgraded by transient probe failures.
 
 ## Schema
 
-SQLite with WAL mode. Current version: v19. Key tables:
+SQLite with WAL mode. Current version: v21. Key tables:
 
 | Table | Purpose |
 |-------|---------|
@@ -220,6 +220,26 @@ SQLite with WAL mode. Current version: v19. Key tables:
   ledger. Labelwatch watches labeler behavior; driftwatch watches information
   drift. Same observatory family.
 
+## What this system is and is not
+
+**Is:** An observatory for ATProto's labeling infrastructure. Monitors labeler
+behavior, boundary instability, and hosting-locus distribution. Produces
+inspectable receipts about governance infrastructure.
+
+**Is not:** A moderation tool, a content filter, a trust authority, or a user
+profiler. It does not decide who is right. It measures how the governance layer
+behaves.
+
+**Populations and coverage:**
+- Label events come from `queryLabels` across all discovered labelers.
+- Hosting-locus enrichment comes from the driftwatch facts bridge. Coverage
+  depends on resolver progress and may be partial — the card always states this.
+- "Coverage" always specifies a denominator. Actor coverage (unique DIDs) and
+  event coverage (label events) answer different questions.
+
+**Host family is not operator identity.** The hosting locus card shows where
+labeled targets are hosted, not who operates the infrastructure or why.
+
 ## Design constraints
 
 - Aggregate-first, NOT profile-first
@@ -227,6 +247,7 @@ SQLite with WAL mode. Current version: v19. Key tables:
 - No ML classifiers, no LLM-in-the-loop
 - Receipt hashing for auditability (SHA-256, not cryptographic signing)
 - Four independent risk dials, not one collapsed trust score
+- Descriptive language only — "concentration anomaly" not "bot farm"
 
 ## License
 
