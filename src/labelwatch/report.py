@@ -1112,7 +1112,7 @@ def _alert_rollups(alerts_list, handles, display_names) -> str:
     return "".join(html_parts)
 
 
-def generate_report(conn, out_dir: str, now: Optional[datetime] = None) -> None:
+def generate_report(conn, out_dir: str, now: Optional[datetime] = None, facts_path: Optional[str] = None) -> None:
     real_now = datetime.now(timezone.utc)
     if now is None:
         now = real_now
@@ -1594,6 +1594,69 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
     except Exception as exc:
         _log.warning("Boundary report section failed: %s", exc)
 
+    # --- Hosting Locus (preview) ---
+    hosting_section = ""
+    try:
+        from .hosting import attach_facts, detach_facts, query_hosting_summary
+        if facts_path and attach_facts(conn, facts_path):
+            try:
+                hl = query_hosting_summary(conn, days=7)
+                if hl.get("status") == "ok" and hl["total_labeled_targets"] > 0:
+                    hosting_cards = f"""
+<div class="grid">
+  <div class="card health-metric">
+    <div class="label">Resolved Coverage</div>
+    <div class="value">{hl['resolved_pct']}%</div>
+    <div class="small">{hl['total_labeled_targets'] - hl['unresolved_count']:,} / {hl['total_labeled_targets']:,} targets</div>
+  </div>
+  <div class="card health-metric">
+    <div class="label">Major Providers</div>
+    <div class="value">{hl['major_provider_pct']}%</div>
+    <div class="small">of resolved targets</div>
+  </div>
+  <div class="card health-metric">
+    <div class="label">Non-major Hosts</div>
+    <div class="value">{hl['non_major_hosts']}</div>
+    <div class="small">{hl['non_major_targets']:,} targets across {hl['non_major_host_families']} families</div>
+  </div>
+  <div class="card health-metric">
+    <div class="label">Invalid Handles</div>
+    <div class="value">{hl['invalid_handle_count']:,}</div>
+    <div class="small">DID resolved, handle broken/absent</div>
+  </div>
+</div>
+"""
+                    host_rows = []
+                    for h in hl.get("top_non_major_hosts", [])[:15]:
+                        host_rows.append([
+                            escape(h["host"] or "unknown"),
+                            escape(h.get("family") or ""),
+                            escape(h["group"]),
+                            str(h["targets"]),
+                            str(h["accounts"]),
+                            str(h["invalid_handles"]) if h["invalid_handles"] else "",
+                        ])
+                    host_table = ""
+                    if host_rows:
+                        host_table = _table(
+                            ["Host", "Family", "Group", "Targets", "Accounts", "Bad Handles"],
+                            host_rows,
+                        )
+
+                    hosting_section = (
+                        '<div class="boundary-section">'
+                        '<h2>Hosting Locus (preview)</h2>'
+                        '<p class="labeler-context" style="color:var(--amber,#c90)">'
+                        'Coverage is currently limited to DIDs Driftwatch has independently observed. '
+                        'This is a partial view, not a population estimate. Interpretation: directional / incomplete.</p>'
+                        + hosting_cards + host_table
+                        + '</div>'
+                    )
+            finally:
+                detach_facts(conn)
+    except Exception as exc:
+        _log.warning("Hosting locus section failed: %s", exc)
+
     # --- Triage view with tabs ---
     tab_bar = f"""
 <div class="search-bar">
@@ -1741,7 +1804,7 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
     overview_html = _layout(
         "Labelwatch",
         hero_html + climate_card + registry_card + explainer_html + staleness_cards + naive_banner + warmup_banner + coverage_card + reference_lane +
-        boundary_section + build_table + overview_tables + labeler_section + alert_links + METHODS_HTML + TRIAGE_JS,
+        boundary_section + hosting_section + build_table + overview_tables + labeler_section + alert_links + METHODS_HTML + TRIAGE_JS,
     )
     _write(os.path.join(tmp_dir, "index.html"), overview_html)
 

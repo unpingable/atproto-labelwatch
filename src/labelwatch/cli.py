@@ -99,7 +99,7 @@ def cmd_report(args) -> None:
             print("warning: --now is naive; assuming UTC", file=sys.stderr)
             now = now.replace(tzinfo=timezone.utc)
         out_dir = args.out or "report"
-        report_mod.generate_report(conn, out_dir, now=now)
+        report_mod.generate_report(conn, out_dir, now=now, facts_path=cfg.driftwatch_facts_path)
         print(json.dumps({"report_dir": out_dir}))
         return
 

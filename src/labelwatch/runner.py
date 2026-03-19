@@ -51,7 +51,7 @@ def _release_memory(conn) -> None:
     log.info("rss=%s", _rss_mb())
 
 
-def _report_loop(db_path: str, report_out: str, interval: int) -> None:
+def _report_loop(db_path: str, report_out: str, interval: int, facts_path: str = "") -> None:
     """Dedicated report generation thread.
 
     Uses its own readonly DB connection so report generation is never
@@ -62,7 +62,7 @@ def _report_loop(db_path: str, report_out: str, interval: int) -> None:
         try:
             conn = db.connect(db_path, readonly=True)
             try:
-                report_mod.generate_report(conn, report_out, now=now_utc())
+                report_mod.generate_report(conn, report_out, now=now_utc(), facts_path=facts_path or None)
             finally:
                 conn.close()
             log.info("Report generated successfully")
@@ -100,7 +100,7 @@ def run_loop(
         report_interval = max(scan_interval, 300)  # at least every 5 min
         t = threading.Thread(
             target=_report_loop,
-            args=(cfg.db_path, report_out, report_interval),
+            args=(cfg.db_path, report_out, report_interval, cfg.driftwatch_facts_path),
             daemon=True,
             name="report-gen",
         )
