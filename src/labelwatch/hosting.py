@@ -217,7 +217,7 @@ def query_hosting_summary(
         "days": days,
         "total_labeled_targets": total_targets,
         "resolved_pct": round(100.0 * total_resolved / total_targets, 1) if total_targets else 0,
-        "major_provider_pct": round(100.0 * major_targets / total_targets, 1) if total_targets else 0,
+        "major_provider_pct": round(100.0 * major_targets / total_resolved, 1) if total_resolved else 0,
         "non_major_targets": sum(r.labeled_target_count for r in non_major),
         "non_major_hosts": len(set(r.pds_host for r in non_major if r.pds_host)),
         "non_major_host_families": len(set(r.host_family for r in non_major if r.host_family)),

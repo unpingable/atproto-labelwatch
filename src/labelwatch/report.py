@@ -1615,9 +1615,9 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
     <div class="small">of resolved targets</div>
   </div>
   <div class="card health-metric">
-    <div class="label">Non-major Hosts</div>
-    <div class="value">{hl['non_major_hosts']}</div>
-    <div class="small">{hl['non_major_targets']:,} targets across {hl['non_major_host_families']} families</div>
+    <div class="label">Non-major Host Families</div>
+    <div class="value">{hl['non_major_host_families']}</div>
+    <div class="small">{hl['non_major_targets']:,} targets across {hl['non_major_hosts']} hosts</div>
   </div>
   <div class="card health-metric">
     <div class="label">Invalid Handles</div>
