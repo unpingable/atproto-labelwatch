@@ -1610,9 +1610,9 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
     <div class="small">{hl['total_labeled_targets'] - hl['unresolved_count']:,} / {hl['total_labeled_targets']:,} targets</div>
   </div>
   <div class="card health-metric">
-    <div class="label">Major Providers</div>
+    <div class="label">Major Provider Share</div>
     <div class="value">{hl['major_provider_pct']}%</div>
-    <div class="small">of resolved targets</div>
+    <div class="small">of resolved labeled targets</div>
   </div>
   <div class="card health-metric">
     <div class="label">Non-major Host Families</div>
@@ -1647,8 +1647,8 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
                         '<div class="boundary-section">'
                         '<h2>Hosting Locus (preview)</h2>'
                         '<p class="labeler-context" style="color:var(--amber,#c90)">'
-                        'Coverage is currently limited to DIDs Driftwatch has independently observed. '
-                        'This is a partial view, not a population estimate. Interpretation: directional / incomplete.</p>'
+                        'Enrichment coverage is growing as the resolver processes labeled-target DIDs. '
+                        'Low coverage means many targets are not yet resolved — this is a partial view, not a population estimate.</p>'
                         + hosting_cards + host_table
                         + '</div>'
                     )
