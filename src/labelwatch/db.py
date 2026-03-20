@@ -423,6 +423,10 @@ def connect(db_path: str, readonly: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA cache_size=-50000")
     # Force temp tables (GROUP BY, ORDER BY) to disk instead of RAM
     conn.execute("PRAGMA temp_store=FILE")
+    # Truncate WAL file after checkpoint if it exceeds 64MB
+    conn.execute("PRAGMA journal_size_limit=67108864")
+    # Memory-mapped I/O for read performance (256MB)
+    conn.execute("PRAGMA mmap_size=268435456")
     if readonly:
         conn.execute("PRAGMA query_only=ON")
     return conn
