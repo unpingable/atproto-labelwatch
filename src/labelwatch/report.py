@@ -1795,7 +1795,9 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
   hosting locus, and structural behavior across the network.</p>
   <p><strong>ClearSky and Skythread explain local symptoms. Labelwatch maps the governing machinery.</strong></p>
   <p class="small" style="opacity:0.8">This is not a block checker, a thread reconstruction tool, or a personal
-  visibility debugger. It exists to make the moderation layer legible at system scale.</p>
+  visibility debugger. For those, see <a href="https://clearsky.app/">ClearSky</a> or
+  <a href="https://skythread.mackuba.eu/">Skythread</a>.
+  Labelwatch exists to make the moderation layer legible at system scale.</p>
 </div>
 """
 
