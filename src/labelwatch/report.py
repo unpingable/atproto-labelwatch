@@ -1834,10 +1834,89 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
 </details>
 """
 
+    # --- Summary strip: replace ops metric wall with sentence summaries ---
+    cov_total_row = conn.execute("SELECT COUNT(*) AS c FROM ingest_outcomes WHERE ts >= ?", (start_24h,)).fetchone()
+    cov_good_row = conn.execute(
+        "SELECT COUNT(*) AS c FROM ingest_outcomes WHERE ts >= ? AND outcome IN ('success','empty')", (start_24h,)
+    ).fetchone()
+    cov_pct_24h = int(cov_good_row["c"] / cov_total_row["c"] * 100) if cov_total_row["c"] > 0 else 0
+
+    summary_strip = f"""
+<div class="grid" style="margin:1rem 0;">
+  <div class="card health-metric">
+    <div class="value">{len(labelers)}</div>
+    <div class="label">Labelers tracked</div>
+  </div>
+  <div class="card health-metric">
+    <div class="value">{cov_pct_24h}%</div>
+    <div class="label">Ingest coverage (24h)</div>
+  </div>
+  <div class="card health-metric">
+    <div class="value">{alerts_7d_total}</div>
+    <div class="label">Alerts (7d)</div>
+    <div class="small">across {labelers_with_alerts_7d} labelers</div>
+  </div>
+  <div class="card health-metric">
+    <div class="value">{len(ref_labelers)}</div>
+    <div class="label">Reference labelers</div>
+  </div>
+</div>
+"""
+
+    # --- Boundary section: collapsed with plain-English lead ---
+    if boundary_section:
+        boundary_section = boundary_section.replace(
+            '<h2>Boundary Instability (7d)</h2>',
+            '<h2>Labeler Conflicts</h2>'
+            '<p class="labeler-context">When labelers apply incompatible moderation categories '
+            'to overlapping targets, the protocol\u2019s governance fault lines become visible.</p>'
+        )
+        boundary_collapsed = (
+            '<details open><summary style="cursor:pointer;font-family:\'Gill Sans\',\'Trebuchet MS\',sans-serif;'
+            'font-weight:bold;font-size:1.3rem;margin:1rem 0;">Labeler Conflicts (7d)</summary>'
+            + boundary_section.replace('<div class="boundary-section"><h2>Labeler Conflicts</h2>', '')
+            .rstrip('</div>')
+            + '</details>'
+        )
+    else:
+        boundary_collapsed = ""
+
+    # --- Ops detail: collapsed disclosure ---
+    ops_detail = f"""
+<details style="margin-top:2rem;">
+  <summary style="cursor:pointer;font-family:'Gill Sans','Trebuchet MS',sans-serif;font-weight:bold;color:var(--fg-muted);">
+    System status &amp; methodology
+  </summary>
+  <div style="margin-top:1rem;">
+    {staleness_cards}
+    {naive_banner}
+    {warmup_banner}
+    {coverage_card}
+    {build_table}
+    {overview_tables}
+    {alert_links}
+    {METHODS_HTML}
+  </div>
+</details>
+"""
+
+    # --- Assemble page with new hierarchy ---
+    # Layer 1: Orientation (hero + entry points + summary)
+    # Layer 2: Findings (hosting locus featured, boundary collapsed, reference strip)
+    # Layer 3: Exploration (labeler table)
+    # Layer 4: Ops detail (collapsed)
     overview_html = _layout(
         "Labelwatch",
-        hero_html + climate_card + registry_card + explainer_html + staleness_cards + naive_banner + warmup_banner + coverage_card + reference_lane +
-        boundary_section + hosting_section + build_table + overview_tables + labeler_section + alert_links + METHODS_HTML + TRIAGE_JS,
+        hero_html
+        + climate_card + registry_card
+        + summary_strip
+        + explainer_html
+        + hosting_section
+        + boundary_collapsed
+        + reference_lane
+        + labeler_section
+        + ops_detail
+        + TRIAGE_JS,
     )
     _write(os.path.join(tmp_dir, "index.html"), overview_html)
 
