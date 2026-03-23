@@ -1605,9 +1605,14 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
                     hosting_cards = f"""
 <div class="grid">
   <div class="card health-metric">
-    <div class="label">Resolved Coverage</div>
+    <div class="label">Actor Coverage</div>
     <div class="value">{hl['resolved_pct']}%</div>
     <div class="small">{hl.get('resolved_target_dids', 0):,} / {hl.get('total_target_dids', 0):,} unique accounts</div>
+  </div>
+  <div class="card health-metric">
+    <div class="label">Event Coverage</div>
+    <div class="value">{hl.get('event_coverage_pct', 0)}%</div>
+    <div class="small">of label events have resolved targets</div>
   </div>
   <div class="card health-metric">
     <div class="label">Major Provider Share</div>
