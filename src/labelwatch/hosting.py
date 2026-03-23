@@ -199,6 +199,7 @@ def query_hosting_summary(
     total_targets = sum(r.labeled_target_count for r in rows)
     total_resolved = sum(r.resolved_count for r in rows)
     total_unresolved = sum(r.unresolved_count for r in rows)
+    total_resolved_accounts = sum(r.unique_accounts for r in rows if r.provider_group != "unknown")
     major_targets = sum(r.labeled_target_count for r in rows if r.is_major_provider)
     non_major = [r for r in rows if not r.is_major_provider
                  and r.provider_group != "unknown"]
@@ -235,7 +236,79 @@ def query_hosting_summary(
             }
             for r in non_major[:20]
         ],
+        "labeler_host_skew": query_labeler_host_skew(conn, days=days),
+        "non_major_baseline_pct": round(
+            100.0 * sum(r.unique_accounts for r in non_major)
+            / total_resolved_accounts, 2
+        ) if total_resolved_accounts else 0,
     }
+
+
+def query_labeler_host_skew(
+    conn: sqlite3.Connection,
+    days: int = 7,
+    min_targets: int = 10,
+) -> list[dict]:
+    """Per-labeler hosting skew: what % of each labeler's resolved targets are on non-major hosts.
+
+    Requires facts.sqlite attached as 'drift'.
+    """
+    try:
+        conn.execute("SELECT 1 FROM drift.actor_identity_facts LIMIT 1")
+    except sqlite3.OperationalError:
+        return []
+
+    cutoff = f"-{days} days"
+
+    rows = conn.execute("""
+        WITH labeler_host AS (
+            SELECT
+                le.labeler_did,
+                CASE
+                    WHEN aif.pds_host LIKE '%.bsky.network' OR aif.pds_host = 'bsky.social'
+                    THEN 'major' ELSE 'non_major'
+                END as host_class,
+                COUNT(DISTINCT le.target_did) as unique_targets
+            FROM label_events le
+            JOIN drift.actor_identity_facts aif ON aif.did = le.target_did
+            WHERE le.target_did IS NOT NULL
+              AND le.ts >= datetime('now', ?)
+              AND aif.resolver_status = 'ok'
+            GROUP BY le.labeler_did, host_class
+        ),
+        labeler_totals AS (
+            SELECT labeler_did, SUM(unique_targets) as total_targets
+            FROM labeler_host
+            GROUP BY labeler_did
+            HAVING total_targets >= ?
+        )
+        SELECT
+            lt.labeler_did,
+            lt.total_targets,
+            COALESCE(nm.unique_targets, 0) as non_major_targets,
+            ROUND(100.0 * COALESCE(nm.unique_targets, 0) / lt.total_targets, 2) as non_major_pct
+        FROM labeler_totals lt
+        LEFT JOIN labeler_host nm
+            ON nm.labeler_did = lt.labeler_did AND nm.host_class = 'non_major'
+        ORDER BY non_major_pct DESC
+    """, (cutoff, min_targets)).fetchall()
+
+    # Resolve handles
+    results = []
+    for labeler_did, total, non_major, pct in rows:
+        handle_row = conn.execute(
+            "SELECT handle FROM labelers WHERE labeler_did = ?", (labeler_did,)
+        ).fetchone()
+        handle = handle_row[0] if handle_row else None
+        results.append({
+            "labeler_did": labeler_did,
+            "handle": handle,
+            "total_resolved_targets": total,
+            "non_major_targets": non_major,
+            "non_major_pct": pct,
+        })
+
+    return results
 
 
 def attach_facts(conn: sqlite3.Connection, facts_path: str) -> bool:

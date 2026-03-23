@@ -1643,13 +1643,39 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
                             host_rows,
                         )
 
+                    # Per-labeler host skew table
+                    skew_table = ""
+                    skew_data = hl.get("labeler_host_skew", [])
+                    baseline_pct = hl.get("non_major_baseline_pct", 0)
+                    if skew_data:
+                        skew_rows = []
+                        for s in skew_data[:15]:
+                            handle = s.get("handle") or s["labeler_did"][:20]
+                            delta = s["non_major_pct"] - baseline_pct
+                            delta_str = f"+{delta:.1f}" if delta >= 0 else f"{delta:.1f}"
+                            skew_rows.append([
+                                escape(handle),
+                                f"{s['total_resolved_targets']:,}",
+                                f"{s['non_major_pct']:.1f}%",
+                                delta_str,
+                            ])
+                        skew_table = (
+                            '<h3>Per-labeler hosting skew</h3>'
+                            '<p class="labeler-context">Non-major host share by labeler vs '
+                            f'baseline ({baseline_pct:.1f}%). Resolved targets only.</p>'
+                            + _table(
+                                ["Labeler", "Resolved Targets", "Non-major %", "vs Baseline"],
+                                skew_rows,
+                            )
+                        )
+
                     hosting_section = (
                         '<div class="boundary-section">'
                         '<h2>Hosting Locus (preview)</h2>'
                         '<p class="labeler-context" style="color:var(--amber,#c90)">'
                         'Enrichment coverage is growing as the resolver processes labeled-target DIDs. '
                         'Low coverage means many targets are not yet resolved — this is a partial view, not a population estimate.</p>'
-                        + hosting_cards + host_table
+                        + hosting_cards + host_table + skew_table
                         + '</div>'
                     )
             finally:
