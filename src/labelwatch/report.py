@@ -143,13 +143,13 @@ STYLE = """
   --accent: #3498db;
   --pre-bg: #16213e;
 }
-body { font-family: Georgia, "Times New Roman", serif; margin: 2rem; color: var(--fg); background: var(--bg); }
+body { font-family: Georgia, "Times New Roman", serif; margin: 2rem; color: var(--fg); background: var(--bg); font-size: 1.05rem; line-height: 1.6; }
 header { margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: flex-start; }
 header > div { flex: 1; }
 h1, h2, h3 { font-family: "Gill Sans", "Trebuchet MS", sans-serif; }
 table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-th, td { border-bottom: 1px solid var(--border); padding: 0.5rem; text-align: left; }
-.small { color: var(--fg-muted); font-size: 0.9rem; }
+th, td { border-bottom: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; font-size: 0.95rem; }
+.small { color: var(--fg-muted); font-size: 0.92rem; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
 .card { border: 1px solid var(--card-border); padding: 1rem; border-radius: 6px; background: var(--card-bg); }
 a { color: var(--link); text-decoration: none; }
