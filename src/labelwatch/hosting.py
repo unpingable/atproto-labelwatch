@@ -213,11 +213,32 @@ def query_hosting_summary(
         family_counts[fam] += r.labeled_target_count
     top_families = sorted(family_counts.items(), key=lambda x: -x[1])[:10]
 
+    # Actor coverage: unique resolved DIDs / unique target DIDs
+    # (not event-based — avoids inflating coverage because heavily-labeled accounts are resolved)
+    cutoff = f"-{days} days"
+    try:
+        cov_row = conn.execute("""
+            SELECT
+                (SELECT COUNT(DISTINCT target_did) FROM label_events
+                 WHERE target_did IS NOT NULL AND ts >= datetime('now', ?)) as total_dids,
+                (SELECT COUNT(DISTINCT le.target_did) FROM label_events le
+                 JOIN drift.actor_identity_facts aif ON aif.did = le.target_did
+                 WHERE aif.resolver_status = 'ok'
+                   AND le.target_did IS NOT NULL AND le.ts >= datetime('now', ?)) as resolved_dids
+        """, (cutoff, cutoff)).fetchone()
+        total_actor_dids = cov_row[0] if cov_row else 0
+        resolved_actor_dids = cov_row[1] if cov_row else 0
+    except Exception:
+        total_actor_dids = 0
+        resolved_actor_dids = 0
+
     return {
         "status": "ok",
         "days": days,
         "total_labeled_targets": total_targets,
-        "resolved_pct": round(100.0 * total_resolved / total_targets, 1) if total_targets else 0,
+        "total_target_dids": total_actor_dids,
+        "resolved_target_dids": resolved_actor_dids,
+        "resolved_pct": round(100.0 * resolved_actor_dids / total_actor_dids, 1) if total_actor_dids else 0,
         "major_provider_pct": round(100.0 * major_targets / total_resolved, 1) if total_resolved else 0,
         "non_major_targets": sum(r.labeled_target_count for r in non_major),
         "non_major_hosts": len(set(r.pds_host for r in non_major if r.pds_host)),

@@ -1607,7 +1607,7 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
   <div class="card health-metric">
     <div class="label">Resolved Coverage</div>
     <div class="value">{hl['resolved_pct']}%</div>
-    <div class="small">{hl['total_labeled_targets'] - hl['unresolved_count']:,} / {hl['total_labeled_targets']:,} targets</div>
+    <div class="small">{hl.get('resolved_target_dids', 0):,} / {hl.get('total_target_dids', 0):,} unique accounts</div>
   </div>
   <div class="card health-metric">
     <div class="label">Major Provider Share</div>
