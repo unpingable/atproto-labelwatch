@@ -1790,10 +1790,12 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
     # --- Hero: what is this, why should I care, what do I click ---
     hero_html = f"""
 <div class="hero">
-  <p class="hero-pitch">Labelwatch tracks Bluesky\u2019s labeler ecosystem \u2014 activity, coverage,
-  and disagreement across {len(labelers)} independent moderation services.</p>
-  <p>Use it to answer concrete questions: Which labelers are active? What are they classifying?
-  Where do two labelers describe the same targets differently?</p>
+  <p class="hero-pitch">Labelwatch is a moderation infrastructure observatory for Bluesky.
+  It tracks {len(labelers)} independent labelers \u2014 their health, conflicts, taxonomy shear,
+  hosting locus, and structural behavior across the network.</p>
+  <p><strong>ClearSky and Skythread explain local symptoms. Labelwatch maps the governing machinery.</strong></p>
+  <p class="small" style="opacity:0.8">This is not a block checker, a thread reconstruction tool, or a personal
+  visibility debugger. It exists to make the moderation layer legible at system scale.</p>
 </div>
 """
 
