@@ -1475,6 +1475,7 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
 
     # --- Boundary conflicts section ---
     boundary_section = ""
+    boundary_data = {}
     try:
         boundary_data = boundary_summary_for_report(conn, start_7d, now_ts)
         if boundary_data["total_edges"] > 0:
@@ -1836,52 +1837,101 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
 </details>
 """
 
-    # --- Summary strip: replace ops metric wall with sentence summaries ---
-    cov_total_row = conn.execute("SELECT COUNT(*) AS c FROM ingest_outcomes WHERE ts >= ?", (start_24h,)).fetchone()
-    cov_good_row = conn.execute(
-        "SELECT COUNT(*) AS c FROM ingest_outcomes WHERE ts >= ? AND outcome IN ('success','empty')", (start_24h,)
-    ).fetchone()
-    cov_pct_24h = int(cov_good_row["c"] / cov_total_row["c"] * 100) if cov_total_row["c"] > 0 else 0
+    # --- "What changed" strip: findings-language, not ops-language ---
+    new_labelers_7d = conn.execute(
+        "SELECT COUNT(*) AS c FROM labelers WHERE first_seen >= ?", (start_7d,)
+    ).fetchone()["c"]
+
+    degraded_labelers = conn.execute(
+        "SELECT COUNT(*) AS c FROM labelers WHERE endpoint_status = 'down' AND events_30d > 0"
+    ).fetchone()["c"]
+
+    # Compute fight count for "what changed" narrative
+    mod_conflicts = 0
+    top_fight_count = 0
+    try:
+        mod_conflicts = boundary_data.get("moderation_edges", 0) if boundary_data else 0
+        top_fight_count = len(boundary_data.get("top_fight_pairs", [])) if boundary_data else 0
+    except Exception:
+        pass
+
+    churn_alerts_24h = alerts_24h.get("churn_index", 0)
+    spike_alerts_24h = alerts_24h.get("label_rate_spike", 0)
+    flipflop_alerts_24h = alerts_24h.get("flip_flop", 0)
+
+    # Network weather: derive from alert mix + boundary state
+    weather_signals = []
+    if spike_alerts_24h > 10:
+        weather_signals.append("noisy")
+    if mod_conflicts > 0:
+        weather_signals.append("conflicted")
+    if churn_alerts_24h > 50:
+        weather_signals.append("churny")
+    if degraded_labelers > 5:
+        weather_signals.append("degraded")
+    if not weather_signals:
+        weather_signals.append("calm")
+    network_weather = ", ".join(weather_signals)
+
+    # Build "what changed" items as observation sentences
+    what_changed_items = []
+    if mod_conflicts > 0:
+        what_changed_items.append(
+            f'<strong>{mod_conflicts}</strong> active moderation conflicts '
+            f'across {top_fight_count} labeler pair{"s" if top_fight_count != 1 else ""}'
+        )
+    if spike_alerts_24h > 0:
+        what_changed_items.append(
+            f'<strong>{spike_alerts_24h}</strong> rate spikes in the last 24h'
+        )
+    if churn_alerts_24h > 0:
+        what_changed_items.append(
+            f'<strong>{churn_alerts_24h}</strong> high-churn alerts in 24h'
+        )
+    if flipflop_alerts_24h > 0:
+        what_changed_items.append(
+            f'<strong>{flipflop_alerts_24h}</strong> flip-flop detections in 24h'
+        )
+    if degraded_labelers > 0:
+        what_changed_items.append(
+            f'<strong>{degraded_labelers}</strong> labeler{"s" if degraded_labelers != 1 else ""} '
+            f'currently unreachable'
+        )
+    if new_labelers_7d > 0:
+        what_changed_items.append(
+            f'<strong>{new_labelers_7d}</strong> new labeler{"s" if new_labelers_7d != 1 else ""} '
+            f'discovered this week'
+        )
+
+    what_changed_list = "".join(f"<li>{item}</li>" for item in what_changed_items[:6])
 
     summary_strip = f"""
-<div class="grid" style="margin:1rem 0;">
-  <div class="card health-metric">
-    <div class="value">{len(labelers)}</div>
-    <div class="label">Labelers tracked</div>
+<div style="margin:1.5rem 0;display:flex;gap:1.5rem;flex-wrap:wrap;align-items:flex-start;">
+  <div class="card" style="flex:1 1 300px;">
+    <h3 style="margin:0 0 0.5rem 0;">What\u2019s happening</h3>
+    <ul style="margin:0;padding-left:1.2rem;line-height:1.8;">
+      {what_changed_list}
+    </ul>
   </div>
-  <div class="card health-metric">
-    <div class="value">{cov_pct_24h}%</div>
-    <div class="label">Ingest coverage (24h)</div>
-  </div>
-  <div class="card health-metric">
-    <div class="value">{alerts_7d_total}</div>
-    <div class="label">Alerts (7d)</div>
-    <div class="small">across {labelers_with_alerts_7d} labelers</div>
-  </div>
-  <div class="card health-metric">
-    <div class="value">{len(ref_labelers)}</div>
-    <div class="label">Reference labelers</div>
+  <div class="card" style="flex:0 0 180px;text-align:center;">
+    <div class="small" style="margin-bottom:0.3rem;">Network weather</div>
+    <div style="font-size:1.3rem;font-weight:bold;">{escape(network_weather)}</div>
+    <div class="small" style="margin-top:0.3rem;">{len(labelers)} labelers observed</div>
   </div>
 </div>
 """
 
-    # --- Boundary section: collapsed with plain-English lead ---
+    # --- Boundary section: open with finding-language lead ---
+    boundary_finding = ""
     if boundary_section:
+        # Rewrite the section header with plain-English framing
         boundary_section = boundary_section.replace(
             '<h2>Boundary Instability (7d)</h2>',
             '<h2>Labeler Conflicts</h2>'
             '<p class="labeler-context">When labelers apply incompatible moderation categories '
             'to overlapping targets, the protocol\u2019s governance fault lines become visible.</p>'
         )
-        boundary_collapsed = (
-            '<details open><summary style="cursor:pointer;font-family:\'Gill Sans\',\'Trebuchet MS\',sans-serif;'
-            'font-weight:bold;font-size:1.3rem;margin:1rem 0;">Labeler Conflicts (7d)</summary>'
-            + boundary_section.replace('<div class="boundary-section"><h2>Labeler Conflicts</h2>', '')
-            .rstrip('</div>')
-            + '</details>'
-        )
-    else:
-        boundary_collapsed = ""
+        boundary_finding = boundary_section
 
     # --- Ops detail: collapsed disclosure ---
     ops_detail = f"""
@@ -1903,18 +1953,18 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
 """
 
     # --- Assemble page with new hierarchy ---
-    # Layer 1: Orientation (hero + entry points + summary)
-    # Layer 2: Findings (hosting locus featured, boundary collapsed, reference strip)
-    # Layer 3: Exploration (labeler table)
+    # Layer 1: Orientation (hero + what's happening + entry points)
+    # Layer 2: Findings (hosting locus, boundary conflicts)
+    # Layer 3: Reference labelers + full registry
     # Layer 4: Ops detail (collapsed)
     overview_html = _layout(
         "Labelwatch",
         hero_html
-        + climate_card + registry_card
         + summary_strip
+        + climate_card + registry_card
         + explainer_html
         + hosting_section
-        + boundary_collapsed
+        + boundary_finding
         + reference_lane
         + labeler_section
         + ops_detail
