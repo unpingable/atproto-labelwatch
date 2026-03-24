@@ -1457,19 +1457,44 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
     ]
     build_table = "<h2>Build signature</h2>" + _table(["field", "value"], build_rows)
 
-    # Reference lane
+    # Reference lane — with interpretation sentences
     reference_lane = ""
     if ref_labelers:
         ref_cards = ""
         for r in ref_labelers:
             did = r["labeler_did"]
             counts = _hourly_counts(conn, did, start_7d, now_ts)
+            events_7d_ref = r["events_7d"] or sum(counts)
             ref_card = _labeler_health_card(conn, did, start_7d, now_ts, counts, regime_state=r["regime_state"], coverage_ratio=r["coverage_ratio"])
-            ref_cards += f'<h3>{_labeler_link(did, handles, display_names)}</h3>{ref_card}'
+
+            # One-sentence interpretation
+            interp_parts = []
+            regime = r["regime_state"]
+            if regime == "bursty":
+                interp_parts.append("showing bursty output pattern")
+            elif regime == "degraded":
+                interp_parts.append("currently degraded")
+            elif regime == "stable":
+                interp_parts.append("stable")
+
+            ep = r["endpoint_status"]
+            if ep == "down":
+                interp_parts.append("endpoint unreachable")
+            elif ep == "auth_required":
+                interp_parts.append("requires authentication")
+
+            ref_alert_count = labeler_alert_counts.get(did, 0)
+            if ref_alert_count > 20:
+                interp_parts.append(f"{ref_alert_count} anomalies this week")
+
+            interp = ". ".join(interp_parts).capitalize() + "." if interp_parts else ""
+            interp_html = f'<p class="small" style="margin:0.3rem 0 0 0;">{escape(interp)}</p>' if interp else ""
+
+            ref_cards += f'<h3>{_labeler_link(did, handles, display_names)}</h3>{ref_card}{interp_html}'
         reference_lane = (
-            f'<div class="reference-lane"><h2>Reference labelers</h2>'
-            f'<p class="labeler-context">These are the highest-volume or most structurally important labelers on the network. '
-            f'Their behavioral patterns are worth tracking because they affect the most users.</p>'
+            f'<div class="reference-lane"><h2>Major labelers</h2>'
+            f'<p class="labeler-context">The highest-volume or most structurally important labelers on the network. '
+            f'Their behavioral patterns affect the most users.</p>'
             f'{ref_cards}</div>'
         )
 
@@ -1677,10 +1702,12 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
 
                     hosting_section = (
                         '<div class="boundary-section">'
-                        '<h2>Hosting Locus (preview)</h2>'
-                        '<p class="labeler-context" style="color:var(--amber,#c90)">'
-                        'Enrichment coverage is growing as the resolver processes labeled-target DIDs. '
-                        'Low coverage means many targets are not yet resolved — this is a partial view, not a population estimate.</p>'
+                        '<h2>Hosting Locus</h2>'
+                        '<p class="labeler-context">Different labelers don\u2019t just apply different standards \u2014 '
+                        'they observe different infrastructure populations. This section maps where labeled targets are hosted '
+                        'and how that distribution varies by labeler.</p>'
+                        '<p class="small" style="color:var(--amber,#c90)">'
+                        'Coverage is partial \u2014 based on resolved accounts, not the full labeled population.</p>'
                         + hosting_cards + host_table + skew_table
                         + '</div>'
                     )
@@ -1777,7 +1804,13 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
             f'</tr>'
         )
 
-    labeler_section = f"<h2>Labelers</h2>{tab_bar}{labeler_table_header}{labeler_table_rows_html}</tbody></table>"
+    labeler_section = (
+        f'<details style="margin-top:1.5rem;">'
+        f'<summary style="cursor:pointer;font-family:\'Gill Sans\',\'Trebuchet MS\',sans-serif;'
+        f'font-weight:bold;font-size:1.3rem;">All labelers ({len(nonref_labelers)})</summary>'
+        f'{tab_bar}{labeler_table_header}{labeler_table_rows_html}</tbody></table>'
+        f'</details>'
+    )
 
     # --- Alert rollups ---
     alert_head = "<tr><th>id</th><th>rule_id</th><th>labeler</th><th>ts</th></tr>"
