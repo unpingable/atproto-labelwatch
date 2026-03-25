@@ -7,6 +7,7 @@ import pytest
 from labelwatch.derive import (
     LabelerSignals,
     RegimeResult,
+    TempoEstimate,
     classify_regime_state,
     score_auditability_risk,
     score_inference_risk,
@@ -17,6 +18,15 @@ from labelwatch import db
 from labelwatch.scan import run_derive
 import labelwatch.derive as derive
 import labelwatch.scan as scan_mod
+
+
+# Neutral tempo estimate for exact-score tests — isolates existing tests
+# from the Paper 22 tempo layer.
+_NEUTRAL_TEMPO = TempoEstimate(
+    t_p_median_secs=3600.0, t_p_p25_secs=1800.0, t_p_p75_secs=7200.0,
+    sample_count=100, observation_ratio=0.5,
+    observation_health="healthy", temporal_failure=None, confidence="high",
+)
 
 
 def _base_signals() -> LabelerSignals:
@@ -374,7 +384,8 @@ def test_inference_risk_churn_thresholds_exact(class_churn, conf_churn, expected
 # Temporal coherence
 # ---------------------------------------------------------------------------
 
-def test_temporal_coherence_stable_high_volume_exact():
+def test_temporal_coherence_stable_high_volume_exact(monkeypatch):
+    monkeypatch.setattr(derive, "estimate_labeler_tempo", lambda *a, **kw: _NEUTRAL_TEMPO)
     s = _base_signals()
     regime = RegimeResult("stable", [])
     out = score_temporal_coherence(s, regime)
@@ -385,6 +396,7 @@ def test_temporal_coherence_stable_high_volume_exact():
 
 def test_temporal_coherence_bad_case_clamps_low(monkeypatch):
     monkeypatch.setattr(derive, "cadence_irregularity", lambda _: 70.0)
+    monkeypatch.setattr(derive, "estimate_labeler_tempo", lambda *a, **kw: _NEUTRAL_TEMPO)
     s = replace(
         _base_signals(),
         first_seen_hours_ago=1.0,
@@ -422,6 +434,7 @@ def test_temporal_coherence_bad_case_clamps_low(monkeypatch):
 )
 def test_temporal_coherence_volume_thresholds_exact(monkeypatch, events_30d, expected_score, expected_reason):
     monkeypatch.setattr(derive, "cadence_irregularity", lambda _: 0.0)
+    monkeypatch.setattr(derive, "estimate_labeler_tempo", lambda *a, **kw: _NEUTRAL_TEMPO)
     s = replace(_base_signals(), event_count_30d=events_30d)
     regime = RegimeResult("inactive", [])
     out = score_temporal_coherence(s, regime)
@@ -432,6 +445,7 @@ def test_temporal_coherence_volume_thresholds_exact(monkeypatch, events_30d, exp
 
 def test_temporal_coherence_regime_nudge_delta_stable_vs_bursty(monkeypatch):
     monkeypatch.setattr(derive, "cadence_irregularity", lambda _: 0.0)
+    monkeypatch.setattr(derive, "estimate_labeler_tempo", lambda *a, **kw: _NEUTRAL_TEMPO)
     s = _base_signals()
     stable = score_temporal_coherence(s, RegimeResult("stable", []))
     bursty = score_temporal_coherence(s, RegimeResult("bursty", []))
@@ -450,6 +464,7 @@ def test_temporal_coherence_regime_nudge_delta_stable_vs_bursty(monkeypatch):
 )
 def test_temporal_coherence_cadence_thresholds(monkeypatch, irregularity, expected_score, expected_reason):
     monkeypatch.setattr(derive, "cadence_irregularity", lambda _: irregularity)
+    monkeypatch.setattr(derive, "estimate_labeler_tempo", lambda *a, **kw: _NEUTRAL_TEMPO)
     s = _base_signals()
     out = score_temporal_coherence(s, RegimeResult("stable", []))
     assert out.score == expected_score

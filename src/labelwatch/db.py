@@ -8,7 +8,7 @@ from .utils import get_git_commit
 
 _log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # SCHEMA_TABLES: all CREATE TABLE statements. Safe to run against pre-existing
 # tables (IF NOT EXISTS is a no-op). Used by v0→v1 bootstrap where the table
@@ -87,7 +87,12 @@ CREATE TABLE IF NOT EXISTS labelers (
     unique_targets_7d INTEGER DEFAULT 0,
     unique_targets_30d INTEGER DEFAULT 0,
     unique_subjects_7d INTEGER DEFAULT 0,
-    unique_subjects_30d INTEGER DEFAULT 0
+    unique_subjects_30d INTEGER DEFAULT 0,
+    tempo_t_p_median_secs REAL,
+    tempo_observation_ratio REAL,
+    tempo_observation_health TEXT,
+    tempo_temporal_failure TEXT,
+    tempo_confidence TEXT
 );
 
 CREATE TABLE IF NOT EXISTS alerts (
@@ -992,6 +997,16 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         )
         set_schema_version(conn, 21)
         current = 21
+    if current == 21 and target >= 22:
+        _ensure_columns(conn, "labelers", [
+            ("tempo_t_p_median_secs", "REAL"),
+            ("tempo_observation_ratio", "REAL"),
+            ("tempo_observation_health", "TEXT"),
+            ("tempo_temporal_failure", "TEXT"),
+            ("tempo_confidence", "TEXT"),
+        ])
+        set_schema_version(conn, 22)
+        current = 22
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
@@ -1162,7 +1177,12 @@ def update_labeler_derived(conn: sqlite3.Connection, labeler_did: str,
                            unique_targets_7d: int = 0,
                            unique_targets_30d: int = 0,
                            unique_subjects_7d: int = 0,
-                           unique_subjects_30d: int = 0) -> None:
+                           unique_subjects_30d: int = 0,
+                           tempo_t_p_median_secs: Optional[float] = None,
+                           tempo_observation_ratio: Optional[float] = None,
+                           tempo_observation_health: Optional[str] = None,
+                           tempo_temporal_failure: Optional[str] = None,
+                           tempo_confidence: Optional[str] = None) -> None:
     conn.execute(
         """
         UPDATE labelers SET
@@ -1175,7 +1195,9 @@ def update_labeler_derived(conn: sqlite3.Connection, labeler_did: str,
             auditability_risk_prev=?, inference_risk_prev=?, temporal_coherence_prev=?,
             events_7d=?, events_30d=?,
             unique_targets_7d=?, unique_targets_30d=?,
-            unique_subjects_7d=?, unique_subjects_30d=?
+            unique_subjects_7d=?, unique_subjects_30d=?,
+            tempo_t_p_median_secs=?, tempo_observation_ratio=?,
+            tempo_observation_health=?, tempo_temporal_failure=?, tempo_confidence=?
         WHERE labeler_did=?
         """,
         (regime_state, regime_reason_codes,
@@ -1188,6 +1210,8 @@ def update_labeler_derived(conn: sqlite3.Connection, labeler_did: str,
          events_7d, events_30d,
          unique_targets_7d, unique_targets_30d,
          unique_subjects_7d, unique_subjects_30d,
+         tempo_t_p_median_secs, tempo_observation_ratio,
+         tempo_observation_health, tempo_temporal_failure, tempo_confidence,
          labeler_did),
     )
 

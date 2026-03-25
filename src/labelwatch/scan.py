@@ -400,6 +400,14 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
         inf_risk = score_inference_risk(signals, effective_regime)
         coherence = score_temporal_coherence(signals, effective_regime)
 
+        # Paper 22: per-labeler tempo estimation
+        from .derive import estimate_labeler_tempo
+        tempo = estimate_labeler_tempo(
+            signals.interarrival_secs_7d,
+            last_event_age_secs=signals.dormancy_days * 86400,
+            probe_success_ratio=signals.probe_success_ratio_30d,
+        )
+
         # Build input hash for receipts
         input_hash = stable_json({
             "visibility_class": signals.visibility_class,
@@ -465,6 +473,11 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
             unique_targets_30d=reach.get("unique_targets_30d", 0),
             unique_subjects_7d=reach.get("unique_subjects_7d", 0),
             unique_subjects_30d=reach.get("unique_subjects_30d", 0),
+            tempo_t_p_median_secs=tempo.t_p_median_secs,
+            tempo_observation_ratio=tempo.observation_ratio,
+            tempo_observation_health=tempo.observation_health,
+            tempo_temporal_failure=tempo.temporal_failure,
+            tempo_confidence=tempo.confidence,
         )
 
 

@@ -119,6 +119,121 @@ def cadence_irregularity(interarrival_secs: Sequence[float]) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Paper 22: tempo estimation and observation health
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class TempoEstimate:
+    """Per-labeler natural cadence (T_p) and observation health."""
+    t_p_median_secs: Optional[float]  # median interarrival — the labeler's natural tempo
+    t_p_p25_secs: Optional[float]     # 25th percentile (fast bursts)
+    t_p_p75_secs: Optional[float]     # 75th percentile (slow periods)
+    sample_count: int                  # how many interarrivals observed
+    observation_ratio: Optional[float]  # T_o / T_p — how well we're keeping up
+    observation_health: str            # healthy / lagging / blind / insufficient_data
+    temporal_failure: Optional[str]    # stale_observation / cadence_drift / probe_instability / None
+    confidence: str = "low"            # high (100+ samples) / medium (20+) / low (<20)
+
+
+def _percentile(sorted_vals: list[float], p: float) -> float:
+    """Simple percentile on a sorted list."""
+    if not sorted_vals:
+        return 0.0
+    k = (len(sorted_vals) - 1) * p
+    f = int(k)
+    c = f + 1 if f + 1 < len(sorted_vals) else f
+    return sorted_vals[f] + (k - f) * (sorted_vals[c] - sorted_vals[f])
+
+
+def estimate_labeler_tempo(
+    interarrival_secs: Sequence[float],
+    last_event_age_secs: float = 0.0,
+    probe_success_ratio: float = 1.0,
+) -> TempoEstimate:
+    """Estimate a labeler's natural cadence and classify observation health.
+
+    T_p is the median interarrival time — robust to outliers and bursts.
+    T_o is how long since we last saw an event (last_event_age_secs).
+    The ratio T_o/T_p tells us whether we're keeping up with this labeler's
+    natural rhythm.
+
+    observation_health:
+      - healthy:  T_o/T_p < 3 (we're seeing events within ~3 natural cycles)
+      - lagging:  3 <= T_o/T_p < 10 (falling behind)
+      - blind:    T_o/T_p >= 10 (we've lost sight of this labeler)
+      - insufficient_data: not enough interarrivals to estimate
+
+    temporal_failure (Paper 22 failure typing):
+      - stale_observation: ratio is bad but probe is fine (our ingest is slow)
+      - cadence_drift: labeler's own tempo changed regime
+      - probe_instability: probe failures causing observability gaps
+      - None: no failure detected
+    """
+    vals = sorted(x for x in interarrival_secs if x and x > 0)
+    if len(vals) < 5:
+        return TempoEstimate(
+            t_p_median_secs=None, t_p_p25_secs=None, t_p_p75_secs=None,
+            sample_count=len(vals), observation_ratio=None,
+            observation_health="insufficient_data", temporal_failure=None,
+        )
+
+    median = _percentile(vals, 0.5)
+    p25 = _percentile(vals, 0.25)
+    p75 = _percentile(vals, 0.75)
+
+    # Observation ratio: how long since last event vs natural cadence
+    if median > 0 and last_event_age_secs > 0:
+        ratio = last_event_age_secs / median
+    else:
+        ratio = None
+
+    # Classify observation health
+    if ratio is None:
+        health = "insufficient_data"
+    elif ratio < 3.0:
+        health = "healthy"
+    elif ratio < 10.0:
+        health = "lagging"
+    else:
+        health = "blind"
+
+    # Temporal failure typing
+    failure = None
+    if health in ("lagging", "blind"):
+        if probe_success_ratio < 0.5:
+            failure = "probe_instability"
+        else:
+            failure = "stale_observation"
+
+    # Cadence drift: check if recent interarrivals diverge from the bulk
+    # (last 20% of samples vs overall median)
+    if len(vals) >= 20 and failure is None:
+        recent = vals[int(len(vals) * 0.8):]
+        recent_median = _percentile(recent, 0.5)
+        if median > 0 and recent_median / median > 3.0:
+            failure = "cadence_drift"
+
+    # Confidence: low-volume labelers need wider bands and more humility
+    if len(vals) >= 100:
+        confidence = "high"
+    elif len(vals) >= 20:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return TempoEstimate(
+        t_p_median_secs=round(median, 1),
+        t_p_p25_secs=round(p25, 1),
+        t_p_p75_secs=round(p75, 1),
+        sample_count=len(vals),
+        observation_ratio=round(ratio, 2) if ratio is not None else None,
+        observation_health=health,
+        temporal_failure=failure,
+        confidence=confidence,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Regime classification — priority cascade
 # ---------------------------------------------------------------------------
 
@@ -400,6 +515,28 @@ def score_temporal_coherence(s: LabelerSignals, regime: RegimeResult) -> ScoreRe
     elif irr >= 40:
         score -= 8
         reasons.append("cadence_irregularity_medium")
+
+    # Paper 22: tempo-relative observation health
+    tempo = estimate_labeler_tempo(
+        s.interarrival_secs_7d,
+        last_event_age_secs=s.dormancy_days * 86400,
+        probe_success_ratio=s.probe_success_ratio_30d,
+    )
+    if tempo.observation_health == "blind":
+        score -= 20
+        reasons.append("tempo_blind")
+    elif tempo.observation_health == "lagging":
+        score -= 10
+        reasons.append("tempo_lagging")
+    if tempo.temporal_failure == "cadence_drift":
+        score -= 10
+        reasons.append("tempo_cadence_drift")
+    elif tempo.temporal_failure == "probe_instability":
+        score -= 8
+        reasons.append("tempo_probe_instability")
+    elif tempo.temporal_failure == "stale_observation":
+        score -= 5
+        reasons.append("tempo_stale_observation")
 
     # Warmup
     warming, _ = _is_warming_up(s)
