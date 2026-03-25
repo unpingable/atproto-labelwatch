@@ -169,7 +169,10 @@ def estimate_labeler_tempo(
       - probe_instability: probe failures causing observability gaps
       - None: no failure detected
     """
-    vals = sorted(x for x in interarrival_secs if x and x > 0)
+    # Filter: sub-second interarrivals are batch artifacts, not real cadence.
+    # Also filter zeros and negatives.
+    MIN_MEANINGFUL_SECS = 1.0
+    vals = sorted(x for x in interarrival_secs if x and x >= MIN_MEANINGFUL_SECS)
     if len(vals) < 5:
         return TempoEstimate(
             t_p_median_secs=None, t_p_p25_secs=None, t_p_p75_secs=None,
