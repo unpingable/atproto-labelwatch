@@ -474,7 +474,7 @@ def cmd_assess(args) -> None:
         finding = format_fight_pair(conn, la, lb, edges)
         if finding is None:
             continue
-        posted = db.is_finding_posted(conn, finding.dedupe_key, args.cooldown_days)
+        posted = db.has_been_posted(conn, finding.dedupe_key, args.cooldown_days)
         assessment = assess_finding(conn, la, lb, edges, finding, posted)
         if args.tier and assessment.tier != args.tier:
             continue
