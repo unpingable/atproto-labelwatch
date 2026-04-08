@@ -8,6 +8,7 @@ from labelwatch.hosting import (
     attach_facts,
     classify_host,
     detach_facts,
+    diff_snapshots,
     extract_host_family,
     query_hosting_summary,
     query_labeled_targets_by_host,
@@ -406,3 +407,49 @@ class TestPopulationComparison:
             assert any("low coverage" in c for c in result["caveats"])
         finally:
             detach_facts(conn)
+
+
+class TestDiffSnapshots:
+    def test_detects_mover(self):
+        old = {
+            "timestamp": "2026-04-01T00:00:00Z",
+            "coverage_pct": 10.0,
+            "rows": [
+                {"host_family": "brid.gy", "delta_pct": 0.5, "labeled_accounts": 400, "overall_accounts": 1500},
+                {"host_family": "host.bsky.network", "delta_pct": 2.0, "labeled_accounts": 40000, "overall_accounts": 300000},
+            ],
+        }
+        new = {
+            "timestamp": "2026-04-08T00:00:00Z",
+            "coverage_pct": 13.8,
+            "rows": [
+                {"host_family": "brid.gy", "delta_pct": 1.2, "labeled_accounts": 620, "overall_accounts": 1580},
+                {"host_family": "host.bsky.network", "delta_pct": 2.8, "labeled_accounts": 42000, "overall_accounts": 300000},
+            ],
+        }
+        result = diff_snapshots(old, new, min_delta_change=0.5)
+        assert result["coverage_change"] == pytest.approx(3.8, abs=0.1)
+        assert len(result["movers"]) >= 1
+        brid = [m for m in result["movers"] if m["host_family"] == "brid.gy"]
+        assert len(brid) == 1
+        assert brid[0]["delta_change"] == pytest.approx(0.7, abs=0.1)
+        assert brid[0]["direction"] == "more skewed"
+
+    def test_detects_appeared(self):
+        old = {"timestamp": "t1", "coverage_pct": 10, "rows": []}
+        new = {
+            "timestamp": "t2", "coverage_pct": 12,
+            "rows": [{"host_family": "new.host", "delta_pct": 1.0, "labeled_accounts": 50, "overall_accounts": 100}],
+        }
+        result = diff_snapshots(old, new, min_delta_change=0.5)
+        assert len(result["appeared"]) == 1
+        assert result["appeared"][0]["host_family"] == "new.host"
+
+    def test_no_movers_when_stable(self):
+        snap = {
+            "timestamp": "t1", "coverage_pct": 13.0,
+            "rows": [{"host_family": "brid.gy", "delta_pct": 0.9, "labeled_accounts": 600, "overall_accounts": 1500}],
+        }
+        result = diff_snapshots(snap, snap)
+        assert len(result["movers"]) == 0
+        assert result["coverage_change"] == 0

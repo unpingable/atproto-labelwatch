@@ -574,6 +574,35 @@ def _print_drilldown(result: dict) -> None:
     print()
 
 
+def _print_snapshot_diff(result: dict) -> None:
+    """Print snapshot diff in human-readable form."""
+    print(f"\n=== Hosting Skew Diff ===\n")
+    print(f"  Old: {result['old_timestamp']}")
+    print(f"  New: {result['new_timestamp']}")
+    print(f"  Coverage: {result['old_coverage_pct']}% -> {result['new_coverage_pct']}% ({result['coverage_change']:+.1f}%)")
+
+    if result["movers"]:
+        print(f"\n  Movers (delta shifted >= 0.5pp):")
+        print(f"    {'Host Family':30s} {'Old Delta':>10s} {'New Delta':>10s} {'Change':>8s}  {'':20s}")
+        print(f"    {'─' * 30} {'─' * 10} {'─' * 10} {'─' * 8}  {'─' * 20}")
+        for m in result["movers"]:
+            print(f"    {m['host_family']:30s} {m['old_delta']:>+9.1f}% {m['new_delta']:>+9.1f}% {m['delta_change']:>+7.1f}%  {m['direction']}")
+    else:
+        print("\n  No significant movers.")
+
+    if result["appeared"]:
+        print(f"\n  Appeared:")
+        for a in result["appeared"]:
+            print(f"    {a['host_family']:30s} delta={a['delta_pct']:+.1f}% ({a['labeled_accounts']} labeled / {a['overall_accounts']} overall)")
+
+    if result["disappeared"]:
+        print(f"\n  Disappeared:")
+        for d in result["disappeared"]:
+            print(f"    {d['host_family']:30s} was delta={d['delta_pct']:+.1f}% ({d['labeled_accounts']} labeled / {d['overall_accounts']} overall)")
+
+    print()
+
+
 def _serialize_comparison(result: dict) -> dict:
     """Serialize population comparison result (with dataclass rows) to plain dict."""
     out = {k: v for k, v in result.items() if k != "rows"}
@@ -664,12 +693,27 @@ def _cmd_hosting_compare(conn, args, query_fn) -> None:
 
 
 def cmd_hosting_locus(args) -> None:
+    from .hosting import attach_facts, detach_facts, query_hosting_summary, query_labeled_targets_by_host, query_population_comparison, query_host_family_drilldown, diff_snapshots
+
+    # --diff doesn't need DB access
+    diff_paths = getattr(args, "diff", None)
+    if diff_paths:
+        old_path, new_path = diff_paths
+        with open(old_path) as f:
+            old_snap = json.load(f)
+        with open(new_path) as f:
+            new_snap = json.load(f)
+        result = diff_snapshots(old_snap, new_snap)
+        if args.json_output:
+            print(json.dumps(result, indent=2))
+        else:
+            _print_snapshot_diff(result)
+        return
+
     cfg = load_config(args.config)
     if args.db_path:
         cfg.db_path = args.db_path
     conn = db.connect(cfg.db_path, readonly=True)
-
-    from .hosting import attach_facts, detach_facts, query_hosting_summary, query_labeled_targets_by_host, query_population_comparison, query_host_family_drilldown
 
     facts_path = args.facts or cfg.driftwatch_facts_path
     if not attach_facts(conn, facts_path):
@@ -841,6 +885,7 @@ def main(argv: Optional[list] = None) -> None:
     p_hosting.add_argument("--compare", action="store_true", help="Compare labeled vs overall host distribution")
     p_hosting.add_argument("--drilldown", metavar="FAMILY", help="Drilldown into a specific host family (e.g. brid.gy, skystack.xyz)")
     p_hosting.add_argument("--snapshot-dir", dest="snapshot_dir", help="Save JSON snapshot to this directory for later diffing")
+    p_hosting.add_argument("--diff", nargs=2, metavar=("OLD", "NEW"), help="Diff two snapshot JSON files")
     p_hosting.set_defaults(func=cmd_hosting_locus)
 
     p_assess = sub.add_parser("assess", help="Assess findings for publication readiness")

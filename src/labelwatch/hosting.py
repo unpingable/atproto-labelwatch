@@ -592,6 +592,63 @@ def attach_facts(conn: sqlite3.Connection, facts_path: str) -> bool:
     return False
 
 
+def diff_snapshots(old: dict, new: dict, min_delta_change: float = 0.5) -> dict:
+    """Compare two serialized hosting-compare snapshots and surface what moved.
+
+    Returns dict with:
+      - old_timestamp, new_timestamp
+      - coverage_change: new - old coverage_pct
+      - movers: list of families where abs(delta) changed by >= min_delta_change
+      - appeared: families in new but not old
+      - disappeared: families in old but not new
+    """
+    old_by_family = {r["host_family"]: r for r in old.get("rows", [])}
+    new_by_family = {r["host_family"]: r for r in new.get("rows", [])}
+
+    all_families = set(old_by_family) | set(new_by_family)
+    appeared = sorted(set(new_by_family) - set(old_by_family))
+    disappeared = sorted(set(old_by_family) - set(new_by_family))
+
+    movers = []
+    for fam in sorted(all_families - set(appeared) - set(disappeared)):
+        o = old_by_family[fam]
+        n = new_by_family[fam]
+        delta_change = n["delta_pct"] - o["delta_pct"]
+        if abs(delta_change) >= min_delta_change:
+            movers.append({
+                "host_family": fam,
+                "old_delta": o["delta_pct"],
+                "new_delta": n["delta_pct"],
+                "delta_change": round(delta_change, 2),
+                "old_labeled": o["labeled_accounts"],
+                "new_labeled": n["labeled_accounts"],
+                "old_overall": o["overall_accounts"],
+                "new_overall": n["overall_accounts"],
+                "direction": "more skewed" if abs(n["delta_pct"]) > abs(o["delta_pct"]) else "less skewed",
+            })
+
+    movers.sort(key=lambda m: abs(m["delta_change"]), reverse=True)
+
+    return {
+        "old_timestamp": old.get("timestamp"),
+        "new_timestamp": new.get("timestamp"),
+        "old_coverage_pct": old.get("coverage_pct"),
+        "new_coverage_pct": new.get("coverage_pct"),
+        "coverage_change": round(
+            (new.get("coverage_pct", 0) or 0) - (old.get("coverage_pct", 0) or 0), 1
+        ),
+        "movers": movers,
+        "appeared": [
+            {"host_family": f, **{k: new_by_family[f][k] for k in ("delta_pct", "labeled_accounts", "overall_accounts")}}
+            for f in appeared if abs(new_by_family[f].get("delta_pct", 0)) >= min_delta_change
+        ],
+        "disappeared": [
+            {"host_family": f, **{k: old_by_family[f][k] for k in ("delta_pct", "labeled_accounts", "overall_accounts")}}
+            for f in disappeared if abs(old_by_family[f].get("delta_pct", 0)) >= min_delta_change
+        ],
+    }
+
+
 def detach_facts(conn: sqlite3.Connection) -> None:
     """Detach the drift database if attached."""
     try:
