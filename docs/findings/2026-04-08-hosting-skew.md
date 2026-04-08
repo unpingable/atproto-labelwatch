@@ -96,6 +96,28 @@ investigation. Two are likely real signals. Two need more observation.
 - Whether brid.gy over-representation tracks Bridgy Fed growth or labeler behavior
 - Rerun this comparison weekly; snapshot diffing now available via `--snapshot-dir`
 
+## Publication assessment (boundary fights)
+
+Ran `labelwatch assess` on 7d window. 159,688 contradiction edges filtered to
+**1 ready finding**:
+
+**moderation.blacksky.app vs skywatch.blue** — claim vs action disagreement.
+29 shared targets, JSD=1.0, 8 windows. Blacksky calls "mod-takedown",
+skywatch calls "inauthenticity" on the same accounts.
+
+**Decision: HOLD for one more window.**
+- skywatch.blue is degrading (~66% volume drop). Posting now risks freezing a
+  transient state into a governance claim.
+- Better as part of a bundle: blacksky structurally under-labeled at population
+  level + contradiction with a degrading labeler = sharper frame than "two
+  labelers disagree."
+- Recheck week of 2026-04-15. If skywatch is still emitting and the
+  contradiction persists, post with broader context.
+
+Note: the tier system only covers boundary fights. Hosting-locus findings
+(population-level skew, single-labeler dependencies) are a different kind
+of finding with no publication pathway yet.
+
 ## How to reproduce
 
 ```bash
