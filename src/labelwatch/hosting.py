@@ -335,6 +335,237 @@ def query_labeler_host_skew(
     return results
 
 
+@dataclass
+class HostDistributionRow:
+    host_family: str
+    provider_group: str
+    provider_label: str
+    is_major_provider: bool
+    overall_accounts: int
+    overall_pct: float
+    labeled_accounts: int
+    labeled_pct: float
+    delta_pct: float  # labeled_pct - overall_pct (positive = over-represented in labels)
+
+
+def query_population_comparison(
+    conn: sqlite3.Connection,
+    days: int = 7,
+    min_accounts: int = 5,
+) -> dict:
+    """Compare host distribution: labeled targets vs overall resolved population.
+
+    Returns dict with:
+      - overall_resolved: total resolved accounts in facts bridge
+      - labeled_resolved: labeled targets with resolved host (in time window)
+      - coverage_pct: labeled_resolved / overall_resolved
+      - rows: list of HostDistributionRow, sorted by abs(delta) descending
+      - caveats: list of strings about data quality
+    """
+    try:
+        conn.execute("SELECT 1 FROM drift.actor_identity_facts LIMIT 1")
+    except sqlite3.OperationalError:
+        return {"status": "no_facts", "caveats": ["facts.sqlite not attached"]}
+
+    cutoff = f"-{days} days"
+
+    # Overall population: all resolved accounts in facts bridge, grouped by host family
+    overall_rows = conn.execute("""
+        SELECT pds_host, COUNT(*) as n
+        FROM drift.actor_identity_facts
+        WHERE resolver_status = 'ok'
+          AND pds_host IS NOT NULL AND pds_host != ''
+        GROUP BY pds_host
+    """).fetchall()
+
+    # Labeled population: resolved targets in label_events within window
+    labeled_rows = conn.execute("""
+        SELECT aif.pds_host, COUNT(DISTINCT le.target_did) as n
+        FROM label_events le
+        JOIN drift.actor_identity_facts aif ON aif.did = le.target_did
+        WHERE le.target_did IS NOT NULL
+          AND le.ts >= datetime('now', ?)
+          AND aif.resolver_status = 'ok'
+          AND aif.pds_host IS NOT NULL AND aif.pds_host != ''
+        GROUP BY aif.pds_host
+    """, (cutoff,)).fetchall()
+
+    if not overall_rows:
+        return {"status": "no_data", "caveats": ["no resolved accounts in facts bridge"]}
+
+    # Roll up by host family + classify
+    from collections import defaultdict
+
+    def _rollup(raw_rows):
+        family_totals: dict[str, dict] = defaultdict(lambda: {"count": 0})
+        for pds_host, count in raw_rows:
+            family = extract_host_family(pds_host) or pds_host
+            group, label, is_major = classify_host(conn, pds_host, "ok")
+            key = family
+            bucket = family_totals[key]
+            bucket["count"] += count
+            bucket["group"] = group
+            bucket["label"] = label
+            bucket["is_major"] = is_major
+        return family_totals
+
+    overall_by_family = _rollup(overall_rows)
+    labeled_by_family = _rollup(labeled_rows)
+
+    overall_total = sum(b["count"] for b in overall_by_family.values())
+    labeled_total = sum(b["count"] for b in labeled_by_family.values())
+
+    if overall_total == 0:
+        return {"status": "no_data", "caveats": ["zero resolved accounts"]}
+
+    # Build comparison rows for all families with enough accounts in either population
+    all_families = set(overall_by_family) | set(labeled_by_family)
+    results = []
+    for family in all_families:
+        o = overall_by_family.get(family, {"count": 0, "group": "unknown", "label": "?", "is_major": False})
+        l = labeled_by_family.get(family, {"count": 0})
+        if o["count"] < min_accounts and l.get("count", 0) < min_accounts:
+            continue
+        o_pct = round(100.0 * o["count"] / overall_total, 2)
+        l_pct = round(100.0 * l.get("count", 0) / labeled_total, 2) if labeled_total else 0
+        results.append(HostDistributionRow(
+            host_family=family,
+            provider_group=o.get("group", "unknown"),
+            provider_label=o.get("label", "?"),
+            is_major_provider=o.get("is_major", False),
+            overall_accounts=o["count"],
+            overall_pct=o_pct,
+            labeled_accounts=l.get("count", 0),
+            labeled_pct=l_pct,
+            delta_pct=round(l_pct - o_pct, 2),
+        ))
+
+    results.sort(key=lambda r: abs(r.delta_pct), reverse=True)
+
+    # Caveats
+    caveats = []
+    coverage = round(100.0 * labeled_total / overall_total, 1) if overall_total else 0
+    if coverage < 10:
+        caveats.append(f"low coverage ({coverage}%) — labeled population is small relative to overall")
+    if overall_total < 50000:
+        caveats.append(f"overall population is {overall_total:,} — partial resolver coverage")
+
+    return {
+        "status": "ok",
+        "days": days,
+        "overall_resolved": overall_total,
+        "labeled_resolved": labeled_total,
+        "coverage_pct": coverage,
+        "rows": results,
+        "caveats": caveats,
+    }
+
+
+def query_host_family_drilldown(
+    conn: sqlite3.Connection,
+    host_family: str,
+    days: int = 7,
+) -> dict:
+    """Drilldown for a specific host family: which labelers label its accounts, activity over time.
+
+    Requires facts.sqlite attached as 'drift'.
+    """
+    try:
+        conn.execute("SELECT 1 FROM drift.actor_identity_facts LIMIT 1")
+    except sqlite3.OperationalError:
+        return {"status": "no_facts"}
+
+    cutoff_7d = f"-{days} days"
+    cutoff_30d = "-30 days"
+
+    # Find all PDS hosts in this family
+    all_hosts = conn.execute(
+        "SELECT DISTINCT pds_host FROM drift.actor_identity_facts "
+        "WHERE resolver_status = 'ok' AND pds_host IS NOT NULL"
+    ).fetchall()
+    family_hosts = [h[0] for h in all_hosts if extract_host_family(h[0]) == host_family]
+
+    if not family_hosts:
+        return {"status": "no_data", "host_family": host_family}
+
+    placeholders = ",".join("?" * len(family_hosts))
+
+    # Overall accounts on this host family
+    overall_count = conn.execute(
+        f"SELECT COUNT(*) FROM drift.actor_identity_facts "
+        f"WHERE pds_host IN ({placeholders}) AND resolver_status = 'ok'",
+        family_hosts,
+    ).fetchone()[0]
+
+    # Labeled targets in window, broken down by labeler
+    labeler_rows = conn.execute(f"""
+        SELECT le.labeler_did, COUNT(DISTINCT le.target_did) as targets
+        FROM label_events le
+        JOIN drift.actor_identity_facts aif ON aif.did = le.target_did
+        WHERE aif.pds_host IN ({placeholders})
+          AND aif.resolver_status = 'ok'
+          AND le.target_did IS NOT NULL
+          AND le.ts >= datetime('now', ?)
+        GROUP BY le.labeler_did
+        ORDER BY targets DESC
+    """, family_hosts + [cutoff_7d]).fetchall()
+
+    # Resolve labeler handles
+    labelers = []
+    for labeler_did, targets in labeler_rows:
+        handle_row = conn.execute(
+            "SELECT handle FROM labelers WHERE labeler_did = ?", (labeler_did,)
+        ).fetchone()
+        labelers.append({
+            "labeler_did": labeler_did,
+            "handle": handle_row[0] if handle_row else None,
+            "targets": targets,
+        })
+
+    # 7d vs 30d labeled target counts
+    labeled_7d = conn.execute(f"""
+        SELECT COUNT(DISTINCT le.target_did)
+        FROM label_events le
+        JOIN drift.actor_identity_facts aif ON aif.did = le.target_did
+        WHERE aif.pds_host IN ({placeholders})
+          AND aif.resolver_status = 'ok'
+          AND le.target_did IS NOT NULL
+          AND le.ts >= datetime('now', ?)
+    """, family_hosts + [cutoff_7d]).fetchone()[0]
+
+    labeled_30d = conn.execute(f"""
+        SELECT COUNT(DISTINCT le.target_did)
+        FROM label_events le
+        JOIN drift.actor_identity_facts aif ON aif.did = le.target_did
+        WHERE aif.pds_host IN ({placeholders})
+          AND aif.resolver_status = 'ok'
+          AND le.target_did IS NOT NULL
+          AND le.ts >= datetime('now', ?)
+    """, family_hosts + [cutoff_30d]).fetchone()[0]
+
+    # Concentration: does one labeler dominate?
+    total_labeled_targets = sum(l["targets"] for l in labelers)
+    top_labeler_share = (
+        round(100.0 * labelers[0]["targets"] / total_labeled_targets, 1)
+        if labelers and total_labeled_targets > 0
+        else 0
+    )
+
+    return {
+        "status": "ok",
+        "days": days,
+        "host_family": host_family,
+        "pds_hosts": family_hosts,
+        "overall_accounts": overall_count,
+        "labeled_targets_7d": labeled_7d,
+        "labeled_targets_30d": labeled_30d,
+        "labelers": labelers[:15],
+        "total_contributing_labelers": len(labelers),
+        "top_labeler_share_pct": top_labeler_share,
+        "concentrated": top_labeler_share > 70 and len(labelers) > 1,
+    }
+
+
 def attach_facts(conn: sqlite3.Connection, facts_path: str) -> bool:
     """Attach facts.sqlite as 'drift' database. Returns True on success."""
     if not facts_path:

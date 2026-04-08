@@ -546,14 +546,130 @@ def cmd_post(args) -> None:
     print(json.dumps(result if isinstance(result, dict) else {"uri": str(result.uri), "cid": str(result.cid)}, indent=2))
 
 
+def _print_drilldown(result: dict) -> None:
+    """Print host family drilldown in human-readable form."""
+    print(f"\n=== Host Family Drilldown: {result['host_family']} ===\n")
+    print(f"  PDS hosts:              {', '.join(result['pds_hosts'][:5])}")
+    if len(result["pds_hosts"]) > 5:
+        print(f"                          ... and {len(result['pds_hosts']) - 5} more")
+    print(f"  Overall accounts:       {result['overall_accounts']:,}")
+    days = result.get("days", 7)
+    print(f"  Labeled targets ({days}d):  {result['labeled_targets_7d']:,}")
+    print(f"  Labeled targets (30d):  {result['labeled_targets_30d']:,}")
+    print(f"  Contributing labelers:  {result['total_contributing_labelers']}")
+    print(f"  Top labeler share:      {result['top_labeler_share_pct']}%")
+    if result.get("concentrated"):
+        print(f"  ** CONCENTRATED: labeling dominated by one labeler **")
+
+    if result["labelers"]:
+        print(f"\n  Top labelers ({days}d):")
+        print(f"    {'Handle':40s} {'Targets':>8s} {'Share':>8s}")
+        print(f"    {'─' * 40} {'─' * 8} {'─' * 8}")
+        total = sum(l["targets"] for l in result["labelers"])
+        for l in result["labelers"]:
+            handle = l["handle"] or l["labeler_did"][:30]
+            share = round(100.0 * l["targets"] / total, 1) if total else 0
+            print(f"    {handle:40s} {l['targets']:>8,} {share:>7.1f}%")
+
+    print()
+
+
+def _serialize_comparison(result: dict) -> dict:
+    """Serialize population comparison result (with dataclass rows) to plain dict."""
+    out = {k: v for k, v in result.items() if k != "rows"}
+    out["timestamp"] = datetime.now(timezone.utc).isoformat()
+    out["rows"] = [
+        {
+            "host_family": r.host_family,
+            "provider_group": r.provider_group,
+            "provider_label": r.provider_label,
+            "is_major": r.is_major_provider,
+            "overall_accounts": r.overall_accounts,
+            "overall_pct": r.overall_pct,
+            "labeled_accounts": r.labeled_accounts,
+            "labeled_pct": r.labeled_pct,
+            "delta_pct": r.delta_pct,
+        }
+        for r in result["rows"]
+    ]
+    return out
+
+
+def _cmd_hosting_compare(conn, args, query_fn) -> None:
+    """Labeled-target vs overall host distribution comparison."""
+    result = query_fn(conn, days=args.days)
+    if result.get("status") != "ok":
+        print(f"ERROR: {result.get('status')} — {', '.join(result.get('caveats', []))}")
+        return
+
+    serialized = _serialize_comparison(result)
+
+    # Save snapshot if requested
+    snapshot_dir = getattr(args, "snapshot_dir", None)
+    if snapshot_dir:
+        os.makedirs(snapshot_dir, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        snap_path = os.path.join(snapshot_dir, f"hosting-compare-{ts}.json")
+        with open(snap_path, "w") as f:
+            json.dump(serialized, f, indent=2)
+        print(f"Snapshot saved: {snap_path}")
+
+    if args.json_output:
+        print(json.dumps(serialized, indent=2))
+        return
+
+    print(f"\n=== Host Distribution: Labeled vs Overall ({args.days}d) ===\n")
+    print(f"  Overall resolved accounts:  {result['overall_resolved']:,}")
+    print(f"  Labeled resolved accounts:  {result['labeled_resolved']:,}")
+    print(f"  Coverage:                   {result['coverage_pct']}%")
+
+    if result["caveats"]:
+        print()
+        for c in result["caveats"]:
+            print(f"  * {c}")
+
+    rows = result["rows"]
+    if not rows:
+        print("\n  No host families with enough data to compare.")
+        return
+
+    # Split into major and non-major for clearer reading
+    majors = [r for r in rows if r.is_major_provider]
+    non_majors = [r for r in rows if not r.is_major_provider]
+
+    def _print_table(section_rows):
+        print(f"    {'Host Family':30s} {'Overall':>8s} {'Labeled':>8s} {'Delta':>8s}  Direction")
+        print(f"    {'─' * 30} {'─' * 8} {'─' * 8} {'─' * 8}  {'─' * 20}")
+        for r in section_rows:
+            arrow = ""
+            if abs(r.delta_pct) >= 1.0:
+                arrow = ">>> OVER-LABELED" if r.delta_pct > 0 else "<<< UNDER-LABELED"
+            elif abs(r.delta_pct) >= 0.3:
+                arrow = "> over" if r.delta_pct > 0 else "< under"
+            print(f"    {r.host_family:30s} {r.overall_pct:>7.1f}% {r.labeled_pct:>7.1f}% {r.delta_pct:>+7.1f}%  {arrow}")
+
+    if majors:
+        print(f"\n  Major providers:")
+        _print_table(majors)
+
+    if non_majors:
+        # Sort non-majors by delta descending (most over-represented first)
+        non_majors.sort(key=lambda r: r.delta_pct, reverse=True)
+        print(f"\n  Non-major providers (sorted by skew):")
+        _print_table(non_majors[:25])
+        if len(non_majors) > 25:
+            print(f"    ... and {len(non_majors) - 25} more families")
+
+    print()
+
+
 def cmd_hosting_locus(args) -> None:
     cfg = load_config(args.config)
     if args.db_path:
         cfg.db_path = args.db_path
-    conn = db.connect(cfg.db_path)
-    db.init_db(conn)
+    conn = db.connect(cfg.db_path, readonly=True)
 
-    from .hosting import attach_facts, detach_facts, query_hosting_summary, query_labeled_targets_by_host
+    from .hosting import attach_facts, detach_facts, query_hosting_summary, query_labeled_targets_by_host, query_population_comparison, query_host_family_drilldown
 
     facts_path = args.facts or cfg.driftwatch_facts_path
     if not attach_facts(conn, facts_path):
@@ -561,6 +677,19 @@ def cmd_hosting_locus(args) -> None:
         return
 
     try:
+        drilldown_family = getattr(args, "drilldown", None)
+        if drilldown_family:
+            result = query_host_family_drilldown(conn, drilldown_family, days=args.days)
+            if args.json_output:
+                print(json.dumps(result, indent=2))
+            elif result.get("status") != "ok":
+                print(f"No data for host family '{drilldown_family}'")
+            else:
+                _print_drilldown(result)
+            return
+        if getattr(args, "compare", False):
+            _cmd_hosting_compare(conn, args, query_population_comparison)
+            return
         if args.json_output:
             summary = query_hosting_summary(conn, days=args.days)
             print(json.dumps(summary, indent=2))
@@ -709,6 +838,9 @@ def main(argv: Optional[list] = None) -> None:
     p_hosting.add_argument("--days", type=int, default=7, help="Lookback window in days")
     p_hosting.add_argument("--facts", help="Path to facts.sqlite (overrides config)")
     p_hosting.add_argument("--json", action="store_true", dest="json_output", help="Output as JSON")
+    p_hosting.add_argument("--compare", action="store_true", help="Compare labeled vs overall host distribution")
+    p_hosting.add_argument("--drilldown", metavar="FAMILY", help="Drilldown into a specific host family (e.g. brid.gy, skystack.xyz)")
+    p_hosting.add_argument("--snapshot-dir", dest="snapshot_dir", help="Save JSON snapshot to this directory for later diffing")
     p_hosting.set_defaults(func=cmd_hosting_locus)
 
     p_assess = sub.add_parser("assess", help="Assess findings for publication readiness")
