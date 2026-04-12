@@ -156,6 +156,11 @@ a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .hero { margin-bottom: 1.5rem; }
 .hero-pitch { font-size: 1.15rem; line-height: 1.5; margin-bottom: 0.5rem; }
+.about-prose { max-width: 42rem; line-height: 1.7; }
+.about-prose h2 { margin-top: 2rem; margin-bottom: 0.5rem; }
+.about-prose p { margin-bottom: 1rem; }
+.about-prose ul { margin-bottom: 1rem; padding-left: 1.5rem; }
+.about-prose li { margin-bottom: 0.3rem; }
 .explainer-details > summary { cursor: pointer; font-family: "Gill Sans", "Trebuchet MS", sans-serif; font-weight: bold; margin-bottom: 0.5rem; color: var(--fg-muted); }
 .explainer-details > summary:hover { color: var(--fg); }
 code { font-family: "Courier New", monospace; }
@@ -1620,101 +1625,94 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
     except Exception as exc:
         _log.warning("Boundary report section failed: %s", exc)
 
-    # --- Hosting Locus (preview) ---
+    # --- Labeler Ecosystem Health ---
     hosting_section = ""
     try:
-        from .hosting import attach_facts, detach_facts, query_hosting_summary
-        if facts_path and attach_facts(conn, facts_path):
-            try:
-                hl = query_hosting_summary(conn, days=7)
-                if hl.get("status") == "ok" and hl["total_labeled_targets"] > 0:
-                    hosting_cards = f"""
+        # Compute from already-loaded labelers list
+        non_test = [r for r in labelers if not r["likely_test_dev"]]
+        active = [r for r in non_test if (r["events_7d"] or 0) >= 10]
+        minimal = [r for r in non_test if 0 < (r["events_7d"] or 0) < 10]
+        silent = [r for r in non_test if (r["events_7d"] or 0) == 0]
+
+        active_count = len(active)
+        minimal_count = len(minimal)
+        silent_count = len(silent)
+        total_non_test = len(non_test)
+
+        # Volume concentration
+        total_vol_7d = sum(r["events_7d"] or 0 for r in non_test)
+        sorted_by_vol = sorted(non_test, key=lambda r: r["events_7d"] or 0, reverse=True)
+        top3_vol = sum(r["events_7d"] or 0 for r in sorted_by_vol[:3])
+        top3_pct = round(100.0 * top3_vol / total_vol_7d, 1) if total_vol_7d else 0
+
+        # Top labeler
+        top_labeler = sorted_by_vol[0] if sorted_by_vol else None
+        top_labeler_name = ""
+        top_labeler_pct = 0
+        if top_labeler and total_vol_7d:
+            top_labeler_name = escape(top_labeler["handle"] or top_labeler["labeler_did"][:25])
+            top_labeler_pct = round(100.0 * (top_labeler["events_7d"] or 0) / total_vol_7d, 1)
+
+        # Resilience: reference labelers + network-wide degradation
+        refs = [r for r in labelers if r["is_reference"]]
+        refs_healthy = [r for r in refs if (r["events_7d"] or 0) > 0 and r["regime_state"] in ("stable", "bursty")]
+        refs_dark = [r for r in refs if (r["events_7d"] or 0) == 0 or r["regime_state"] in ("degraded", "inactive", "ghost_declared")]
+        degraded_all = [r for r in non_test if r["regime_state"] in ("degraded",)]
+        inactive_all = [r for r in non_test if r["regime_state"] in ("inactive", "ghost_declared")]
+
+        # Reference labeler detail rows
+        ref_rows = []
+        for r in sorted(refs, key=lambda x: x["events_7d"] or 0, reverse=True):
+            name = escape(r["handle"] or r["labeler_did"][:25])
+            vol = f'{r["events_7d"] or 0:,}'
+            regime = r["regime_state"] or "unknown"
+            status_class = "badge-stable" if regime == "stable" else "badge-churn" if regime in ("degraded", "inactive") else "badge-burst"
+            ref_rows.append(f'<tr><td>{name}</td><td>{vol}</td>'
+                            f'<td><span class="badge {status_class}">{escape(regime)}</span></td></tr>')
+
+        ref_table = ""
+        if ref_rows:
+            ref_table = ('<table><thead><tr><th>Reference Labeler</th><th>Events (7d)</th>'
+                         '<th>Status</th></tr></thead><tbody>'
+                         + "".join(ref_rows) + '</tbody></table>')
+
+        # Resilience badge
+        if refs_dark:
+            resilience_badge = f'<span class="badge badge-churn">{len(refs_healthy)}/{len(refs)} healthy</span>'
+        else:
+            resilience_badge = f'<span class="badge badge-stable">{len(refs_healthy)}/{len(refs)} healthy</span>'
+
+        hosting_section = f"""
+<div class="boundary-section">
+<h2>Labeler Ecosystem Health</h2>
+<p class="labeler-context">How many independent interpreters remain, how concentrated
+is their output, and how much of the apparent diversity is already degraded.
+<a href="/claims" class="small">Methodology and claim log</a>.</p>
 <div class="grid">
   <div class="card health-metric">
-    <div class="label">Actor Coverage</div>
-    <div class="value">{hl['resolved_pct']}%</div>
-    <div class="small">{hl.get('resolved_target_dids', 0):,} / {hl.get('total_target_dids', 0):,} unique accounts</div>
+    <div class="label">Coverage</div>
+    <div class="value">{active_count}</div>
+    <div class="small">active labelers (7d)<br/>
+    {minimal_count} minimal, {silent_count} silent, {total_non_test} tracked</div>
   </div>
   <div class="card health-metric">
-    <div class="label">Event Coverage</div>
-    <div class="value">{hl.get('event_coverage_pct', 0)}%</div>
-    <div class="small">of label events have resolved targets</div>
+    <div class="label">Concentration</div>
+    <div class="value">{top3_pct}%</div>
+    <div class="small">of 7d label volume from top 3 labelers<br/>
+    {top_labeler_name}: {top_labeler_pct}%</div>
   </div>
   <div class="card health-metric">
-    <div class="label">Major Provider Share</div>
-    <div class="value">{hl['major_provider_pct']}%</div>
-    <div class="small">of resolved labeled targets</div>
-  </div>
-  <div class="card health-metric">
-    <div class="label">Non-major Host Families</div>
-    <div class="value">{hl['non_major_host_families']}</div>
-    <div class="small">{hl['non_major_targets']:,} targets across {hl['non_major_hosts']} hosts</div>
-  </div>
-  <div class="card health-metric">
-    <div class="label">Invalid Handles</div>
-    <div class="value">{hl['invalid_handle_count']:,}</div>
-    <div class="small">DID resolved, handle broken/absent</div>
+    <div class="label">Resilience</div>
+    <div class="value">{resilience_badge}</div>
+    <div class="small">reference labelers<br/>
+    {len(degraded_all)} degraded, {len(inactive_all)} inactive network-wide</div>
   </div>
 </div>
+{ref_table}
+</div>
 """
-                    host_rows = []
-                    for h in hl.get("top_non_major_hosts", [])[:15]:
-                        host_rows.append([
-                            escape(h["host"] or "unknown"),
-                            escape(h.get("family") or ""),
-                            escape(h["group"]),
-                            str(h["targets"]),
-                            str(h["accounts"]),
-                            str(h["invalid_handles"]) if h["invalid_handles"] else "",
-                        ])
-                    host_table = ""
-                    if host_rows:
-                        host_table = _table(
-                            ["Host", "Family", "Group", "Targets", "Accounts", "Bad Handles"],
-                            host_rows,
-                        )
-
-                    # Per-labeler host skew table
-                    skew_table = ""
-                    skew_data = hl.get("labeler_host_skew", [])
-                    baseline_pct = hl.get("non_major_baseline_pct", 0)
-                    if skew_data:
-                        skew_rows = []
-                        for s in skew_data[:15]:
-                            handle = s.get("handle") or s["labeler_did"][:20]
-                            delta = s["non_major_pct"] - baseline_pct
-                            delta_str = f"+{delta:.1f}" if delta >= 0 else f"{delta:.1f}"
-                            skew_rows.append([
-                                escape(handle),
-                                f"{s['total_resolved_targets']:,}",
-                                f"{s['non_major_pct']:.1f}%",
-                                delta_str,
-                            ])
-                        skew_table = (
-                            '<h3>Per-labeler hosting skew</h3>'
-                            '<p class="labeler-context">Non-major host share by labeler vs '
-                            f'baseline ({baseline_pct:.1f}%). Resolved targets only.</p>'
-                            + _table(
-                                ["Labeler", "Resolved Targets", "Non-major %", "vs Baseline"],
-                                skew_rows,
-                            )
-                        )
-
-                    hosting_section = (
-                        '<div class="boundary-section">'
-                        '<h2>Hosting Locus</h2>'
-                        '<p class="labeler-context">Different labelers don\u2019t just apply different standards \u2014 '
-                        'they observe different infrastructure populations. This section maps where labeled targets are hosted '
-                        'and how that distribution varies by labeler.</p>'
-                        '<p class="small" style="color:var(--amber,#c90)">'
-                        'Coverage is partial \u2014 based on resolved accounts, not the full labeled population.</p>'
-                        + hosting_cards + host_table + skew_table
-                        + '</div>'
-                    )
-            finally:
-                detach_facts(conn)
     except Exception as exc:
-        _log.warning("Hosting locus section failed: %s", exc)
+        _log.warning("Ecosystem health section failed: %s", exc)
 
     # --- Triage view with tabs ---
     tab_bar = f"""
@@ -1826,12 +1824,13 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
 <div class="hero">
   <p class="hero-pitch">Labelwatch is a moderation infrastructure observatory for Bluesky.
   It tracks {len(labelers)} independent labelers \u2014 their health, conflicts, taxonomy shear,
-  hosting locus, and structural behavior across the network.</p>
+  ecosystem concentration, and structural behavior across the network.</p>
   <p><strong>ClearSky and Skythread explain local symptoms. Labelwatch maps the governing machinery.</strong></p>
   <p class="small" style="opacity:0.8">This is not a block checker, a thread reconstruction tool, or a personal
   visibility debugger. For those, see <a href="https://clearsky.app/">ClearSky</a> or
   <a href="https://skythread.mackuba.eu/">Skythread</a>.
-  Labelwatch exists to make the moderation layer legible at system scale.</p>
+  Labelwatch exists to make the moderation layer legible at system scale.
+  <a href="/about">Why this exists</a>.</p>
 </div>
 """
 
@@ -1987,7 +1986,7 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
 
     # --- Assemble page with new hierarchy ---
     # Layer 1: Orientation (hero + what's happening + entry points)
-    # Layer 2: Findings (hosting locus, boundary conflicts)
+    # Layer 2: Findings (ecosystem health, boundary conflicts)
     # Layer 3: Reference labelers + full registry
     # Layer 4: Ops detail (collapsed)
     overview_html = _layout(
@@ -2030,6 +2029,16 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
     census_body += '<p><a href="index.html">Back to overview</a></p>'
     census_html = _layout("Labelwatch Census", census_body)
     _write(os.path.join(tmp_dir, "census.html"), census_html)
+
+    # --- Static prose pages (no DB dependency) ---
+    from .about import render_about_html
+    from .claims import render_claims_html
+    about_dir = os.path.join(tmp_dir, "about")
+    os.makedirs(about_dir, exist_ok=True)
+    _write(os.path.join(about_dir, "index.html"), render_about_html())
+    claims_dir = os.path.join(tmp_dir, "claims")
+    os.makedirs(claims_dir, exist_ok=True)
+    _write(os.path.join(claims_dir, "index.html"), render_claims_html())
 
     # --- Per-labeler pages ---
     anomaly_rules = {"label_rate_spike", "flip_flop", "target_concentration", "churn_index", "data_gap"}

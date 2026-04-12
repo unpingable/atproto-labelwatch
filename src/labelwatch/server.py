@@ -231,6 +231,10 @@ class ClimateHandler(BaseHTTPRequestHandler):
         try:
             if path == "/health":
                 self._handle_health()
+            elif path == "/about":
+                self._handle_about()
+            elif path == "/claims":
+                self._handle_claims()
             elif path == "/v1/registry":
                 self._handle_registry(query)
             elif "/v1/climate/" in path:
@@ -256,6 +260,16 @@ class ClimateHandler(BaseHTTPRequestHandler):
             msg = self.stats.flush_if_due()
             if msg:
                 logger.info(msg)
+
+    def _handle_about(self):
+        from .about import render_about_html
+        html = render_about_html()
+        self._send_html(200, html.encode("utf-8"))
+
+    def _handle_claims(self):
+        from .claims import render_claims_html
+        html = render_claims_html()
+        self._send_html(200, html.encode("utf-8"))
 
     def _handle_health(self):
         from .read_health import get_tracker
