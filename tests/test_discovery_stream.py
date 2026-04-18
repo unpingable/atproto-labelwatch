@@ -442,14 +442,16 @@ def test_load_known_labelers():
 
 @pytest.mark.asyncio
 async def test_worker_db_error_sets_fatal():
-    """DB write errors in the worker must set fatal_error, not silently drop."""
+    """Non-busy DB errors (e.g., schema mismatch) must set fatal_error, not silently drop."""
     conn = _make_db()
     known = set()
     stats = _Stats()
     fatal_error = asyncio.Event()
     queue: asyncio.Queue = asyncio.Queue(maxsize=10)
 
-    # Drop the discovery_events table to force a DB error on insert
+    # Drop the discovery_events table to force a "no such table" OperationalError
+    # on insert. This is NOT a busy/locked error — it's genuine schema corruption,
+    # so it should be fatal.
     conn.execute("DROP TABLE discovery_events")
     conn.commit()
 
@@ -472,4 +474,107 @@ async def test_worker_db_error_sets_fatal():
     await queue.join()
     # Worker should have set fatal_error and returned
     assert fatal_error.is_set()
+    task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_worker_busy_retries_then_drops_without_fatal(monkeypatch):
+    """SQLITE_BUSY/LOCKED in worker is recoverable — bounded retry, drop on
+    exhaustion, never set fatal_error. Worker must keep running.
+    """
+    import sqlite3 as _sqlite3
+    from labelwatch import discovery_stream as _ds
+
+    conn = _make_db()
+    known = set()
+    stats = _Stats()
+    fatal_error = asyncio.Event()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=10)
+
+    # Make backoff effectively instant so the test runs fast
+    monkeypatch.setattr(_ds, "_WORKER_BUSY_BACKOFF_CAP_SEC", 0)
+    monkeypatch.setattr(_ds, "_WORKER_BUSY_RETRY_MAX", 2)
+
+    async def fast_sleep(_):
+        return
+    monkeypatch.setattr(_ds.asyncio, "sleep", fast_sleep)
+
+    # Force every _handle_discovery call to raise SQLITE_BUSY-style error
+    async def always_busy(*args, **kwargs):
+        raise _sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(_ds, "_handle_discovery", always_busy)
+
+    queue.put_nowait({
+        "kind": "discovery",
+        "did": "did:plc:contended",
+        "operation": "delete",
+        "commit": {"cid": "bafyreibusy", "rev": "revbusy"},
+        "time_us": 1700000000000000,
+    })
+
+    task = asyncio.create_task(_worker(conn, queue, known, stats, fatal_error))
+    await asyncio.wait_for(queue.join(), timeout=5)
+
+    # Item exhausted retries and was dropped
+    assert stats.errors == 1
+    # But fatal_error was NOT set — the worker survives transient contention
+    assert not fatal_error.is_set()
+    # Worker is still alive, ready for the next item
+    assert not task.done()
+    task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_worker_busy_then_success_continues(monkeypatch):
+    """If busy clears within the retry budget, item is processed normally."""
+    import sqlite3 as _sqlite3
+    from labelwatch import discovery_stream as _ds
+
+    conn = _make_db()
+    known = set()
+    stats = _Stats()
+    fatal_error = asyncio.Event()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=10)
+
+    monkeypatch.setattr(_ds, "_WORKER_BUSY_BACKOFF_CAP_SEC", 0)
+    monkeypatch.setattr(_ds, "_WORKER_BUSY_RETRY_MAX", 5)
+
+    async def fast_sleep(_):
+        return
+    monkeypatch.setattr(_ds.asyncio, "sleep", fast_sleep)
+
+    # Raise busy twice, then succeed
+    call_count = {"n": 0}
+    real_handle = _ds._handle_discovery
+
+    async def flaky(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            raise _sqlite3.OperationalError("database is locked")
+        return await real_handle(*args, **kwargs)
+    monkeypatch.setattr(_ds, "_handle_discovery", flaky)
+
+    queue.put_nowait({
+        "kind": "discovery",
+        "did": "did:plc:flaky",
+        "operation": "delete",
+        "commit": {
+            "collection": "app.bsky.labeler.service",
+            "rkey": "self",
+            "operation": "delete",
+            "cid": "bafyreiflaky",
+            "rev": "revflaky",
+        },
+        "time_us": 1700000000000000,
+    })
+
+    task = asyncio.create_task(_worker(conn, queue, known, stats, fatal_error))
+    await asyncio.wait_for(queue.join(), timeout=5)
+
+    # Three calls: 2 busy, 1 success
+    assert call_count["n"] == 3
+    # No errors counted (the item ultimately succeeded)
+    assert stats.errors == 0
+    assert not fatal_error.is_set()
+    assert not task.done()
     task.cancel()

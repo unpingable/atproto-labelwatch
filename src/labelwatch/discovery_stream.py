@@ -6,7 +6,11 @@ ingest/scan loop for failure isolation.
 
 Architecture invariants:
   - Single worker task does ALL DB writes (single-writer guarantee).
-  - DB write errors are fatal (re-raised to crash the process via fatal_error).
+  - SQLITE_BUSY/SQLITE_LOCKED in the worker is recoverable contention, not a
+    write failure: bounded retry with exponential backoff, drop the item and
+    continue if exhausted. Other sqlite3.Error is fatal (re-raised via
+    fatal_error). "Crash loud" applies to genuine corruption/IO/schema
+    errors, not to losing a brief race for the write lock.
   - Backstop loop serialized with asyncio.Lock to prevent overlap.
   - Dedupe key is (labeler_did, commit_rev, operation) — anchored on commit
     identity, not time_us, so reconnect rewind can't create duplicates even
@@ -115,27 +119,51 @@ def _resolve_did_sync(did: str, timeout: int = 10) -> dict:
     return result
 
 
+_WORKER_BUSY_RETRY_MAX = 5
+_WORKER_BUSY_BACKOFF_CAP_SEC = 60
+
+
 async def _worker(conn, queue: asyncio.Queue, known_labelers: set,
                   stats: _Stats, fatal_error: asyncio.Event):
     """Process work items: DID resolution + DB writes.
 
     This is the ONLY task that writes to the DB (single-writer guarantee).
-    DB write errors set fatal_error to crash the process — "dead but
-    optimistic" is the worst failure mode.
+    SQLITE_BUSY/SQLITE_LOCKED is treated as recoverable contention with
+    bounded retry. Other sqlite3 errors set fatal_error — "dead but
+    optimistic" remains the worst failure mode for genuine corruption.
     """
     while True:
         item = await queue.get()
         try:
-            kind = item.get("kind")
-            if kind == "discovery":
-                await _handle_discovery(conn, item, known_labelers, stats)
-            elif kind == "identity_refresh":
-                await _handle_identity_refresh(conn, item, stats)
-        except sqlite3.Error as e:
-            # DB write failure is FATAL — don't silently drop and keep running.
-            log.critical("DB write error in worker, forcing exit: %s", e)
-            fatal_error.set()
-            return
+            for retry in range(_WORKER_BUSY_RETRY_MAX + 1):
+                try:
+                    kind = item.get("kind")
+                    if kind == "discovery":
+                        await _handle_discovery(conn, item, known_labelers, stats)
+                    elif kind == "identity_refresh":
+                        await _handle_identity_refresh(conn, item, stats)
+                    break  # success
+                except sqlite3.OperationalError as e:
+                    err_str = str(e).lower()
+                    if "locked" in err_str or "busy" in err_str:
+                        if retry == _WORKER_BUSY_RETRY_MAX:
+                            stats.errors += 1
+                            log.error("Dropping %s after %d busy retries: %s",
+                                      item.get("kind"), retry, e)
+                            break
+                        delay = min(2 ** retry, _WORKER_BUSY_BACKOFF_CAP_SEC) \
+                            + random.uniform(0, 1)
+                        log.warning("DB busy/locked in worker, retrying in %.1fs (%d/%d): %s",
+                                    delay, retry + 1, _WORKER_BUSY_RETRY_MAX, e)
+                        await asyncio.sleep(delay)
+                        continue
+                    log.critical("DB OperationalError in worker, forcing exit: %s", e)
+                    fatal_error.set()
+                    return
+                except sqlite3.Error as e:
+                    log.critical("DB error in worker, forcing exit: %s", e)
+                    fatal_error.set()
+                    return
         except Exception:
             stats.errors += 1
             log.exception("Worker error processing %s", item.get("kind"))
@@ -363,17 +391,18 @@ async def run(db_path: str, backstop_interval_hours: int = 6):
     log.info("Loaded %d known labelers", len(known_labelers))
 
     # Record startup — exponential backoff + jitter if main process holds
-    # a write lock during batch ingest. Bounded: fail hard after ~60s total
-    # rather than limp half-initialized.
-    for _attempt in range(7):
+    # a write lock during batch ingest. Total budget ~3 min: must exceed the
+    # main process's busy_timeout (120s) plus typical run_derive duration so
+    # we don't give up before the natural lock window arrives.
+    for _attempt in range(10):
         try:
             db.set_meta(conn, "jetstream_discovery_started_at", format_ts(now_utc()))
             conn.commit()
             break
         except sqlite3.OperationalError as e:
-            if "locked" in str(e) and _attempt < 6:
-                delay = min(0.5 * (2 ** _attempt), 16) + random.uniform(0, 1)
-                log.warning("DB locked during startup, retrying in %.1fs (%d/6)", delay, _attempt + 1)
+            if "locked" in str(e) and _attempt < 9:
+                delay = min(0.5 * (2 ** _attempt), 30) + random.uniform(0, 1)
+                log.warning("DB locked during startup, retrying in %.1fs (%d/10)", delay, _attempt + 1)
                 await asyncio.sleep(delay)
             else:
                 raise
