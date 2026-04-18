@@ -1,0 +1,26 @@
+[Unit]
+Description=labelwatch lock contention incident capture
+Documentation=case:labelwatch-lock-contention-2026-04-14
+After=labelwatch.service labelwatch-discovery.service
+# Don't require those units — we want to keep running even if they flap
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/labelwatch-lock-watcher.sh
+Restart=always
+RestartSec=5
+
+# Needs to attach to other processes (py-spy) and read journald
+User=root
+Group=root
+
+# Light resource limits so the watcher itself can't become the problem
+MemoryMax=256M
+CPUQuota=20%
+
+# Captures go to /var/log/labelwatch-lock-traces (root-owned)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
