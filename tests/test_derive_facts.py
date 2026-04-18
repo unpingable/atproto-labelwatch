@@ -303,6 +303,146 @@ def test_attach_retry(tmp_path):
 
 
 # -------------------------------------------------------------------
+# 7b. Drift attach window is bounded — DETACH happens before main JOIN
+# -------------------------------------------------------------------
+def test_drift_detached_before_main_join(tmp_path):
+    """The slow INSERT INTO derived_label_fp must run AFTER drift is detached.
+
+    This is the property that prevents pinning facts.sqlite across a
+    driftwatch facts-export rotation. We verify it by recording the order
+    of conn.execute() calls and asserting DETACH precedes the INSERT.
+    """
+    lw_path = str(tmp_path / "labelwatch.db")
+    conn = db.connect(lw_path)
+    _init_labelwatch_db(conn)
+
+    facts_path = str(tmp_path / "facts.sqlite")
+    now = int(time.time())
+    _make_facts(facts_path, [
+        ("at://did:plc:user/app.bsky.feed.post/p1", "fp1", now - 10, 1),
+    ])
+    _insert_label_event(conn, "did:plc:lab", "at://did:plc:user/app.bsky.feed.post/p1",
+                        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)))
+
+    config = Config(driftwatch_facts_path=facts_path)
+
+    # set_trace_callback fires once per SQL statement executed on this conn.
+    # We use it to record the order of operations.
+    sql_log: list[str] = []
+    conn.set_trace_callback(lambda s: sql_log.append(s))
+    try:
+        _sync_driftwatch_facts(conn, config)
+    finally:
+        conn.set_trace_callback(None)
+
+    detach_idx = next(
+        (i for i, s in enumerate(sql_log) if "DETACH DATABASE drift" in s),
+        None,
+    )
+    main_insert_idx = next(
+        (i for i, s in enumerate(sql_log)
+         if "INSERT OR REPLACE INTO derived_label_fp" in s),
+        None,
+    )
+
+    assert detach_idx is not None, f"DETACH never happened. Log: {sql_log}"
+    assert main_insert_idx is not None, f"main INSERT never ran. Log: {sql_log}"
+    assert detach_idx < main_insert_idx, (
+        f"DETACH (at {detach_idx}) must precede main INSERT (at "
+        f"{main_insert_idx}) so the slow join doesn't pin facts.sqlite."
+    )
+
+    # And verify it actually produced the expected derived row
+    rows = conn.execute("SELECT COUNT(*) AS c FROM derived_label_fp").fetchone()
+    assert rows["c"] == 1
+
+
+# -------------------------------------------------------------------
+# 7c. Function survives facts.sqlite being deleted after snapshot
+# -------------------------------------------------------------------
+def test_facts_file_deleted_after_snapshot(tmp_path):
+    """If facts.sqlite is unlinked AFTER the snapshot but BEFORE the main
+    JOIN completes, _sync_driftwatch_facts must still complete successfully
+    because the snapshot is in a local temp table and drift is already detached.
+
+    This simulates a driftwatch facts-export rotation racing the labelwatch
+    derive pass.
+    """
+    lw_path = str(tmp_path / "labelwatch.db")
+    conn = db.connect(lw_path)
+    _init_labelwatch_db(conn)
+
+    facts_path = str(tmp_path / "facts.sqlite")
+    now = int(time.time())
+    _make_facts(facts_path, [
+        ("at://did:plc:user/app.bsky.feed.post/p1", "fp1", now - 10, 1),
+        ("at://did:plc:user/app.bsky.feed.post/p2", "fp2", now - 20, 2),
+    ])
+    _insert_label_event(conn, "did:plc:lab", "at://did:plc:user/app.bsky.feed.post/p1",
+                        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)))
+    _insert_label_event(conn, "did:plc:lab", "at://did:plc:user/app.bsky.feed.post/p2",
+                        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)))
+
+    config = Config(driftwatch_facts_path=facts_path)
+
+    # set_trace_callback fires after each statement executes. When we see
+    # DETACH, simulate driftwatch's facts-export rotating the file by
+    # unlinking it. The subsequent local JOIN should still complete because
+    # it reads from the local snapshot temp table, not from facts.sqlite.
+    def on_sql(s: str) -> None:
+        if "DETACH DATABASE drift" in s and os.path.exists(facts_path):
+            os.unlink(facts_path)
+
+    conn.set_trace_callback(on_sql)
+    try:
+        _sync_driftwatch_facts(conn, config)
+    finally:
+        conn.set_trace_callback(None)
+
+    # Both derived rows should exist — the JOIN ran from the local snapshot,
+    # not from the (now-deleted) facts.sqlite
+    rows = conn.execute(
+        "SELECT label_event_id, claim_fingerprint FROM derived_label_fp ORDER BY label_event_id"
+    ).fetchall()
+    assert len(rows) == 2
+    assert {r["claim_fingerprint"] for r in rows} == {"fp1", "fp2"}
+
+
+# -------------------------------------------------------------------
+# 7d. Temp tables don't leak across calls
+# -------------------------------------------------------------------
+def test_temp_tables_cleaned_up(tmp_path):
+    """After _sync_driftwatch_facts returns, the per-call temp tables
+    should not exist (they'd leak memory/disk across calls otherwise)."""
+    lw_path = str(tmp_path / "labelwatch.db")
+    conn = db.connect(lw_path)
+    _init_labelwatch_db(conn)
+
+    facts_path = str(tmp_path / "facts.sqlite")
+    now = int(time.time())
+    _make_facts(facts_path, [
+        ("at://did:plc:user/app.bsky.feed.post/p1", "fp1", now - 10, 1),
+    ])
+    _insert_label_event(conn, "did:plc:lab", "at://did:plc:user/app.bsky.feed.post/p1",
+                        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)))
+
+    config = Config(driftwatch_facts_path=facts_path)
+    _sync_driftwatch_facts(conn, config)
+
+    temp_tables = {
+        r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_temp_master WHERE type='table'"
+        ).fetchall()
+    }
+    assert "tmp_drift_fp" not in temp_tables, "tmp_drift_fp leaked"
+    assert "tmp_candidate_uris" not in temp_tables, "tmp_candidate_uris leaked"
+
+    # And drift should not be attached
+    attached = {r[1] for r in conn.execute("PRAGMA database_list").fetchall()}
+    assert "drift" not in attached, "drift left attached after call"
+
+
+# -------------------------------------------------------------------
 # 8. ATTACH is read-only (file:...?mode=ro)
 # -------------------------------------------------------------------
 def test_attach_readonly(tmp_path):

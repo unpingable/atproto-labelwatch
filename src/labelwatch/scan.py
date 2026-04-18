@@ -612,7 +612,18 @@ _log = logging.getLogger("labelwatch.scan")
 
 
 def _sync_driftwatch_facts(conn, config: Config) -> None:
-    """Join label_events with driftwatch facts sidecar to compute lag_sec_claimed."""
+    """Join label_events with driftwatch facts sidecar to compute lag_sec_claimed.
+
+    The drift attach is held only for the snapshot copy of needed fingerprint
+    rows into a local temp table; the (potentially slow) join into
+    derived_label_fp happens entirely within labelwatch after DETACH. This
+    prevents pinning driftwatch's facts.sqlite inode across a facts-export
+    rotation, which previously caused multi-GB orphan-file disk pressure
+    when the join took longer than the rotation interval.
+
+    Acceptance: drift attach duration should be on the order of seconds,
+    not minutes. Logged on every call as 'facts_sync attach_ms=...'.
+    """
     path = config.driftwatch_facts_path
     if not path or not os.path.exists(path):
         return
@@ -621,6 +632,41 @@ def _sync_driftwatch_facts(conn, config: Config) -> None:
     if "'" in path or ";" in path:
         _log.warning("driftwatch_facts_path contains unsafe characters, skipping")
         return
+
+    hwm_row = conn.execute(
+        "SELECT COALESCE(MAX(label_event_id), 0) FROM derived_label_fp"
+    ).fetchone()
+    hwm = hwm_row[0] if hwm_row else 0
+
+    # 72h overlap floor as epoch
+    overlap_epoch = int(time.time()) - (72 * 3600)
+
+    # Phase 1 (drift NOT yet attached): materialize candidate URI set into an
+    # indexed local temp table. Doing this before ATTACH means the drift
+    # attach window doesn't have to contain a label_events scan.
+    conn.execute("DROP TABLE IF EXISTS tmp_candidate_uris")
+    conn.execute("DROP TABLE IF EXISTS tmp_drift_fp")
+    conn.execute("""
+        CREATE TEMP TABLE tmp_candidate_uris AS
+        SELECT DISTINCT uri FROM label_events
+        WHERE (id > ? OR CAST(strftime('%s', ts) AS INTEGER) >= ?)
+          AND uri LIKE 'at://%/app.bsky.feed.post/%'
+    """, (hwm, overlap_epoch))
+    conn.execute(
+        "CREATE INDEX tmp_candidate_uris_uri_idx ON tmp_candidate_uris(uri)"
+    )
+
+    candidate_count = conn.execute(
+        "SELECT COUNT(*) FROM tmp_candidate_uris"
+    ).fetchone()[0]
+    if candidate_count == 0:
+        conn.execute("DROP TABLE IF EXISTS tmp_candidate_uris")
+        return
+
+    # Phase 2 (drift attached, briefly): snapshot the matching fingerprint
+    # rows into another local temp table, then DETACH before doing any
+    # downstream work.
+    attach_t0 = time.monotonic()
 
     # Retry once on ATTACH failure (rename race window)
     for attempt in range(2):
@@ -631,35 +677,67 @@ def _sync_driftwatch_facts(conn, config: Config) -> None:
             if attempt == 0:
                 time.sleep(1)
                 continue
+            conn.execute("DROP TABLE IF EXISTS tmp_candidate_uris")
             raise
 
+    snapshot_count = 0
     try:
-        hwm_row = conn.execute(
-            "SELECT COALESCE(MAX(label_event_id), 0) FROM derived_label_fp"
-        ).fetchone()
-        hwm = hwm_row[0] if hwm_row else 0
+        conn.execute("""
+            CREATE TEMP TABLE tmp_drift_fp AS
+            SELECT uf.post_uri, uf.fingerprint, uf.created_epoch
+            FROM drift.uri_fingerprint uf
+            JOIN tmp_candidate_uris c ON c.uri = uf.post_uri
+        """)
+        snapshot_count = conn.execute(
+            "SELECT COUNT(*) FROM tmp_drift_fp"
+        ).fetchone()[0]
+    finally:
+        # End the implicit read transaction before DETACH. CREATE TEMP TABLE
+        # AS SELECT opens an implicit read transaction against drift; Python
+        # sqlite3 does not auto-commit it. DETACH would fail with "database
+        # drift is locked" and (worse) leave the FD open — a guaranteed
+        # inode pin if driftwatch rotates facts.sqlite during this window.
+        try:
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            _log.warning("commit before DETACH failed: %s", e)
+        try:
+            conn.execute("DETACH DATABASE drift")
+        except sqlite3.OperationalError as e:
+            _log.warning("DETACH drift failed: %s", e)
 
-        # 72h overlap floor as epoch
-        overlap_epoch = int(time.time()) - (72 * 3600)
+    attach_ms = int((time.monotonic() - attach_t0) * 1000)
 
+    # Phase 3 (drift detached): the slow join happens entirely within
+    # labelwatch. drift's facts.sqlite can be rotated out from under us
+    # at any point now without pinning the old inode.
+    join_t0 = time.monotonic()
+    try:
         conn.execute("""
             INSERT OR REPLACE INTO derived_label_fp
                 (label_event_id, labeler_did, uri, label_ts,
                  claim_fingerprint, post_created_ts, lag_sec_claimed)
             SELECT
                 le.id, le.labeler_did, le.uri, le.ts,
-                uf.fingerprint,
-                datetime(uf.created_epoch, 'unixepoch'),
-                CAST(strftime('%s', le.ts) AS INTEGER) - uf.created_epoch
+                tdf.fingerprint,
+                datetime(tdf.created_epoch, 'unixepoch'),
+                CAST(strftime('%s', le.ts) AS INTEGER) - tdf.created_epoch
             FROM label_events le
-            JOIN drift.uri_fingerprint uf ON le.uri = uf.post_uri
+            JOIN tmp_drift_fp tdf ON le.uri = tdf.post_uri
             WHERE (le.id > ?
                    OR CAST(strftime('%s', le.ts) AS INTEGER) >= ?)
               AND le.uri LIKE 'at://%/app.bsky.feed.post/%'
         """, (hwm, overlap_epoch))
         conn.commit()
     finally:
-        conn.execute("DETACH DATABASE drift")
+        conn.execute("DROP TABLE IF EXISTS tmp_drift_fp")
+        conn.execute("DROP TABLE IF EXISTS tmp_candidate_uris")
+
+    join_ms = int((time.monotonic() - join_t0) * 1000)
+    _log.info(
+        "facts_sync candidates=%d snapshot=%d attach_ms=%d join_ms=%d",
+        candidate_count, snapshot_count, attach_ms, join_ms,
+    )
 
 
 def _compute_labeler_lag_7d(conn) -> None:
@@ -1186,3 +1264,23 @@ def run_derive(conn, config: Config, now: datetime | None = None) -> None:
             _log.warning("boundary pass failed: %s", exc)
 
     conn.commit()
+
+    # WAL checkpoint with TRUNCATE — reclaim WAL disk space after the batch.
+    # run_derive does retention-style deletes across many sub-operations; the
+    # WAL can grow past what passive auto-checkpoint reclaims, especially if
+    # another connection (api, discovery) holds a read snapshot. TRUNCATE
+    # additionally shrinks the WAL file.
+    #
+    # Best-effort: busy=1 means a reader blocked us; next pass will try again.
+    # Log only when something interesting happens (busy or partial checkpoint)
+    # to avoid spamming the journal on healthy passes.
+    try:
+        result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        busy, log_pages, checkpointed = result[0], result[1], result[2]
+        if busy or (log_pages and log_pages != checkpointed):
+            _log.info(
+                "wal_checkpoint: busy=%d log=%d checkpointed=%d",
+                busy, log_pages, checkpointed,
+            )
+    except sqlite3.OperationalError as e:
+        _log.warning("wal_checkpoint(TRUNCATE) failed: %s", e)
