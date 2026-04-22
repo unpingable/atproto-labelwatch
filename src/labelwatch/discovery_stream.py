@@ -47,6 +47,11 @@ CURSOR_SAVE_INTERVAL = 60  # seconds
 CURSOR_REWIND_US = 3_000_000  # 3s rewind on reconnect
 IDENTITY_COOLDOWN = 1800  # 30 min cooldown per DID for identity refreshes
 STATS_INTERVAL = 60  # seconds
+# WAL read-mark refresh. In WAL mode, a connection that has seen a recent
+# SELECT or DML pins the WAL at its read-lock position until the next
+# transaction. Long-lived connections that go idle between writes can
+# starve passive checkpoints. See docs/OPS_HAZARDS.md (2026-04-22 incident).
+WAL_REFRESH_INTERVAL = 600  # seconds — rollback + passive checkpoint
 
 
 def _build_ws_url(cursor: Optional[int] = None) -> str:
@@ -354,6 +359,30 @@ async def _stream_loop(conn, work_queue: asyncio.Queue,
         conn.commit()
 
 
+async def _wal_refresh_loop(conn, interval: int = WAL_REFRESH_INTERVAL):
+    """Periodic rollback + passive checkpoint to keep the WAL from getting pinned.
+
+    Why: this daemon holds one sqlite3 connection for its entire lifetime and
+    writes infrequently (labeler discoveries are rare). Between writes, any
+    lingering implicit read transaction holds a WAL read-lock at an old
+    position, which starves passive checkpoints from every other connection
+    in the system. On 2026-04-22 this caused a 38GB WAL against a 26GB DB
+    and a 2+ hour post-restart regen hang.
+
+    `rollback()` clears any implicit read txn owned by this connection. The
+    PASSIVE checkpoint additionally advances this connection's read mark to
+    the current end of WAL, so subsequent checkpoints (ours or the nightly
+    cron) can make progress past us.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            conn.rollback()
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except Exception:
+            log.exception("WAL refresh failed")
+
+
 async def _backstop_loop(conn, interval_hours: int, lock: asyncio.Lock):
     """Periodically run backstop_from_lists.
 
@@ -431,6 +460,7 @@ async def run(db_path: str, backstop_interval_hours: int = 6):
         _worker(conn, work_queue, known_labelers, stats, fatal_error))
     backstop_task = asyncio.create_task(
         _backstop_loop(conn, backstop_interval_hours, backstop_lock))
+    wal_refresh_task = asyncio.create_task(_wal_refresh_loop(conn))
 
     def _check_task_health(task: asyncio.Task):
         """Callback: if worker or backstop dies unexpectedly, force exit."""
@@ -443,6 +473,7 @@ async def run(db_path: str, backstop_interval_hours: int = 6):
 
     worker_task.add_done_callback(_check_task_health)
     backstop_task.add_done_callback(_check_task_health)
+    wal_refresh_task.add_done_callback(_check_task_health)
 
     try:
         while not shutdown_event.is_set() and not fatal_error.is_set():
@@ -462,6 +493,7 @@ async def run(db_path: str, backstop_interval_hours: int = 6):
     finally:
         worker_task.cancel()
         backstop_task.cancel()
+        wal_refresh_task.cancel()
 
         # Final cursor save
         cursor_val = db.get_meta(conn, "jetstream_discovery_cursor")
