@@ -1512,25 +1512,24 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
             fight_edges = boundary_data["fight_edges"]
             top_pairs = boundary_data["top_fight_pairs"]
 
-            # Summary cards
-            boundary_cards = f"""
-<div class="grid">
-  <div class="card health-metric">
-    <div class="label">Moderation Conflicts</div>
-    <div class="value">{boundary_data['moderation_edges']:,}</div>
-    <div class="small">{len(top_pairs)} pair{"s" if len(top_pairs) != 1 else ""} with 2+ targets</div>
-  </div>
-  <div class="card health-metric">
-    <div class="label">Badge Overlap</div>
-    <div class="value">{boundary_data['novelty_edges']:,}</div>
-    <div class="small">novelty labeler orthogonality</div>
-  </div>
-  <div class="card health-metric">
-    <div class="label">Total Boundary Edges</div>
-    <div class="value">{boundary_data['total_edges']:,}</div>
-  </div>
-</div>
-"""
+            # Finding lead: headline the surfaced reality, not the raw edge count
+            n_surfaced = len(top_pairs)
+            mod_events = boundary_data['moderation_edges']
+            if n_surfaced == 0:
+                headline = '<strong>No labeler pairs surfaced this week.</strong>'
+            else:
+                pair_word = "pair" if n_surfaced == 1 else "pairs"
+                headline = (
+                    f'<strong>{n_surfaced} labeler {pair_word} '
+                    f'surfaced this week.</strong>'
+                )
+            boundary_cards = (
+                f'<p style="font-size:1.1rem;margin:0.5rem 0 0.25rem 0;">{headline}</p>'
+                f'<p class="small" style="opacity:0.7;margin-top:0;">'
+                f'{mod_events:,} moderation boundary events observed; '
+                f'only pairs with 2+ shared targets are surfaced here.'
+                f'</p>'
+            )
             # Fight pairs table (moderation conflicts only)
             fight_table = ""
             if top_pairs:
@@ -1905,24 +1904,15 @@ is their output, and how much of the apparent diversity is already degraded.
         weather_signals.append("calm")
     network_weather = ", ".join(weather_signals)
 
-    # Build "what changed" items as observation sentences
+    # De-mixed: findings lead, health signals below. Alert-volume counts
+    # (spikes, churn, flip-flops) live in System status & methodology — they
+    # are telemetry, not findings.
     what_changed_items = []
-    if mod_conflicts > 0:
+    if top_fight_count > 0:
+        pair_word = "pair" if top_fight_count == 1 else "pairs"
         what_changed_items.append(
-            f'<strong>{mod_conflicts}</strong> active moderation conflicts '
-            f'across {top_fight_count} labeler pair{"s" if top_fight_count != 1 else ""}'
-        )
-    if spike_alerts_24h > 0:
-        what_changed_items.append(
-            f'<strong>{spike_alerts_24h}</strong> rate spikes in the last 24h'
-        )
-    if churn_alerts_24h > 0:
-        what_changed_items.append(
-            f'<strong>{churn_alerts_24h}</strong> high-churn alerts in 24h'
-        )
-    if flipflop_alerts_24h > 0:
-        what_changed_items.append(
-            f'<strong>{flipflop_alerts_24h}</strong> flip-flop detections in 24h'
+            f'<strong>{top_fight_count}</strong> labeler {pair_word} surfaced '
+            f'<a href="#labeler-conflicts" class="small">(details below)</a>'
         )
     if degraded_labelers > 0:
         what_changed_items.append(
@@ -1934,8 +1924,10 @@ is their output, and how much of the apparent diversity is already degraded.
             f'<strong>{new_labelers_7d}</strong> new labeler{"s" if new_labelers_7d != 1 else ""} '
             f'discovered this week'
         )
+    if not what_changed_items:
+        what_changed_items.append('Nothing unusual this week.')
 
-    what_changed_list = "".join(f"<li>{item}</li>" for item in what_changed_items[:6])
+    what_changed_list = "".join(f"<li>{item}</li>" for item in what_changed_items)
 
     summary_strip = f"""
 <div style="margin:1.5rem 0;display:flex;gap:1.5rem;flex-wrap:wrap;align-items:flex-start;">
@@ -1959,7 +1951,7 @@ is their output, and how much of the apparent diversity is already degraded.
         # Rewrite the section header with plain-English framing
         boundary_section = boundary_section.replace(
             '<h2>Boundary Instability (7d)</h2>',
-            '<h2>Labeler Conflicts</h2>'
+            '<h2 id="labeler-conflicts">Labeler Conflicts</h2>'
             '<p class="labeler-context">When labelers apply incompatible moderation categories '
             'to overlapping targets, the protocol\u2019s governance fault lines become visible.</p>'
         )
