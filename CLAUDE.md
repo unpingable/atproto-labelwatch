@@ -30,7 +30,7 @@ Public at https://labelwatch.neutral.zone. Bluesky account: @labelwatch.neutral.
 - Labelwatch ATTACHes `facts.sqlite` read-only as `drift` database.
 - `drift.uri_fingerprint` — post URI → claim fingerprint (for lag analysis).
 - `drift.actor_identity_facts` — DID → PDS host mapping (for hosting-locus analysis).
-- Changes to the facts schema are data contract changes. See `docs/HOSTING-LOCUS-DATA-CONTRACT.md`.
+- Changes to the facts schema are data contract changes. See `specs/core/HOSTING-LOCUS-DATA-CONTRACT.md`.
 
 **Hosting locus** (`hosting.py`):
 - `provider_registry` table classifies hosts: exact/suffix matching → bluesky/known_alt/one_off/unknown.

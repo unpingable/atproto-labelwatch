@@ -1,7 +1,7 @@
 # Operational hazards
 
 Things that have bitten us in production and how to recover. Not
-security (see `HARDENING.md`), not protocol limits (see `KNOWN_GAPS.md`).
+security (see `HARDENING.md`), not protocol limits (see `../specs/gaps/KNOWN_GAPS.md`).
 Just landmines to know about.
 
 ---

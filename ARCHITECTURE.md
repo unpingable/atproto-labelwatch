@@ -2,84 +2,31 @@
 
 # labelwatch Architecture
 
-**Version**: 0.8
-**Last Updated**: 2026-03-10
+**Version**: 0.9
+**Last Updated**: 2026-04-28
 **Owner**: James Beck / unpingable
-**Status**: Draft — reflects current deployed state
+**Status**: Deep architectural reference. For orientation, start at [`docs/architecture/OVERVIEW.md`](docs/architecture/OVERVIEW.md).
 
 ---
 
 ## 1. Quick Reference
 
-### 1.1 One-Paragraph Purpose
+For high-level orientation, see the architecture tree:
 
-labelwatch is a meta-governance observatory for ATProto's label ecosystem. It discovers labelers via three channels (batch enumeration, Jetstream sidecar, labeler-lists backstop), polls label events via `com.atproto.label.queryLabels`, classifies labelers by evidence-based visibility/reachability analysis, stores everything in SQLite (WAL mode, schema v19), runs detection rules to flag temporal anomalies (rate spikes, flip-flop patterns, target concentration, churn), derives per-labeler regime state and risk scores, detects cross-labeler boundary instability, serves per-DID label climate reports via HTTP, and produces auditable alerts with SHA-256 receipt hashes. It observes labeler behavior — it does not moderate content, judge truth, or emit labels.
+| Want | Go to |
+|------|-------|
+| One-paragraph purpose, five-questions frame | [`docs/architecture/OVERVIEW.md`](docs/architecture/OVERVIEW.md) |
+| System diagram (rendered mermaid) | [`docs/architecture/diagrams/system-overview.md`](docs/architecture/diagrams/system-overview.md) |
+| Data flow narrative | [`docs/architecture/DATAFLOW.md`](docs/architecture/DATAFLOW.md) |
+| Publication model | [`docs/architecture/PUBLICATION_MODEL.md`](docs/architecture/PUBLICATION_MODEL.md) |
+| Public surfaces, dossier prohibition | [`docs/architecture/PUBLIC_SURFACES.md`](docs/architecture/PUBLIC_SURFACES.md) |
+| Failure modes | [`docs/architecture/FAILURE_MODES.md`](docs/architecture/FAILURE_MODES.md) |
+| Specs (binding contracts) | [`specs/`](specs/) |
+| Non-goals (bulleted) | [`NON_GOALS.md`](NON_GOALS.md) |
 
-### 1.2 System Diagram
+This document is the deep architectural reference: component inventory, data model, component deep dives, integration patterns, security, and evolution. The architecture/ tree is the orientation layer; this is its engineering-level companion.
 
-Three systemd services share one SQLite database (WAL mode):
-
-```
-┌─────────────────────┐     ┌─────────────────────┐     ┌─────────────────────┐
-│  ATProto Service     │     │  PLC Directory       │     │  Jetstream           │
-│  (queryLabels HTTP)  │     │  (DID resolution)    │     │  (labeler.service    │
-└──────────┬──────────┘     └──────────┬──────────┘     │   records, WS)       │
-           │ HTTP polling              │ DID docs       └──────────┬──────────┘
-           ▼                           ▼                           │
-┌─────────────────────┐     ┌─────────────────────┐     ┌──────────▼──────────┐
-│  Ingest             │     │  Batch Discovery     │     │  Discovery Stream   │
-│  (ingest.py)        │     │  (discover.py)       │     │  (discovery_stream) │
-│  multi-ingest       │     │  classify + probe    │     │  + backstop scrape  │
-│  observed-only      │     │  evidence collection │     │  cursor persistence │
-└──────────┬──────────┘     └──────────┬──────────┘     └──────────┬──────────┘
-           │                           │                           │
-           ▼                           ▼                           ▼
-       ┌─────────────────────────────────────────────────────────────┐
-       │  SQLite DB (schema v19, WAL mode)                          │
-       │  label_events | labelers | alerts | labeler_evidence       │
-       │  discovery_events | boundary_edges | boundary_targets      │
-       │  derived_author_day | derived_author_labeler_day | meta    │
-       └──────────────┬──────────────────────────────┬──────────────┘
-                      │                              │
-                      │ queries                      │ read-only
-                      ▼                              ▼
-┌─────────────────────┐     ┌──────────────────┐  ┌──────────────────┐
-│  Rules + Scan       │────▶│  Derive          │  │  Climate API     │
-│  (rules.py,         │     │  (derive.py)     │  │  (server.py)     │
-│   scan.py)          │     │  regime state    │  │  /v1/climate/did │
-│  rate spike         │     │  risk scores     │  │  rate limited    │
-│  flip-flop          │     │  coherence       │  │  disk cached     │
-│  concentration      │     │  boundary        │  └──────────────────┘
-│  churn              │     │  volume/reach    │
-│  receipted alerts   │     └────────┬─────────┘
-└─────────────────────┘              │
-                                     ▼
-                            ┌──────────────────┐
-                            │  Report          │
-                            │  (report.py)     │
-                            │  HTML + JSON     │
-                            │  census + triage │
-                            │  health cards    │
-                            │  boundary cards  │
-                            └──────────────────┘
-```
-
-### 1.3 Data Flow
-
-```
-1. Discovery finds labelers (batch enumeration + Jetstream + backstop lists)
-2. Ingest polls com.atproto.label.queryLabels for all discovered labelers
-3. Label events normalized, hashed (SHA-256), and stored in label_events table
-4. Labeler profiles upserted in labelers table (first_seen / last_seen)
-5. Scan runs detection rules against label_events
-6. Alerts written with receipt hashes (SHA-256 over rule + inputs + evidence + config)
-7. Derive pass computes regime state, risk scores, volume/reach stats, boundary edges
-8. Rollup tables updated (derived_author_day, derived_author_labeler_day)
-9. Report generates static HTML + JSON site from DB state
-10. Climate API serves per-DID reports from rollup tables on demand
-```
-
-### 1.4 Component Inventory
+### 1.1 Component Inventory
 
 | Component | Responsibility | Source |
 |-----------|---------------|--------|
@@ -107,13 +54,7 @@ Three systemd services share one SQLite database (WAL mode):
 
 ## 2. Core Invariants
 
-- **Observation only**: All analysis is grounded in observable label application patterns from the queryLabels endpoint. The system does not evaluate content semantics, judge labeling correctness, or emit labels.
-
-- **Append-only events**: Rows in `label_events` are never updated or deleted. Deduplication happens at insert time via `INSERT OR IGNORE` on `event_hash`.
-
-- **Receipt hashing**: Every alert includes a SHA-256 receipt hash computed over `(rule_id, labeler_did, ts, inputs, evidence_hashes, config_hash)`. This provides an audit trail — given the same inputs, the same receipt hash must be reproducible.
-
-- **Temporal coherence**: Every alert references a specific time window and includes evidence hashes pointing to actual label_events rows. No unfalsifiable claims.
+See [`docs/architecture/OVERVIEW.md`](docs/architecture/OVERVIEW.md) § Core invariants. Canonical there to avoid drift between two locations.
 
 ---
 
@@ -401,3 +342,4 @@ See `NEXT.md` for the full roadmap. Key upcoming work:
 | 0.6 | 2026-03-05 | unpingable | Schema v16-v17: My Label Climate (rollup tables, HTTP API), Jetstream discovery sidecar, coverage delta |
 | 0.7 | 2026-03-08 | unpingable | Schema v18-v19: Boundary instability (label families, contradiction edges, JSD divergence), volume/reach tiers |
 | 0.8 | 2026-03-10 | unpingable | Architecture doc refresh: three-service model, updated diagrams and component inventory, security and operational sections |
+| 0.9 | 2026-04-28 | unpingable | Folded into `docs/architecture/` tree. Sections 1.1-1.3 and 2 collapsed into pointers; deep reference content (component inventory, data model, deep dives) retained here. |

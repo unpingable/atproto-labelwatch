@@ -1,6 +1,6 @@
 # Publication tier threshold validation — 2026-04-22 findings
 
-**Protocol**: `docs/ADMISSIBILITY-PROTOCOL.md` style, single-pass calibration.
+**Protocol**: `driftwatch/specs/core/ADMISSIBILITY-PROTOCOL.md` style, single-pass calibration.
 **Snapshot**: `out/tier-validation/2026-04-22_assess.json` (assess --json, live VM).
 **DB**: `/var/lib/labelwatch/labelwatch.db` → `/mnt/zonestorage/labelwatch/labelwatch.db`, 26GB.
 **Window**: last 7d, family_version=v3.
