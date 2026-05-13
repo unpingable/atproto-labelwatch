@@ -42,6 +42,13 @@ class Config:
         "did:plc:saslbwamakedc4h6c5bmshvz",   # Hailey's Labeler
     ])
 
+    # Reference labelers with recurrent quiet/gone_dark behavior. Still tracked
+    # and surfaced, but their silence emits an advisory — not a system-wide
+    # CRITICAL. Popularity / historical volume is not calibration reliability.
+    flaky_reference_dids: List[str] = field(default_factory=lambda: [
+        "did:plc:saslbwamakedc4h6c5bmshvz",   # Hailey's Labeler
+    ])
+
     multi_ingest_timeout: int = 15
     multi_ingest_budget: int = 300
     multi_ingest_max_pages: int = 5

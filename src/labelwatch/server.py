@@ -17,7 +17,7 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from . import db
 from .climate import generate_climate, public_climate_payload, _render_html
@@ -185,6 +185,7 @@ class ClimateHandler(BaseHTTPRequestHandler):
     stats: Optional[_Stats] = None
     disabled: bool = False
     generation_timeout: int = 10
+    flaky_reference_dids: tuple = ()
 
     def log_message(self, format, *args):
         # Suppress default stderr logging — we do our own
@@ -282,7 +283,10 @@ class ClimateHandler(BaseHTTPRequestHandler):
         try:
             conn = db.connect(self.db_path, readonly=True)
             try:
-                signals = signal_health_snapshot(conn)
+                signals = signal_health_snapshot(
+                    conn,
+                    flaky_reference_dids=self.flaky_reference_dids,
+                )
             finally:
                 conn.close()
         except Exception:
@@ -301,6 +305,7 @@ class ClimateHandler(BaseHTTPRequestHandler):
                 "gone_dark_count": len(signals.get("gone_dark", [])),
                 "degrading_count": len(signals.get("degrading", [])),
                 "reference_issues": signals.get("reference_issues", []),
+                "flaky_reference_quiet": signals.get("flaky_reference_quiet", []),
             },
             "signals_degraded": signals["verdict"] in ("CRITICAL", "DEGRADED"),
         }, {"Cache-Control": "no-store"})
@@ -543,7 +548,8 @@ class ClimateHandler(BaseHTTPRequestHandler):
 
 def configure_handler(db_path: str, cache_dir: str, max_concurrent: int = 2,
                       rate_limit: int = 30, cache_ttl: int = 300,
-                      generation_timeout: int = 10) -> type:
+                      generation_timeout: int = 10,
+                      flaky_reference_dids: Optional[List[str]] = None) -> type:
     """Create a configured handler class."""
     # Refill rate: rate_limit per minute → rate_limit/60 per second
     handler = type("ConfiguredClimateHandler", (ClimateHandler,), {
@@ -554,13 +560,15 @@ def configure_handler(db_path: str, cache_dir: str, max_concurrent: int = 2,
         "stats": _Stats(),
         "disabled": os.environ.get("CLIMATE_API_DISABLED", "") == "1",
         "generation_timeout": generation_timeout,
+        "flaky_reference_dids": tuple(flaky_reference_dids or ()),
     })
     return handler
 
 
 def run_server(db_path: str, port: int = 8423, cache_dir: str = "cache",
                max_concurrent: int = 2, rate_limit: int = 30,
-               bind: str = "127.0.0.1"):
+               bind: str = "127.0.0.1",
+               flaky_reference_dids: Optional[List[str]] = None):
     """Start the climate HTTP server."""
     logging.basicConfig(
         level=logging.INFO,
@@ -572,7 +580,10 @@ def run_server(db_path: str, port: int = 8423, cache_dir: str = "cache",
     if not os.path.exists(db_path):
         raise SystemExit(f"Database not found: {db_path}")
 
-    handler_cls = configure_handler(db_path, cache_dir, max_concurrent, rate_limit)
+    handler_cls = configure_handler(
+        db_path, cache_dir, max_concurrent, rate_limit,
+        flaky_reference_dids=flaky_reference_dids,
+    )
 
     server = ThreadingHTTPServer((bind, port), handler_cls)
     logger.info("Climate server starting on port %d (db=%s, cache=%s)",

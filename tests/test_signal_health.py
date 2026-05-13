@@ -105,6 +105,42 @@ def test_snapshot_critical_reference_dark():
     assert len(snap["reference_issues"]) == 1
 
 
+def test_snapshot_flaky_reference_dark_does_not_drive_critical():
+    # A reference labeler tagged known-flaky going dark must NOT promote
+    # the system-wide verdict to CRITICAL. It surfaces as an advisory.
+    # Popularity is not standing. Other gates (aggregate degradation,
+    # many dark labelers) still operate normally.
+    conn = _make_db()
+    _seed(conn, [
+        {"did": "did:plc:flaky", "handle": "flaky.test", "ev7": 0, "ev30": 100,
+         "is_ref": 1},
+        {"did": "did:plc:b", "handle": "b.test", "ev7": 1000, "ev30": 4000},
+    ])
+    snap = signal_health_snapshot(conn, flaky_reference_dids=["did:plc:flaky"])
+    assert snap["verdict"] != "CRITICAL"
+    assert snap["reference_issues"] == []
+    assert len(snap["flaky_reference_quiet"]) == 1
+    assert snap["flaky_reference_quiet"][0]["handle"] == "flaky.test"
+    assert snap["flaky_reference_quiet"][0]["known_flaky"] is True
+
+
+def test_snapshot_mixed_flaky_and_strict_reference_dark():
+    # If a strict (non-flaky) reference also goes dark, CRITICAL still fires —
+    # the flaky one is just routed to the advisory bucket alongside.
+    conn = _make_db()
+    _seed(conn, [
+        {"did": "did:plc:flaky", "handle": "flaky.test", "ev7": 0, "ev30": 10000,
+         "is_ref": 1},
+        {"did": "did:plc:strict", "handle": "strict.test", "ev7": 0, "ev30": 10000,
+         "is_ref": 1},
+    ])
+    snap = signal_health_snapshot(conn, flaky_reference_dids=["did:plc:flaky"])
+    assert snap["verdict"] == "CRITICAL"
+    assert len(snap["reference_issues"]) == 1
+    assert snap["reference_issues"][0]["handle"] == "strict.test"
+    assert len(snap["flaky_reference_quiet"]) == 1
+
+
 def test_snapshot_empty():
     conn = _make_db()
     snap = signal_health_snapshot(conn)

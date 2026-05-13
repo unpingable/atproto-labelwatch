@@ -346,6 +346,7 @@ def cmd_serve(args) -> None:
         max_concurrent=args.max_concurrent,
         rate_limit=args.rate_limit,
         bind=args.bind,
+        flaky_reference_dids=cfg.flaky_reference_dids,
     )
 
 
