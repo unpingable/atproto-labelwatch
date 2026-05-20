@@ -44,6 +44,15 @@ _DERIVE_DISABLED = os.environ.get("LABELWATCH_DERIVE_DISABLE", "0") == "1"
 # is frozen and the scan is pure waste. See gap-spec-derive-workload-isolation.md.
 _FACTS_MAX_AGE_S = int(os.environ.get("LABELWATCH_FACTS_MAX_AGE_S", "86400"))
 
+# update_author_day chunking. The original single INSERT held the writer for
+# ~6.5min, producing the bulk of discovery db-locked retries at the derive tail
+# (2026-05-20 evidence: ~11 retries clustered in the 6.5min window). Chunk by
+# day_epoch so each chunk's writer-lock window is bounded; commit between days
+# releases the writer for discovery. Backstop budget + WAL pressure cause
+# explicit defer; remaining days run next cycle.
+_UPDATE_AUTHOR_DAY_BUDGET_S = float(os.environ.get("LABELWATCH_UPDATE_AUTHOR_DAY_BUDGET_S", "600"))
+_UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB = float(os.environ.get("LABELWATCH_UPDATE_AUTHOR_DAY_WAL_MB", "200"))
+
 
 def _yield_between_derive_steps() -> None:
     """Sleep briefly between derive sub-steps so the discovery writer (and any
@@ -1037,47 +1046,112 @@ def _update_val_dist_day(conn) -> None:
     )
 
 
+def _wal_size_mb_from_conn(conn) -> float:
+    """WAL size in MB derived from the connection's main DB path. Cheap stat."""
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+        for row in rows:
+            if row[1] == "main" and row[2]:
+                return os.path.getsize(row[2] + "-wal") / (1024 * 1024)
+    except (sqlite3.Error, OSError):
+        pass
+    return 0.0
+
+
 def _update_author_day(conn) -> None:
     """Incrementally update derived_author_day from label_events.
 
-    Recomputes the last 7 days (covers late-arriving timestamps).
-    Prunes rows older than 60 days.
+    Chunked by day_epoch: processes the last 7 days as 7 separate
+    DELETE+INSERT+commit cycles, newest day first. The original single
+    INSERT held the SQLite writer lock for ~6.5min and produced the bulk
+    of discovery db-locked retries at the derive tail; chunking releases
+    the writer between days so labelwatch-discovery (and any other writer)
+    can land its writes.
+
+    Defer paths (each emits an explicit log line; remaining days run next
+    derive cycle, picking up where this one left off via day_epoch keys):
+      - elapsed > _UPDATE_AUTHOR_DAY_BUDGET_S (backstop; default 600s)
+      - WAL size > _UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB (default 200MB)
+
+    Newest-first ordering means today's data lands first even on defer,
+    so per-author/per-day report freshness degrades from the back of the
+    7-day window rather than the front. Retention prune runs only when
+    all 7 days completed — partial cycles preserve old rows that the
+    deferred work might need to reconcile next pass.
+
     Only counts labels on posts (uri LIKE 'at://%/app.bsky.feed.post/%').
     """
     now_epoch = int(time.time())
-    start_day_epoch = ((now_epoch // 86400) - 6) * 86400  # 7 days back
-    cutoff_iso = time.strftime("%Y-%m-%dT00:00:00.000000Z", time.gmtime(start_day_epoch))
-    retention_cutoff_day_epoch = ((now_epoch // 86400) - 60) * 86400
+    today_epoch = (now_epoch // 86400) * 86400
+    day_epochs = [today_epoch - i * 86400 for i in range(7)]  # newest first
+    retention_cutoff_day_epoch = today_epoch - 60 * 86400
 
-    # Delete recompute window
-    conn.execute(
-        "DELETE FROM derived_author_day WHERE day_epoch >= ?",
-        (start_day_epoch,),
-    )
+    t_start = time.monotonic()
+    processed = 0
+    deferred = 0
 
-    # Reinsert from label_events
-    conn.execute("""
-        INSERT OR REPLACE INTO derived_author_day
-            (author_did, day_epoch, events, applies, removes, labelers, targets, vals)
-        SELECT  le.target_did AS author_did,
-                (CAST(strftime('%s', le.ts) AS INTEGER) / 86400) * 86400 AS day_epoch,
-                COUNT(*) AS events,
-                SUM(CASE WHEN le.neg = 0 THEN 1 ELSE 0 END) AS applies,
-                SUM(CASE WHEN le.neg = 1 THEN 1 ELSE 0 END) AS removes,
-                COUNT(DISTINCT le.labeler_did) AS labelers,
-                COUNT(DISTINCT le.uri) AS targets,
-                COUNT(DISTINCT le.val) AS vals
-        FROM label_events le
-        WHERE le.target_did IS NOT NULL
-          AND le.uri LIKE 'at://%/app.bsky.feed.post/%'
-          AND le.ts >= :cutoff_iso
-        GROUP BY le.target_did, day_epoch
-    """, {"cutoff_iso": cutoff_iso})
+    for i, day_epoch in enumerate(day_epochs):
+        # Pressure check before each chunk after the first. Always do at
+        # least one chunk so this step makes some forward progress.
+        if i > 0:
+            wal_mb = _wal_size_mb_from_conn(conn)
+            elapsed_s = time.monotonic() - t_start
+            if wal_mb > _UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB:
+                deferred = len(day_epochs) - i
+                _log.warning(
+                    "update_author_day deferred: WAL=%.1fMB > %.0fMB processed=%d deferred=%d",
+                    wal_mb, _UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB, processed, deferred,
+                )
+                break
+            if elapsed_s > _UPDATE_AUTHOR_DAY_BUDGET_S:
+                deferred = len(day_epochs) - i
+                _log.warning(
+                    "update_author_day deferred: elapsed=%.1fs > %.0fs processed=%d deferred=%d",
+                    elapsed_s, _UPDATE_AUTHOR_DAY_BUDGET_S, processed, deferred,
+                )
+                break
 
-    # Prune old rows
-    conn.execute(
-        "DELETE FROM derived_author_day WHERE day_epoch < ?",
-        (retention_cutoff_day_epoch,),
+        day_start_iso = time.strftime("%Y-%m-%dT00:00:00.000000Z", time.gmtime(day_epoch))
+        day_end_iso = time.strftime("%Y-%m-%dT00:00:00.000000Z", time.gmtime(day_epoch + 86400))
+
+        conn.execute(
+            "DELETE FROM derived_author_day WHERE day_epoch = ?",
+            (day_epoch,),
+        )
+        conn.execute("""
+            INSERT OR REPLACE INTO derived_author_day
+                (author_did, day_epoch, events, applies, removes, labelers, targets, vals)
+            SELECT  le.target_did AS author_did,
+                    :day_epoch AS day_epoch,
+                    COUNT(*) AS events,
+                    SUM(CASE WHEN le.neg = 0 THEN 1 ELSE 0 END) AS applies,
+                    SUM(CASE WHEN le.neg = 1 THEN 1 ELSE 0 END) AS removes,
+                    COUNT(DISTINCT le.labeler_did) AS labelers,
+                    COUNT(DISTINCT le.uri) AS targets,
+                    COUNT(DISTINCT le.val) AS vals
+            FROM label_events le
+            WHERE le.target_did IS NOT NULL
+              AND le.uri LIKE 'at://%/app.bsky.feed.post/%'
+              AND le.ts >= :day_start AND le.ts < :day_end
+            GROUP BY le.target_did
+        """, {"day_epoch": day_epoch, "day_start": day_start_iso, "day_end": day_end_iso})
+        conn.commit()
+        processed += 1
+        _yield_between_derive_steps()
+
+    # Retention prune only on full completion. Partial cycles keep old rows
+    # in case the deferred work needs reconciliation context next pass.
+    if deferred == 0:
+        conn.execute(
+            "DELETE FROM derived_author_day WHERE day_epoch < ?",
+            (retention_cutoff_day_epoch,),
+        )
+        conn.commit()
+
+    total_ms = int((time.monotonic() - t_start) * 1000)
+    _log.info(
+        "update_author_day processed=%d deferred=%d total_ms=%d",
+        processed, deferred, total_ms,
     )
 
 
