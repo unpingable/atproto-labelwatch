@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
+import time
 import uuid
 from importlib import metadata
 from collections import defaultdict
@@ -20,6 +22,25 @@ from .derive import burstiness_index
 from .label_family import classify_domain
 from .receipts import config_hash as config_hash_fn
 from .utils import format_ts, get_git_commit, parse_ts
+
+log = logging.getLogger(__name__)
+
+
+# Chunked-read tunables. Each chunk is a separate SELECT; finalizing the cursor
+# releases the WAL snapshot so the SQLite checkpointer can advance and blocked
+# writers can land their commits. See gap-spec-report-generation-workload-isolation.md.
+_CHUNK_YIELD_SECONDS = float(os.environ.get("LABELWATCH_REPORT_CHUNK_YIELD_S", "0.05"))
+_NAIVE_TS_CHUNK_ROWS = int(os.environ.get("LABELWATCH_REPORT_NAIVE_TS_CHUNK", "200000"))
+_ALERTS_STREAM_CHUNK = int(os.environ.get("LABELWATCH_REPORT_ALERTS_CHUNK", "1000"))
+_LABELER_YIELD_EVERY = int(os.environ.get("LABELWATCH_REPORT_LABELER_YIELD_EVERY", "50"))
+_NAIVE_TS_SKIP = os.environ.get("LABELWATCH_REPORT_SKIP_NAIVE_TS", "0") == "1"
+
+
+def _yield_between_chunks() -> None:
+    """Sleep briefly between report chunks so the WAL checkpointer and blocked
+    writers get a scheduling window before the next snapshot opens."""
+    if _CHUNK_YIELD_SECONDS > 0:
+        time.sleep(_CHUNK_YIELD_SECONDS)
 
 
 def _human_ts(iso_ts: Optional[str]) -> str:
@@ -400,26 +421,47 @@ def _write_json(path: str, payload: Any) -> None:
 
 
 def _stream_alerts_json(conn, out_path: str) -> None:
-    """Stream alerts to JSON file without materializing entire table in memory."""
+    """Stream alerts to JSON, paginated by id so the cursor doesn't pin the WAL snapshot.
+
+    The original version held a single open cursor while iterating + writing
+    JSON to disk; the read snapshot was alive for the whole iteration. This
+    version pages by id (DESC, append-only IDs ≈ append-only timestamps),
+    finalizing the cursor between pages so the WAL checkpointer can advance.
+    """
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    cur = conn.execute(
-        "SELECT id, rule_id, labeler_did, ts FROM alerts ORDER BY ts DESC"
-    )
+
+    hi_row = conn.execute("SELECT MAX(id) AS hi FROM alerts").fetchone()
+    if not hi_row or hi_row["hi"] is None:
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write("[]\n")
+        return
+
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("[\n")
         first = True
-        for row in cur:
-            if not first:
-                f.write(",\n")
-            first = False
-            obj = {
-                "id": row["id"],
-                "rule_id": row["rule_id"],
-                "labeler_did": row["labeler_did"],
-                "ts": row["ts"],
-                "href": f"alert/{row['id']}.html",
-            }
-            f.write(json.dumps(obj, separators=(",", ":")))
+        last_id = hi_row["hi"] + 1
+        while True:
+            rows = conn.execute(
+                """SELECT id, rule_id, labeler_did, ts FROM alerts
+                   WHERE id < ? ORDER BY id DESC LIMIT ?""",
+                (last_id, _ALERTS_STREAM_CHUNK),
+            ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                if not first:
+                    f.write(",\n")
+                first = False
+                obj = {
+                    "id": row["id"],
+                    "rule_id": row["rule_id"],
+                    "labeler_did": row["labeler_did"],
+                    "ts": row["ts"],
+                    "href": f"alert/{row['id']}.html",
+                }
+                f.write(json.dumps(obj, separators=(",", ":")))
+            last_id = rows[-1]["id"]
+            _yield_between_chunks()
         f.write("\n]\n")
 
 
@@ -979,19 +1021,44 @@ def _alert_events(conn, evidence_hashes: List[str]) -> List[Dict[str, Any]]:
 
 
 def _count_naive_timestamps(conn, table: str) -> int:
-    row = conn.execute(
-        f"""
-        SELECT SUM(
-            CASE
-                WHEN substr(ts, -1) = 'Z' THEN 0
-                WHEN (substr(ts, -6, 1) IN ('+', '-') AND substr(ts, -3, 1) = ':') THEN 0
-                ELSE 1
-            END
-        ) AS c
-        FROM {table}
-        """
-    ).fetchone()
-    return int(row["c"] or 0)
+    """Count timestamps lacking timezone info, in rowid-bounded chunks.
+
+    The single-SELECT full scan version of this query was the offender in
+    the 2026-05-14/15 WAL-pin incidents: a 7-minute readonly snapshot held
+    by this query starved the discovery writer of WAL checkpoint windows.
+
+    Chunked version: each chunk is its own short SELECT; the cursor finalizes
+    (releasing the WAL snapshot) before the next chunk opens. A brief yield
+    between chunks gives the checkpointer and any blocked writers a window.
+    """
+    if _NAIVE_TS_SKIP:
+        log.warning(
+            "Report: _count_naive_timestamps(%s) skipped via LABELWATCH_REPORT_SKIP_NAIVE_TS=1",
+            table,
+        )
+        return -1  # sentinel: surfaced as "skipped" in report freshness
+    max_row_result = conn.execute(f"SELECT MAX(rowid) AS m FROM {table}").fetchone()
+    max_row = max_row_result["m"] if max_row_result else None
+    if not max_row:
+        return 0
+    total = 0
+    start = 1
+    while start <= max_row:
+        end = min(start + _NAIVE_TS_CHUNK_ROWS - 1, max_row)
+        row = conn.execute(
+            f"""SELECT SUM(
+                CASE
+                    WHEN substr(ts, -1) = 'Z' THEN 0
+                    WHEN (substr(ts, -6, 1) IN ('+', '-') AND substr(ts, -3, 1) = ':') THEN 0
+                    ELSE 1
+                END) AS c
+              FROM {table} WHERE rowid BETWEEN ? AND ?""",
+            (start, end),
+        ).fetchone()
+        total += int(row["c"] or 0)
+        start = end + 1
+        _yield_between_chunks()
+    return total
 
 
 def _max_ts(conn, table: str) -> Optional[str]:
@@ -1146,8 +1213,16 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None, facts_pa
     if max_raw_dt:
         skew_seconds = max(0, int((max_raw_dt - real_now).total_seconds()))
 
-    naive_count = _count_naive_timestamps(conn, "label_events") + _count_naive_timestamps(conn, "alerts")
-    timestamps_assumed_utc = naive_count > 0
+    _naive_label = _count_naive_timestamps(conn, "label_events")
+    _naive_alert = _count_naive_timestamps(conn, "alerts")
+    if _naive_label < 0 or _naive_alert < 0:
+        naive_count = -1
+        timestamps_assumed_utc = False
+        naive_count_skipped = True
+    else:
+        naive_count = _naive_label + _naive_alert
+        timestamps_assumed_utc = naive_count > 0
+        naive_count_skipped = False
 
     cfg_hash_latest = None
     cfg_row = conn.execute("SELECT config_hash FROM alerts ORDER BY ts DESC LIMIT 1").fetchone()
@@ -1229,6 +1304,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None, facts_pa
         "max_skew_seconds": skew_seconds,
         "timestamps_assumed_utc": timestamps_assumed_utc,
         "naive_timestamp_count": naive_count,
+        "naive_timestamp_count_skipped": naive_count_skipped,
         "build_signature": build_signature,
         "census": census,
         "test_dev_count": test_dev_count,
@@ -1744,7 +1820,9 @@ is their output, and how much of the apparent diversity is already degraded.
     )
     labeler_table_rows_html = ""
 
-    for r in nonref_labelers:
+    for _i, r in enumerate(nonref_labelers):
+        if _i and _LABELER_YIELD_EVERY > 0 and _i % _LABELER_YIELD_EVERY == 0:
+            _yield_between_chunks()
         did = r["labeler_did"]
         counts = _hourly_counts(conn, did, start_7d, now_ts)
         spark = _sparkline_svg(counts)
@@ -1815,7 +1893,9 @@ is their output, and how much of the apparent diversity is already degraded.
     alert_links = f"<h2>Recent alerts</h2><table><thead>{alert_head}</thead><tbody>{rollup_html}</tbody></table>"
 
     naive_banner = ""
-    if naive_count > 0:
+    if naive_count_skipped:
+        naive_banner = '<p class="small">Note: naive-timestamp scan skipped this cycle (LABELWATCH_REPORT_SKIP_NAIVE_TS=1) — report freshness degraded explicitly to avoid pinning the live DB.</p>'
+    elif naive_count > 0:
         naive_banner = f"<p class=\"small\">Note: {naive_count} timestamps lacked timezone info and were assumed UTC.</p>"
 
     # --- Hero: what is this, why should I care, what do I click ---
@@ -2035,7 +2115,9 @@ is their output, and how much of the apparent diversity is already degraded.
     # --- Per-labeler pages ---
     anomaly_rules = {"label_rate_spike", "flip_flop", "target_concentration", "churn_index", "data_gap"}
 
-    for row in labelers:
+    for _i, row in enumerate(labelers):
+        if _i and _LABELER_YIELD_EVERY > 0 and _i % _LABELER_YIELD_EVERY == 0:
+            _yield_between_chunks()
         did = row["labeler_did"]
         slug = _did_slug(did)
         alerts_rows = conn.execute(

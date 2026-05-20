@@ -1,8 +1,68 @@
 # Gap spec: report generation workload isolation
 
-**Status:** proposed / structural debt. Filed 2026-05-14, after the report-gen WAL-pin incident.
+**Status:** proposed / structural debt. Filed 2026-05-14. **Revised 2026-05-15 after recurrence within ~20h of the recovery restart.**
 
 **This is not authorization to build.** It is the named handle for the structural fix that the 2026-05-14 acute recovery (restart of main labelwatch) deliberately did not address.
+
+## Revision 2026-05-15: not a long-uptime buildup
+
+The 2026-05-14 incident was framed as "22-day-old process accumulated state." The 2026-05-15 recurrence falsifies that. The main process was only ~20 hours old when the same shape returned: discovery drops in 10–25/min bursts, `database is locked` retries on the worker, WAL climbing past baseline.
+
+The recurring trigger is **report-generation cadence colliding with derive / discovery SQLite writes**, not process age. The original report thread slept `max(scan_interval, 300) = 300s` between runs while each report took ~7 minutes — so the live DB was being held under a long readonly snapshot for ~70% of every ~12-minute cycle, with no time for the WAL to checkpoint cleanly between snapshots.
+
+**Restart is emergency relief only. It is not a fix even at the containment layer; it just resets the snapshot-stack so the next collision starts from a clean WAL.**
+
+### Containment patch landed 2026-05-15
+
+Implemented two of the candidates below as immediate mitigation (not structural):
+
+- **Candidate 5 (pressure gate):** `_report_loop` checks WAL size before each cycle; if `wal_size_mb > LABELWATCH_REPORT_WAL_SKIP_MB` (default 80), skip and re-evaluate next interval. Implemented in `src/labelwatch/runner.py` (`_wal_size_mb`, `_report_loop`).
+- **Cadence dial:** new `--report-interval` arg (default 1800s, min 300s) decouples report cadence from scan cadence. The report cycle is now ~30 min instead of ~12 min, giving the WAL time to checkpoint between long readonly snapshots.
+
+Operational rule added by this revision:
+
+> **Report freshness is subordinate to discovery ingest.** A slightly stale report is acceptable. Dropping discovery events because the report thread wants to count timestamps every twelve minutes is not.
+
+The structural fix candidates below remain the durable answer — the containment patch buys time for choosing among them, not for skipping them.
+
+### Structural fix landed 2026-05-15 (candidate #2: chunked reads)
+
+The chunked-reads + per-chunk snapshot-release fix (gap-spec candidate #2) was implemented and validated under controlled load against the production DB:
+
+- **`_count_naive_timestamps`** — replaced single full-scan SELECT with rowid-bounded chunks (default 200k rows/chunk), `time.sleep(0.05)` between chunks so the cursor finalizes and the WAL snapshot releases
+- **`_stream_alerts_json`** — replaced cursor iteration with id-bounded pagination (default 1000 rows/page); each page is a separate short SELECT
+- **Per-labeler loops** (nonref table + per-labeler pages, ~470+ labelers each) — yield every 50 iterations
+- **Explicit degradation path** — `LABELWATCH_REPORT_SKIP_NAIVE_TS=1` skips the timestamp scan entirely, surfaced as a banner + `naive_timestamp_count_skipped` JSON flag
+
+**Controlled fault test result:**
+- Runtime: 509s (~8.5min, comparable to pre-patch baseline; the per-chunk yields add a small constant)
+- Discovery drops during run: **0**
+- `database is locked` retries during run: **0**
+- WAL stable at 64MB throughout — never grew or shrunk
+- Output artifacts complete (alerts.json 10MB, index.html, per-labeler pages, claims, census)
+
+**Current operational setting:** `--report-interval 3600` via `/etc/systemd/system/labelwatch.service.d/report-interval.conf` (replaced the 6h emergency drop-in). 3600s is a conservative decompression step, not the durable end state — one natural cycle should be observed clean before considering a return to 1800s default.
+
+The remaining structural candidates (#1 snapshot copy, #3 DuckDB/Parquet, #4 separate service) are still useful escape hatches if the workload outgrows even chunked SQLite, but chunked reads alone resolved the WAL-pin pathology that produced the 2026-05-14 incident.
+
+### Containment patch failed verification 2026-05-15 (historical)
+
+The 30min-cadence + 80MB-WAL-gate patch passed its first post-restart cycle (cold start, WAL≈0) and then failed its second cycle in the same shape as the original incident: 46 drops + 33 `database is locked` retries on `labelwatch-discovery` within 5 minutes while the in-flight report ran.
+
+**Key finding: the WAL-size gate threshold was the wrong shape.** During the failing cycle the WAL was pinned at **64 MB — below the 80 MB skip threshold** — because the readonly snapshot holds the checkpoint frontier wherever the WAL happened to be when the snapshot opened. WAL size is not a leading indicator of writer contention under this failure mode; it's a *trailing* indicator of an external long-running reader. By the time WAL crosses 80 MB the drops have already been happening for minutes.
+
+What this rules out as cheap fixes:
+- WAL-size gates alone (any threshold) — the snapshot pins WAL well below any threshold worth picking, because checkpoint advancement is what's blocked, not file growth
+- Cadence reduction alone — even at 30min spacing, every cycle still spends ~7 minutes pinning live writes; the failure mode is per-cycle, not per-frequency
+
+Fallback applied: `--report-interval 21600` (6h) via systemd drop-in (`/etc/systemd/system/labelwatch.service.d/report-interval-fallback.conf`). This is hold-the-line behavior — one drop window every 6h is tolerable while structural work lands; 30min cadence is not.
+
+Pressure signals that would actually work (deferred to structural):
+- Discovery dropped-event counter rising (the actual incident signal — but requires sidecar→main signal channel)
+- `wal_checkpoint(PASSIVE) busy>0` across N cycles (probe-able from the report thread itself)
+- Writer-thread back-pressure / event queue backlog (requires instrumentation)
+
+These are not cheap to add cleanly. The structural candidates (chunked reads, snapshot copy, DuckDB/Parquet) eliminate the pin entirely rather than gating around it.
 
 Companion to:
 - `lesson_report_gen_is_workload.md` (auto-memory) — the generalized lesson
@@ -64,13 +124,13 @@ These are not ranked or pre-selected. Each has different operational characteris
    - Still reads the same DB but its lifecycle is decoupled
    - Doesn't fix WAL pin by itself — must compose with one of the above
 
-5. **Report-gen pressure gates.**
+5. **Report-gen pressure gates.** *(partially landed 2026-05-15 as containment, WAL-size gate only)*
    - Skip / defer report cycles when:
-     - WAL size > threshold
-     - Discovery dropped event count rising
-     - Discovery work queue > threshold
-     - Checkpoint busy across multiple windows
-     - Writer back-pressured / event queue backlog
+     - WAL size > threshold *(landed: `LABELWATCH_REPORT_WAL_SKIP_MB`, default 80)*
+     - Discovery dropped event count rising *(not yet — requires sidecar→main signal channel)*
+     - Discovery work queue > threshold *(not yet — same)*
+     - Checkpoint busy across multiple windows *(not yet — requires checkpoint probe)*
+     - Writer back-pressured / event queue backlog *(not yet)*
    - Report freshness degrades explicitly under pressure rather than silently dragging the plant
    - Composes well with #1 or #2
 

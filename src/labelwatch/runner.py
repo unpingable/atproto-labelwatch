@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import gc
 import logging
+import os
 import threading
 import time
 import urllib.error
@@ -51,21 +52,48 @@ def _release_memory(conn) -> None:
     log.info("rss=%s", _rss_mb())
 
 
-def _report_loop(db_path: str, report_out: str, interval: int, facts_path: str = "") -> None:
+def _wal_size_mb(db_path: str) -> float:
+    try:
+        return os.path.getsize(db_path + "-wal") / (1024 * 1024)
+    except OSError:
+        return 0.0
+
+
+def _report_loop(
+    db_path: str,
+    report_out: str,
+    interval: int,
+    facts_path: str = "",
+    wal_skip_mb: float = 80.0,
+) -> None:
     """Dedicated report generation thread.
 
     Uses its own readonly DB connection so report generation is never
     blocked by long-running ingest passes in the main loop.
+
+    Report freshness is subordinate to discovery ingest: skip when WAL is
+    over wal_skip_mb (writer/checkpoint contention) and re-evaluate next cycle.
     """
-    log.info("Report thread started (interval=%ds, out=%s)", interval, report_out)
+    log.info(
+        "Report thread started (interval=%ds, wal_skip=%.0fMB, out=%s)",
+        interval, wal_skip_mb, report_out,
+    )
     while True:
+        wal_mb = _wal_size_mb(db_path)
+        if wal_mb > wal_skip_mb:
+            log.warning(
+                "Report skipped: WAL=%.1fMB > %.0fMB (writer pressure, deferring)",
+                wal_mb, wal_skip_mb,
+            )
+            time.sleep(interval)
+            continue
         try:
             conn = db.connect(db_path, readonly=True)
             try:
                 report_mod.generate_report(conn, report_out, now=now_utc(), facts_path=facts_path or None)
             finally:
                 conn.close()
-            log.info("Report generated successfully")
+            log.info("Report generated successfully (WAL=%.1fMB at start)", wal_mb)
             # Heartbeat via a separate writable connection
             try:
                 wconn = db.connect(db_path)
@@ -83,6 +111,7 @@ def run_loop(
     ingest_interval: int,
     scan_interval: int,
     report_out: Optional[str] = None,
+    report_interval: Optional[int] = None,
 ) -> None:
     conn = db.connect(cfg.db_path)
     db.init_db(conn)
@@ -95,12 +124,18 @@ def run_loop(
     derive_interval = cfg.derive_interval_minutes * 60
     primary_ingest_disabled = False
 
-    # Start report generation on its own thread so it's never blocked by ingest
+    # Start report generation on its own thread so it's never blocked by ingest.
+    # Report freshness is subordinate to discovery ingest (see gap-spec
+    # report-generation-workload-isolation): long readonly snapshots pin the WAL
+    # and starve discovery writes, so we run reports infrequently and gate on
+    # WAL pressure.
     if report_out:
-        report_interval = max(scan_interval, 300)  # at least every 5 min
+        eff_interval = report_interval if report_interval is not None else 1800
+        eff_interval = max(eff_interval, 300)
+        wal_skip_mb = float(os.environ.get("LABELWATCH_REPORT_WAL_SKIP_MB", "80"))
         t = threading.Thread(
             target=_report_loop,
-            args=(cfg.db_path, report_out, report_interval, cfg.driftwatch_facts_path),
+            args=(cfg.db_path, report_out, eff_interval, cfg.driftwatch_facts_path, wal_skip_mb),
             daemon=True,
             name="report-gen",
         )

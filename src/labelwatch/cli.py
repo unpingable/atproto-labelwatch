@@ -186,6 +186,7 @@ def cmd_run(args) -> None:
         ingest_interval=args.ingest_interval,
         scan_interval=args.scan_interval,
         report_out=args.report_out,
+        report_interval=args.report_interval,
     )
 
 
@@ -912,6 +913,12 @@ def main(argv: Optional[list] = None) -> None:
     p_run.add_argument("--ingest-interval", type=int, default=120, help="Seconds between ingest runs")
     p_run.add_argument("--scan-interval", type=int, default=300, help="Seconds between scan runs")
     p_run.add_argument("--report-out", help="Output directory for HTML report")
+    p_run.add_argument(
+        "--report-interval",
+        type=int,
+        default=1800,
+        help="Seconds between report runs (min 300). Report-gen is WAL-gated; long reads pin the WAL and starve discovery, so this defaults to 30min, not scan_interval.",
+    )
     p_run.add_argument("--window-minutes", type=int, help="Override window minutes")
     p_run.add_argument("--baseline-hours", type=int, help="Override baseline hours")
     p_run.set_defaults(func=cmd_run)

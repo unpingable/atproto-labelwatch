@@ -430,8 +430,14 @@ def connect(db_path: str, readonly: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA temp_store=FILE")
     # Truncate WAL file after checkpoint if it exceeds 64MB
     conn.execute("PRAGMA journal_size_limit=67108864")
-    # Memory-mapped I/O for read performance (256MB)
-    conn.execute("PRAGMA mmap_size=268435456")
+    # Memory-mapped I/O for read performance (64MB).
+    # 2026-05-18: reduced from 256MB after cgroup memory.high throttled 4.65M
+    # times and swap saturated under derive workload. Each of 4 processes
+    # (main/discovery/api + report-gen thread connection) held its own 256MB
+    # mmap window; cumulative pressure pushed page-cache eviction + swap I/O
+    # high enough that opportunistic readonly probes hit `disk I/O error`.
+    # See gap-spec-derive-workload-isolation.md (page-cache pressure section).
+    conn.execute("PRAGMA mmap_size=67108864")
     if readonly:
         conn.execute("PRAGMA query_only=ON")
     return conn
