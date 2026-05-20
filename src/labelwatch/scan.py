@@ -36,6 +36,14 @@ REVERSAL_CAP_PER_LABELER = 50_000
 _DERIVE_STEP_YIELD_SECONDS = float(os.environ.get("LABELWATCH_DERIVE_STEP_YIELD_S", "0.1"))
 _DERIVE_DISABLED = os.environ.get("LABELWATCH_DERIVE_DISABLE", "0") == "1"
 
+# Facts sync staleness gate. _sync_driftwatch_facts spends ~16min/hour doing a
+# DISTINCT scan over label_events to build candidate URIs against driftwatch's
+# facts.sqlite. When facts.sqlite hasn't been updated, the scan produces zero
+# matches and burns the writer transaction window discovery needs. Driftwatch's
+# ENABLE_FACTS_EXPORT is currently parked pending DuckDB cutover, so the source
+# is frozen and the scan is pure waste. See gap-spec-derive-workload-isolation.md.
+_FACTS_MAX_AGE_S = int(os.environ.get("LABELWATCH_FACTS_MAX_AGE_S", "86400"))
+
 
 def _yield_between_derive_steps() -> None:
     """Sleep briefly between derive sub-steps so the discovery writer (and any
@@ -653,6 +661,14 @@ _log = logging.getLogger("labelwatch.scan")
 def _sync_driftwatch_facts(conn, config: Config) -> None:
     """Join label_events with driftwatch facts sidecar to compute lag_sec_claimed.
 
+    Gated by a staleness check on the source facts.sqlite mtime. The Phase 1
+    DISTINCT scan over label_events costs ~16min on current event volume; we
+    skip it when the source can't have new joinable rows. Two skip paths,
+    neither advances HWM or last_seen_mtime — if the source rotates, the next
+    call processes everything that accumulated in the meantime:
+      - source older than _FACTS_MAX_AGE_S (hard max-age skip)
+      - source mtime unchanged since last successful sync (unchanged skip)
+
     The drift attach is held only for the snapshot copy of needed fingerprint
     rows into a local temp table; the (potentially slow) join into
     derived_label_fp happens entirely within labelwatch after DETACH. This
@@ -670,6 +686,35 @@ def _sync_driftwatch_facts(conn, config: Config) -> None:
     # Validate path (ATTACH doesn't support parameter binding)
     if "'" in path or ";" in path:
         _log.warning("driftwatch_facts_path contains unsafe characters, skipping")
+        return
+
+    # Staleness gate. Skip the candidate scan entirely when the upstream facts
+    # source can't have produced anything new for us to join against. The
+    # mtime check is two-pronged: hard max age, and unchanged-since-last-sync.
+    # We do not record HWM/mtime on the skip path — if the source rotates, the
+    # next call processes everything that accumulated in the meantime.
+    try:
+        mtime = int(os.stat(path).st_mtime)
+    except OSError as e:
+        _log.warning("facts_sync stat failed: %s", e)
+        return
+
+    now_epoch_check = int(time.time())
+    source_age_s = now_epoch_check - mtime
+    last_seen_raw = db.get_meta(conn, "facts_sync:last_seen_mtime")
+    last_seen_mtime = int(last_seen_raw) if last_seen_raw and last_seen_raw.lstrip("-").isdigit() else None
+
+    if source_age_s > _FACTS_MAX_AGE_S:
+        _log.info(
+            "facts_sync skipped: stale source_age_s=%d max_age_s=%d mtime=%d",
+            source_age_s, _FACTS_MAX_AGE_S, mtime,
+        )
+        return
+    if last_seen_mtime is not None and mtime <= last_seen_mtime:
+        _log.info(
+            "facts_sync skipped: unchanged source_age_s=%d mtime=%d last_seen_mtime=%d",
+            source_age_s, mtime, last_seen_mtime,
+        )
         return
 
     hwm_row = conn.execute(
@@ -767,6 +812,7 @@ def _sync_driftwatch_facts(conn, config: Config) -> None:
                    OR CAST(strftime('%s', le.ts) AS INTEGER) >= ?)
               AND le.uri LIKE 'at://%/app.bsky.feed.post/%'
         """, (hwm, overlap_epoch))
+        db.set_meta(conn, "facts_sync:last_seen_mtime", str(mtime))
         conn.commit()
     finally:
         conn.execute("DROP TABLE IF EXISTS tmp_drift_fp")
@@ -774,8 +820,8 @@ def _sync_driftwatch_facts(conn, config: Config) -> None:
 
     join_ms = int((time.monotonic() - join_t0) * 1000)
     _log.info(
-        "facts_sync candidates=%d snapshot=%d attach_ms=%d join_ms=%d",
-        candidate_count, snapshot_count, attach_ms, join_ms,
+        "facts_sync candidates=%d snapshot=%d attach_ms=%d join_ms=%d mtime=%d source_age_s=%d",
+        candidate_count, snapshot_count, attach_ms, join_ms, mtime, source_age_s,
     )
 
 

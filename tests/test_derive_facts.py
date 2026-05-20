@@ -191,7 +191,8 @@ def test_hwm_incremental(tmp_path):
     post_uri2 = "at://did:plc:user/app.bsky.feed.post/hwm2"
     post_epoch = int(time.time()) - 3600
 
-    _make_facts(str(tmp_path / "facts.sqlite"), [
+    facts_path = str(tmp_path / "facts.sqlite")
+    _make_facts(facts_path, [
         (post_uri1, "fp1", post_epoch, 1),
         (post_uri2, "fp2", post_epoch, 2),
     ])
@@ -199,16 +200,71 @@ def test_hwm_incremental(tmp_path):
     label_ts = "2025-01-15T01:00:00Z"
     _insert_label_event(conn, "did:plc:lab", post_uri1, label_ts)
 
-    config = Config(driftwatch_facts_path=str(tmp_path / "facts.sqlite"))
+    config = Config(driftwatch_facts_path=facts_path)
     _sync_driftwatch_facts(conn, config)
 
     assert conn.execute("SELECT COUNT(*) AS c FROM derived_label_fp").fetchone()["c"] == 1
 
-    # Add second label event
+    # Add second label event and bump the facts.sqlite mtime to simulate a
+    # facts-export rotation (in prod, an unchanged source mtime is a skip
+    # signal — see _sync_driftwatch_facts staleness gate). Without this bump
+    # the second sync correctly no-ops and the HWM advance can't be observed.
     _insert_label_event(conn, "did:plc:lab", post_uri2, label_ts, val="label2")
+    st = os.stat(facts_path)
+    os.utime(facts_path, (st.st_atime, st.st_mtime + 2))
     _sync_driftwatch_facts(conn, config)
 
     assert conn.execute("SELECT COUNT(*) AS c FROM derived_label_fp").fetchone()["c"] == 2
+
+
+def test_staleness_gate_skips_unchanged_source(tmp_path):
+    """When facts.sqlite mtime is unchanged since last sync, the candidate
+    scan must be skipped — the writer transaction window is too expensive
+    to spend on a guaranteed-empty result."""
+    conn = db.connect(":memory:")
+    _init_labelwatch_db(conn)
+
+    post_uri = "at://did:plc:user/app.bsky.feed.post/skip1"
+    post_epoch = int(time.time()) - 3600
+    facts_path = str(tmp_path / "facts.sqlite")
+    _make_facts(facts_path, [(post_uri, "fp1", post_epoch, 1)])
+
+    _insert_label_event(conn, "did:plc:lab", post_uri, "2025-01-15T01:00:00Z")
+
+    config = Config(driftwatch_facts_path=facts_path)
+    _sync_driftwatch_facts(conn, config)
+    assert conn.execute("SELECT COUNT(*) AS c FROM derived_label_fp").fetchone()["c"] == 1
+
+    # Second call with identical mtime: new label event won't be joined because
+    # the source is unchanged. HWM stays where it was — when the source
+    # eventually rotates, the next call picks up the accumulated event.
+    post_uri2 = "at://did:plc:user/app.bsky.feed.post/skip2"
+    _insert_label_event(conn, "did:plc:lab", post_uri2, "2025-01-15T02:00:00Z", val="l2")
+    _sync_driftwatch_facts(conn, config)
+    assert conn.execute("SELECT COUNT(*) AS c FROM derived_label_fp").fetchone()["c"] == 1
+
+
+def test_staleness_gate_skips_stale_source(tmp_path, monkeypatch):
+    """When facts.sqlite is older than _FACTS_MAX_AGE_S, skip the candidate
+    scan even on first sight. Models the parked-facts-export case."""
+    conn = db.connect(":memory:")
+    _init_labelwatch_db(conn)
+
+    post_uri = "at://did:plc:user/app.bsky.feed.post/stale1"
+    post_epoch = int(time.time()) - 3600
+    facts_path = str(tmp_path / "facts.sqlite")
+    _make_facts(facts_path, [(post_uri, "fp1", post_epoch, 1)])
+
+    _insert_label_event(conn, "did:plc:lab", post_uri, "2025-01-15T01:00:00Z")
+
+    # Backdate facts.sqlite by 7 days; with default max_age 24h this must skip.
+    old_mtime = int(time.time()) - (7 * 86400)
+    os.utime(facts_path, (old_mtime, old_mtime))
+
+    config = Config(driftwatch_facts_path=facts_path)
+    _sync_driftwatch_facts(conn, config)
+
+    assert conn.execute("SELECT COUNT(*) AS c FROM derived_label_fp").fetchone()["c"] == 0
 
 
 # -------------------------------------------------------------------
