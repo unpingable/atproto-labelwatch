@@ -28,6 +28,45 @@ from .utils import format_ts, now_utc, parse_ts, stable_json
 DERIVE_VERSION = "derive_v1"
 REVERSAL_CAP_PER_LABELER = 50_000
 
+# Derive workload tunables. See gap-spec-derive-workload-isolation.md.
+# Pre-patch, run_derive held the SQLite writer lock for the entire pass (one
+# implicit transaction across 12+ sub-derive steps), starving labelwatch-discovery
+# of writer access and causing sustained event drops. Post-patch, each sub-step
+# commits independently and yields briefly so discovery can land its writes.
+_DERIVE_STEP_YIELD_SECONDS = float(os.environ.get("LABELWATCH_DERIVE_STEP_YIELD_S", "0.1"))
+_DERIVE_DISABLED = os.environ.get("LABELWATCH_DERIVE_DISABLE", "0") == "1"
+
+
+def _yield_between_derive_steps() -> None:
+    """Sleep briefly between derive sub-steps so the discovery writer (and any
+    other waiting writers) can acquire the SQLite writer lock before the next
+    sub-step opens its own transaction."""
+    if _DERIVE_STEP_YIELD_SECONDS > 0:
+        time.sleep(_DERIVE_STEP_YIELD_SECONDS)
+
+
+def _derive_step(conn, name: str, fn) -> None:
+    """Run one derive sub-step in its own transaction, commit, then yield.
+
+    Each substep gets its own try/except so a single failure doesn't block the
+    rest of the pass (preserves prior behavior). Timing is logged at INFO so
+    long substeps are visible and a future pressure gate has data to act on.
+    """
+    t0 = time.monotonic()
+    try:
+        fn()
+        conn.commit()
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        _log.info("derive.step name=%s ms=%d", name, elapsed_ms)
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        _log.warning("derive.step name=%s ms=%d failed: %s", name, elapsed_ms, exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    _yield_between_derive_steps()
+
 
 def _fetch_event_stats(conn, ts_24h: str, ts_7d: str, ts_30d: str) -> dict:
     """One query: per-labeler event counts (24h/7d/30d/total) + last event ts."""
@@ -1209,61 +1248,41 @@ def _compute_boundary_load_7d(conn) -> None:
 
 
 def run_derive(conn, config: Config, now: datetime | None = None) -> None:
-    """Run regime/risk/coherence derivation (expensive — call less often than scan)."""
+    """Run regime/risk/coherence derivation (expensive — call less often than scan).
+
+    See gap-spec-derive-workload-isolation.md. Each sub-step commits independently
+    and yields briefly so labelwatch-discovery (and any other writer) can land
+    writes between substeps. Pre-2026-05-16 this whole function held the SQLite
+    writer lock in a single transaction, starving discovery and causing sustained
+    event drops.
+    """
     if now is None:
         now = now_utc()
-    _run_derive_pass(conn, config, now)
-    _update_coverage_columns(conn, config, now)
-    _cleanup_ingest_outcomes(conn, now)
+    if _DERIVE_DISABLED:
+        _log.warning("derive.skipped reason=LABELWATCH_DERIVE_DISABLE=1")
+        return
+
+    t_pass = time.monotonic()
+    _derive_step(conn, "run_derive_pass", lambda: _run_derive_pass(conn, config, now))
+    _derive_step(conn, "update_coverage_columns", lambda: _update_coverage_columns(conn, config, now))
+    _derive_step(conn, "cleanup_ingest_outcomes", lambda: _cleanup_ingest_outcomes(conn, now))
 
     if config.driftwatch_facts_path:
-        try:
-            _sync_driftwatch_facts(conn, config)
-        except Exception as exc:
-            _log.warning("driftwatch facts sync failed: %s", exc)
+        _derive_step(conn, "sync_driftwatch_facts", lambda: _sync_driftwatch_facts(conn, config))
 
-    try:
-        _compute_labeler_lag_7d(conn)
-    except Exception as exc:
-        _log.warning("labeler lag 7d compute failed: %s", exc)
-
-    try:
-        _compute_reversal_stats_7d(conn)
-    except Exception as exc:
-        _log.warning("reversal stats 7d compute failed: %s", exc)
-
-    try:
-        _compute_boundary_load_7d(conn)
-    except Exception as exc:
-        _log.warning("boundary load 7d compute failed: %s", exc)
-
-    try:
-        _update_val_dist_day(conn)
-    except Exception as exc:
-        _log.warning("val dist day update failed: %s", exc)
-
-    try:
-        _compute_entropy_7d(conn)
-    except Exception as exc:
-        _log.warning("entropy 7d compute failed: %s", exc)
-
-    try:
-        _update_author_day(conn)
-    except Exception as exc:
-        _log.warning("author day rollup failed: %s", exc)
-
-    try:
-        _update_author_labeler_day(conn)
-    except Exception as exc:
-        _log.warning("author labeler day rollup failed: %s", exc)
+    _derive_step(conn, "compute_labeler_lag_7d", lambda: _compute_labeler_lag_7d(conn))
+    _derive_step(conn, "compute_reversal_stats_7d", lambda: _compute_reversal_stats_7d(conn))
+    _derive_step(conn, "compute_boundary_load_7d", lambda: _compute_boundary_load_7d(conn))
+    _derive_step(conn, "update_val_dist_day", lambda: _update_val_dist_day(conn))
+    _derive_step(conn, "compute_entropy_7d", lambda: _compute_entropy_7d(conn))
+    _derive_step(conn, "update_author_day", lambda: _update_author_day(conn))
+    _derive_step(conn, "update_author_labeler_day", lambda: _update_author_labeler_day(conn))
 
     if config.boundary_enabled:
-        try:
-            run_boundary_pass(conn, config, now)
-        except Exception as exc:
-            _log.warning("boundary pass failed: %s", exc)
+        _derive_step(conn, "run_boundary_pass", lambda: run_boundary_pass(conn, config, now))
 
-    conn.commit()
+    total_ms = int((time.monotonic() - t_pass) * 1000)
+    _log.info("derive.pass total_ms=%d", total_ms)
 
     # WAL checkpoint with TRUNCATE — reclaim WAL disk space after the batch.
     # run_derive does retention-style deletes across many sub-operations; the
