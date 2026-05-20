@@ -12,7 +12,7 @@ Normative, authoritative documents. The decision rule is borrowed from agent_gov
 specs/
   core/         shipped canonical specs (architecture, protocol, invariant)
   gaps/         explicit backlog — things we know are missing
-  research/     non-committed lines of inquiry — empty for now
+  research/     non-committed lines of inquiry — doctrine/vocabulary parking, not authorization to build
 ```
 
 ## core/
@@ -29,6 +29,12 @@ specs/
 | File | Gap |
 |------|-----|
 | `KNOWN_GAPS.md` | Aggregated known-gaps list across the project |
+
+## research/
+
+| File | What it parks |
+|------|---------------|
+| `non-sovereign-perimeter-doctrine.md` | Doctrine + candidate vocabulary for a possible future Labelwatch lane watching custodians/lenses. Parked, not built. |
 
 ## Adding a new spec
 
