@@ -1913,11 +1913,24 @@ is their output, and how much of the apparent diversity is already degraded.
         naive_banner = f"<p class=\"small\">Note: {naive_count} timestamps lacked timezone info and were assumed UTC.</p>"
 
     # --- Hero: what is this, why should I care, what do I click ---
+    # Stat row gives the reader an immediate sense of scale + freshness
+    # before the prose. Total / active / events / last ingest are the
+    # four numbers that anchor everything else on the page.
+    labelers_active_7d = sum(1 for r in labelers if (r["events_7d"] or 0) > 0)
+    total_events_7d = sum((r["events_7d"] or 0) for r in labelers)
+    last_ingest_label = _human_ts(heartbeats.get("last_ingest_ok_ts") or "") or "unknown"
+    hero_stat_row = f"""
+<div class="hero-stats" style="display:flex;flex-wrap:wrap;gap:1.2rem;margin:0.75rem 0 0 0;padding:0.6rem 0.8rem;border:1px solid var(--border,#ccc);border-radius:6px;background:var(--bg-muted,#f6f7f9);">
+  <div><strong>{len(labelers):,}</strong> <span class="small">labelers observed</span></div>
+  <div><strong>{labelers_active_7d:,}</strong> <span class="small">active in 7d</span></div>
+  <div><strong>{total_events_7d:,}</strong> <span class="small">events in 7d</span></div>
+  <div><strong>{escape(last_ingest_label)}</strong> <span class="small">last ingest</span></div>
+</div>
+"""
     hero_html = f"""
 <div class="hero">
-  <p class="hero-pitch">Labelwatch is a moderation infrastructure observatory for Bluesky.
-  It tracks {len(labelers)} independent labelers \u2014 their health, conflicts, taxonomy shear,
-  ecosystem concentration, and structural behavior across the network.</p>
+  <p class="hero-pitch">Labelwatch observes the Bluesky labeling layer.</p>
+  {hero_stat_row}
   <p><strong>ClearSky and Skythread explain local symptoms. Labelwatch maps the governing machinery.</strong></p>
   <p><strong>Labelwatch treats labels as claims, not verdicts, and tracks the institutions emitting them.</strong></p>
   <p class="small" style="opacity:0.8">This is not a block checker, a thread reconstruction tool, or a personal
@@ -2072,9 +2085,11 @@ is their output, and how much of the apparent diversity is already degraded.
 
     # --- Authority-effect inventory (7d) ---
     # Structural classification of labels by what kind of authority they
-    # attempt to exercise. JSON artifact always written; HTML section folded
-    # into the overview page below.
-    authority_effect_section = ""
+    # attempt to exercise. JSON artifact always written; the full inventory
+    # renders to /authority.html (it's a Lovecraftian grocery receipt on
+    # the homepage). Homepage carries a small link card instead.
+    authority_effect_html = ""
+    authority_link_card = ""
     try:
         authority_inv = build_authority_effect_inventory(conn, start_7d, now_ts)
         _write_json(
@@ -2082,12 +2097,36 @@ is their output, and how much of the apparent diversity is already degraded.
             authority_inv,
         )
         if authority_inv["total_label_count"] > 0:
-            authority_effect_section = render_authority_effect_html(
+            authority_effect_html = render_authority_effect_html(
                 authority_inv,
                 max_labels_per_group=50,
             )
+            authority_link_card = f"""
+<div class="card" style="margin-top:0.75rem;display:flex;justify-content:space-between;align-items:center;">
+  <div>
+    <h3 style="margin:0">Full authority report</h3>
+    <p class="small" style="margin:0.2rem 0 0 0">Authority-effect inventory: {authority_inv['total_label_count']:,} distinct labels across {authority_inv['total_event_count']:,} events, grouped by what kind of authority the label attempts to exercise.</p>
+  </div>
+  <a href="/authority.html" style="flex:0 0 auto;padding:0.3rem 1rem;border:1px solid var(--border,#ccc);border-radius:4px;background:var(--accent,#2980b9);color:#fff;text-decoration:none;">View &rarr;</a>
+</div>
+"""
     except Exception as exc:
         log.warning("Authority-effect inventory failed: %s", exc)
+
+    # --- Recent alerts (top 10) ---
+    # Promote a small alerts view onto the homepage. The full 200-row table
+    # remains inside ops_detail for operator deep-dives.
+    recent_alerts_card = ""
+    top10_alerts = list(alerts_recent)[:10]
+    if top10_alerts:
+        top10_head = "<tr><th>id</th><th>rule_id</th><th>labeler</th><th>ts</th></tr>"
+        top10_rollup = _alert_rollups(top10_alerts, handles, display_names)
+        recent_alerts_card = (
+            '<h2 style="margin-top:1.5rem;">Recent alerts</h2>'
+            '<p class="labeler-context">Most recent 10 detections. '
+            'Full 200-alert window available in System status below.</p>'
+            f'<table><thead>{top10_head}</thead><tbody>{top10_rollup}</tbody></table>'
+        )
 
     # --- Boundary section: open with finding-language lead ---
     boundary_finding = ""
@@ -2121,27 +2160,55 @@ is their output, and how much of the apparent diversity is already degraded.
 """
 
     # --- Assemble page with new hierarchy ---
-    # Layer 1: Orientation (hero + what's happening + entry points)
-    # Layer 2: Findings (ecosystem health, boundary conflicts)
-    # Layer 3: Reference labelers + full registry
-    # Layer 4: Ops detail (collapsed)
+    # Layer 1: Orientation (hero with stat row + what's happening)
+    # Layer 2: Findings (authority surface summary → ecosystem health →
+    #          conflicts → recent alerts). Heavy detail (full authority
+    #          inventory, all-labelers table) lives behind links.
+    # Layer 3: Utilities (registry browse, account lookup)
+    # Layer 4: Explanation + ops detail (collapsed)
     overview_html = _layout(
         "Labelwatch",
         hero_html
         + summary_strip
-        + registry_card
-        + explainer_html
         + authority_posture_section
+        + authority_link_card
+        + reference_lane
         + hosting_section
         + boundary_finding
-        + authority_effect_section
-        + reference_lane
-        + labeler_section
+        + recent_alerts_card
+        + registry_card
         + climate_card
+        + explainer_html
+        # All-labelers triage table — kept on the homepage but as a
+        # collapsed <details> at the bottom so its triage tab bar
+        # (Active/Alerts/New/Opaque/All) stays available without
+        # dominating the fold. The /v1/registry page is the proper
+        # browse surface; this stays here for in-page filtering only.
+        + labeler_section
         + ops_detail
         + TRIAGE_JS,
     )
     _write(os.path.join(tmp_dir, "index.html"), overview_html)
+
+    # --- Authority report page ---
+    # Full authority surface — posture aggregate + per-effect label
+    # inventory. Off the homepage so it can be dense without being
+    # obnoxious. The posture section is repeated here as context;
+    # the inventory is the new content.
+    authority_page_body = (
+        '<p><a href="index.html">&larr; Back to overview</a></p>'
+        '<h1>Authority report</h1>'
+        '<p class="labeler-context">'
+        "Full view of the testimony layer's authority surface. "
+        "Ecosystem-level posture aggregate (top), followed by the "
+        "per-effect inventory of every observed label classified by "
+        "what kind of authority it attempts to exercise."
+        '</p>'
+        + (authority_posture_section or "")
+        + (authority_effect_html or "")
+    )
+    authority_page_html = _layout("Labelwatch — Authority report", authority_page_body)
+    _write(os.path.join(tmp_dir, "authority.html"), authority_page_html)
 
     # --- Census page ---
     census_body = '<h2>Discovery Census</h2>'
@@ -2481,6 +2548,7 @@ is their output, and how much of the apparent diversity is already degraded.
     # --- sitemap.xml ---
     sitemap_urls = [
         ("index.html", "daily", "1.0"),
+        ("authority.html", "daily", "0.8"),
         ("v1/registry", "daily", "0.8"),
         ("census.html", "daily", "0.7"),
     ]
