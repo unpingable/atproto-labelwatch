@@ -14,6 +14,11 @@ def render_about_html() -> str:
   <p class="hero-pitch">Labelers Are a Claims Layer</p>
 </div>
 
+<aside class="about-binding" style="border:1px solid var(--border,#ccc);border-left:4px solid var(--accent,#2980b9);padding:0.8rem 1rem;margin:1rem 0;background:var(--bg-muted,#f6f7f9);">
+  <p style="margin:0 0 0.4rem 0;"><strong>What Labelwatch does not claim</strong></p>
+  <p style="margin:0;">Labelers are not moderation. Labelers publish classification or reputation testimony. Moderation begins when clients, services, defaults, feeds, communities, or platforms convert testimony into constraint.</p>
+</aside>
+
 <div class="about-prose">
 
 <p>Labelers matter. They are not fake. They are not ornamental. They can shape
