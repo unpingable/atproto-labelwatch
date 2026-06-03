@@ -309,6 +309,261 @@ KIND_MAP: dict[str, str] = {
 }
 
 
+# Authority effect classification: what role the label plays in the
+# control/reputation surface — what kind of authority it attempts to exercise.
+#
+# This is a structural classification of the LABEL, not an inference about
+# labeler intent. It describes the shape of the claim, not its truth value
+# and not the labeler's motive.
+#
+# Values:
+#   enforcement_instruction — instructs consumers/clients to remove or block
+#   visibility_affecting    — changes reach / hides content from default views
+#   advisory                — informational warning, leaves visibility to client
+#   reputational            — attaches a normative/character claim to the subject
+#   descriptive             — community/identity/context marker, no system effect
+#   telemetry               — a measured behavioral metric the labeler observed
+#   decorative              — badge/flair/novelty marker
+#   unknown                 — cannot classify from family alone
+#
+# Distinctions worth keeping clear when reading the map:
+#   - policy_claim families like `spam`/`hate` are reputational. They assert a
+#     normative judgment about the subject; the !-prefixed mod actions are the
+#     separate actuators.
+#   - `mod-warn` is advisory; `mod-gate`/`mod-hide` affect visibility;
+#     `mod-takedown` is an enforcement instruction.
+#   - Identity families (`gay-post`, pronouns) are classified descriptive: the
+#     label's authority effect is "none"; any hostile social effect comes from
+#     issuer/context the schema cannot see. This is not a claim that identity
+#     labels are benign — it's a claim about what the label, as a string,
+#     instructs the system to do.
+AUTHORITY_EFFECT_MAP: dict[str, str] = {
+    # ── Enforcement instructions (actuators that remove) ──
+    "mod-takedown": "enforcement_instruction",
+
+    # ── Visibility-affecting (reach control, hides from default views) ──
+    "mod-hide": "visibility_affecting",
+    "mod-gate": "visibility_affecting",
+
+    # ── Advisory (informational warning; client decides) ──
+    "mod-warn": "advisory",
+    "nudity": "advisory",
+    "graphic-media": "advisory",
+
+    # ── Reputational (normative claim about the subject) ──
+    # Policy-claim moderation families
+    "spam": "reputational",
+    "misleading": "reputational",
+    "harassment": "reputational",
+    "hate": "reputational",
+    "violence": "reputational",
+    "adult-sexual": "reputational",
+    "impersonation": "reputational",
+    "inauthenticity": "reputational",
+    # Political/affiliation tagging that attaches normative charge
+    "uspol": "reputational",
+    "government": "reputational",
+    "trump": "reputational",
+    "trumpface": "reputational",
+    "maga-trump": "reputational",
+    "elon-musk": "reputational",
+    "inverted-red-triangle": "reputational",
+    "hammer-sickle": "reputational",
+    "terf-gc": "reputational",
+    "gaza-genocide-supporter": "reputational",
+    # Stance/category accusations: structurally reputational — the string marks
+    # a target by socially charged stance rather than recording behavior,
+    # infrastructure, or enforcement. Not a judgment on whether the accusation
+    # is fair; a judgment on the shape of what the label asks the system to do.
+    "ai-hater": "reputational",
+    "substack-platforms-nazis": "reputational",
+    # Verdict-shaped metrics (interpretive, not raw counts)
+    "fringe-media": "reputational",
+    "amplifier": "reputational",
+    "engagementfarmer": "reputational",
+    "low-quality-replies": "reputational",
+    "modlist-author": "reputational",
+    "troll": "reputational",
+    "intolerance": "reputational",
+    "intolerant": "reputational",
+
+    # ── Descriptive (community/identity/context markers) ──
+    "gay-post": "descriptive",
+    "gay-user": "descriptive",
+    "trans-post": "descriptive",
+    "sapphic": "descriptive",
+    "bisexual": "descriptive",
+    "pan": "descriptive",
+    "religion": "descriptive",
+    "he": "descriptive",
+    "she": "descriptive",
+    "they": "descriptive",
+    "it": "descriptive",
+    "hethey": "descriptive",
+    "shethey": "descriptive",
+    "sheher": "descriptive",
+    "hehim": "descriptive",
+    "theythem": "descriptive",
+
+    # ── Telemetry (raw behavioral metrics: counts, rates, gaps, thresholds) ──
+    "handle-changed": "telemetry",
+    "many-handle-chgs": "telemetry",
+    "some-blocks": "telemetry",
+    "mass-blocks": "telemetry",
+    "bot": "telemetry",
+    "bot-reply": "telemetry",
+    "new-acct-replies": "telemetry",
+    "no-dms": "telemetry",
+    "bulk-following": "telemetry",
+    "follow-farming": "telemetry",
+    "mass-follow-high": "telemetry",
+    "mass-follow-mid": "telemetry",
+    "high-follow-churn-one-hundred": "telemetry",
+    "high-follow-churn-five-hundred": "telemetry",
+    "weekly-high-churn-12000": "telemetry",
+    "posting-daily-made-over-25-posts-yesterday": "telemetry",
+    "posting-daily-made-over-25-replies-yesterday": "telemetry",
+    "posting-daily-made-over-100-posts-yesterday": "telemetry",
+    "posting-daily-made-over-100-replies-yesterday": "telemetry",
+    "posting-monthly-posts-more-than-10-per-day": "telemetry",
+    "posting-monthly-posts-more-than-20-per-day": "telemetry",
+    "posting-monthly-replies-more-than-10-per-day": "telemetry",
+    "posting-monthly-replies-more-than-20-per-day": "telemetry",
+    "no-gap-more-than-one-hours": "telemetry",
+    "no-gap-more-than-two-hours": "telemetry",
+    "no-gap-more-than-four-hours": "telemetry",
+    "high-metadata-changes-five": "telemetry",
+    "high-metadata-changes-ten": "telemetry",
+    "high-metadata-changes-fifty": "telemetry",
+    "metadata-monthly-changes-low": "telemetry",
+    "metadata-monthly-changes-medium": "telemetry",
+    "metadata-monthly-changes-high": "telemetry",
+    "posted-same-url-low": "telemetry",
+    "posted-same-url-mid": "telemetry",
+    "posted-same-url-high": "telemetry",
+    # Infrastructure / site markers — observation of where, not verdict
+    "site-standard": "telemetry",
+    "internal-independent": "telemetry",
+    "internal-other": "telemetry",
+
+    # ── Decorative (badge / flair / novelty) ──
+    "scat-post": "decorative",
+    "urine": "decorative",
+    "feces": "decorative",
+    "diaper": "decorative",
+    "animalistic-mask": "decorative",
+    "sports-betting": "decorative",
+    "spoiler-parent": "decorative",
+}
+
+
+# Human-readable copy for each authority_effect group. Descriptive only.
+AUTHORITY_EFFECT_COPY: dict[str, str] = {
+    "enforcement_instruction": (
+        "Labels that instruct consumers to remove or take down content."
+    ),
+    "visibility_affecting": (
+        "Labels that affect reach — hide from default views or gate access."
+    ),
+    "advisory": (
+        "Labels that warn the consumer without affecting visibility directly."
+    ),
+    "reputational": (
+        "Labels that appear to function as a reputational claim about the "
+        "subject. Not an inference about labeler intent."
+    ),
+    "descriptive": (
+        "Labels that mark community, identity, or context, with no inherent "
+        "system effect. Authority effect described here is structural; "
+        "social effect depends on issuer and context."
+    ),
+    "telemetry": (
+        "Labels that report a measured behavioral metric (counts, rates, "
+        "gaps, thresholds) observed by the labeler."
+    ),
+    "decorative": (
+        "Labels that function as badges, flair, or novelty markers."
+    ),
+    "unknown": (
+        "Labels not classified by the current authority_effect map. "
+        "Listed individually so they are not silently dropped."
+    ),
+}
+
+
+# Stable ordering for report rendering. Higher-authority effects first;
+# decorative/unknown last. Used by JSON and HTML emitters.
+AUTHORITY_EFFECT_ORDER: tuple[str, ...] = (
+    "enforcement_instruction",
+    "visibility_affecting",
+    "advisory",
+    "reputational",
+    "descriptive",
+    "telemetry",
+    "decorative",
+    "unknown",
+)
+
+
+def classify_authority_effect(family: str) -> str:
+    """Classify what kind of authority a label family attempts to exercise.
+
+    Returns one of:
+      enforcement_instruction, visibility_affecting, advisory, reputational,
+      descriptive, telemetry, decorative, unknown.
+
+    Strictly explicit. No structural fallback: if a label cannot be assigned
+    from AUTHORITY_EFFECT_MAP, returns "unknown". Unknown is a valid report
+    finding — it surfaces labels the namespace has grown around without the
+    classifier guessing. Do not collapse this into a domain/kind synonym by
+    adding inferred fallbacks.
+
+    Does not infer labeler intent. Identity/descriptive families are classified
+    by what the label, as a string, asks the system to do — not by how a
+    particular issuer may be using it.
+
+    See `classify_authority_effect_with_labeler_context()` for the narrow
+    labeler-level fallback used when a labeler emits an entire bespoke
+    decorative namespace too large to enumerate by value.
+    """
+    return AUTHORITY_EFFECT_MAP.get(family, "unknown")
+
+
+# Labeler-level authority-effect hint: applied ONLY as a fallback for labels
+# that are not in AUTHORITY_EFFECT_MAP and are emitted by labelers whose entire
+# namespace is admittedly bespoke/decorative by self-declared design.
+#
+# Tension this resolves: oracle.posters.rip alone emits 200+ distinct
+# "manner of death" strings. Enumerating each in AUTHORITY_EFFECT_MAP is not
+# maintainable. Leaving them in `unknown` clutters the schema-gap finding with
+# labels nobody actually disputes are decorative.
+#
+# Tension this introduces: violates the "classify the label, not the labeler"
+# rule for the long-tail fallback case. Kept narrow:
+#
+#   - Only used when AUTHORITY_EFFECT_MAP has no mapping for the val.
+#   - Only applies if ALL labelers emitting the val are in this hint map AND
+#     agree on the effect (see inventory aggregation).
+#   - Label-level mapping always wins. If a hinted labeler ever emits `spam`,
+#     `spam` stays reputational; the labeler hint cannot override it.
+#
+# Mirrored in the rejection note for the social_function axis: persisting an
+# editorial framing as schema is the line. Mapping "these three labelers
+# self-describe as toy" is closer to a registry annotation than an editorial
+# verdict.
+LABELER_DEFAULT_EFFECT: dict[str, str] = {
+    # oracle.posters.rip — "manner of death" oracle/fortune labeler.
+    # 200+ distinct val strings, all decorative by self-declared theme.
+    "did:plc:fqfzpua2rp5io5nmxcixvdvm": "decorative",
+    # waffles.mosphere.at — "PANCAKES" novelty labeler.
+    "did:plc:bpcllqvnvx3dlyrcblqkusat": "decorative",
+    # NOTE: bskyttrpg.bsky.social (D&D class labels) is reported by the user as
+    # an obvious decorative labeler but is not yet in the labelers registry
+    # at the time of this map's last update. Add its DID here when discovery
+    # resolves it.
+}
+
+
 def classify_kind(family: str) -> str:
     """Classify what sort of thing a label family is.
 

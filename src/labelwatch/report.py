@@ -13,6 +13,10 @@ from html import escape
 from typing import Any, Dict, List, Optional
 
 from . import db
+from .authority_inventory import (
+    build_authority_effect_inventory,
+    render_authority_effect_html,
+)
 from .boundary import (
     boundary_summary_for_report,
     classify_disagreement,
@@ -2025,6 +2029,25 @@ is their output, and how much of the apparent diversity is already degraded.
 </div>
 """
 
+    # --- Authority-effect inventory (7d) ---
+    # Structural classification of labels by what kind of authority they
+    # attempt to exercise. JSON artifact always written; HTML section folded
+    # into the overview page below.
+    authority_effect_section = ""
+    try:
+        authority_inv = build_authority_effect_inventory(conn, start_7d, now_ts)
+        _write_json(
+            os.path.join(tmp_dir, "authority_effect_inventory.json"),
+            authority_inv,
+        )
+        if authority_inv["total_label_count"] > 0:
+            authority_effect_section = render_authority_effect_html(
+                authority_inv,
+                max_labels_per_group=50,
+            )
+    except Exception as exc:
+        log.warning("Authority-effect inventory failed: %s", exc)
+
     # --- Boundary section: open with finding-language lead ---
     boundary_finding = ""
     if boundary_section:
@@ -2069,6 +2092,7 @@ is their output, and how much of the apparent diversity is already degraded.
         + explainer_html
         + hosting_section
         + boundary_finding
+        + authority_effect_section
         + reference_lane
         + labeler_section
         + ops_detail
