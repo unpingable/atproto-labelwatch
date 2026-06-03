@@ -1418,11 +1418,16 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None, facts_pa
 
     staleness_cards += "</div>"
 
-    # --- My Label Climate lookup ---
+    # --- Account label exposure lookup ---
+    # Sits below the findings (not front-door), framed as an analytical
+    # utility on the registry, not a personal-visibility debugger. The
+    # hero already disclaimed "block checker / visibility debugger";
+    # putting the form right under the hero contradicted that — moved
+    # below the authority surface + findings sections.
     climate_card = """
 <div class="card" style="margin-top:1rem;">
-  <h3>My Label Climate</h3>
-  <p class="small">Look up labeling activity targeting any account.</p>
+  <h3>Account label exposure lookup</h3>
+  <p class="small">Inspect observed labels targeting an account. Descriptive — does not infer intent or assert verdicts.</p>
   <form id="climate-form" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:end;">
     <div style="flex:1 1 200px;max-width:400px;">
       <label for="climate-did" class="small">Handle or DID</label>
@@ -1913,6 +1918,7 @@ is their output, and how much of the apparent diversity is already degraded.
   It tracks {len(labelers)} independent labelers \u2014 their health, conflicts, taxonomy shear,
   ecosystem concentration, and structural behavior across the network.</p>
   <p><strong>ClearSky and Skythread explain local symptoms. Labelwatch maps the governing machinery.</strong></p>
+  <p><strong>Labelwatch treats labels as claims, not verdicts, and tracks the institutions emitting them.</strong></p>
   <p class="small" style="opacity:0.8">This is not a block checker, a thread reconstruction tool, or a personal
   visibility debugger. For those, see <a href="https://clearsky.app/">ClearSky</a> or
   <a href="https://skythread.mackuba.eu/">Skythread</a>.
@@ -1978,19 +1984,31 @@ is their output, and how much of the apparent diversity is already degraded.
     spike_alerts_24h = alerts_24h.get("label_rate_spike", 0)
     flipflop_alerts_24h = alerts_24h.get("flip_flop", 0)
 
-    # Network weather: derive from alert mix + boundary state
-    weather_signals = []
+    # Network weather: derive from alert mix + boundary state.
+    # Each adjective rides with the count that triggered it so the strip
+    # ties to facts rather than vibes.
+    weather_signals: List[str] = []
+    weather_attributions: List[str] = []
     if spike_alerts_24h > 10:
         weather_signals.append("noisy")
+        weather_attributions.append(f"{spike_alerts_24h} rate-spike alerts (24h)")
     if mod_conflicts > 0:
         weather_signals.append("conflicted")
+        weather_attributions.append(
+            f"{mod_conflicts} cross-labeler contradiction edge"
+            f"{'s' if mod_conflicts != 1 else ''}"
+        )
     if churn_alerts_24h > 50:
         weather_signals.append("churny")
+        weather_attributions.append(f"{churn_alerts_24h} churn alerts (24h)")
     if degraded_labelers > 5:
         weather_signals.append("degraded")
+        weather_attributions.append(f"{degraded_labelers} labelers unreachable")
     if not weather_signals:
         weather_signals.append("calm")
+        weather_attributions.append("no triggers crossed")
     network_weather = ", ".join(weather_signals)
+    weather_attribution_text = " · ".join(weather_attributions)
 
     # De-mixed: findings lead, health signals below. Alert-volume counts
     # (spikes, churn, flip-flops) live in System status & methodology — they
@@ -2025,9 +2043,10 @@ is their output, and how much of the apparent diversity is already degraded.
       {what_changed_list}
     </ul>
   </div>
-  <div class="card" style="flex:0 0 180px;text-align:center;">
+  <div class="card" style="flex:0 0 220px;text-align:center;">
     <div class="small" style="margin-bottom:0.3rem;">Network weather</div>
     <div style="font-size:1.3rem;font-weight:bold;">{escape(network_weather)}</div>
+    <div class="small" style="margin-top:0.3rem;opacity:0.85;">{escape(weather_attribution_text)}</div>
     <div class="small" style="margin-top:0.3rem;">{len(labelers)} labelers observed</div>
   </div>
 </div>
@@ -2109,7 +2128,7 @@ is their output, and how much of the apparent diversity is already degraded.
         "Labelwatch",
         hero_html
         + summary_strip
-        + climate_card + registry_card
+        + registry_card
         + explainer_html
         + authority_posture_section
         + hosting_section
@@ -2117,6 +2136,7 @@ is their output, and how much of the apparent diversity is already degraded.
         + authority_effect_section
         + reference_lane
         + labeler_section
+        + climate_card
         + ops_detail
         + TRIAGE_JS,
     )

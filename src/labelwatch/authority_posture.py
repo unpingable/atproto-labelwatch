@@ -401,13 +401,59 @@ def render_authority_posture_html(posture: Dict[str, Any]) -> str:
     parts.append('</details>')
 
     # Crosstab: authority_effect × auditability_risk.
+    #
+    # Ghost-column alibi: the crosstab suppresses columns whose 7d active
+    # volume is zero, but the dial counts on the same page advertise a
+    # nonzero population of medium/high-auditability-risk labelers. A bare
+    # table then reads like the renderer swallowed columns. Compute which
+    # bands exist in the labeler population but emitted no active volume
+    # in this window, and call it out above the table.
     parts.append('<details>')
     parts.append(
         '<summary><strong>Authority effect by auditability risk</strong> '
         '(7d event volume)</summary>'
     )
+    ae_audit = posture["authority_effect_by_auditability_risk"]
+    audit_dial = posture["dials"].get("auditability_risk", {})
+    present_in_crosstab = {
+        band
+        for band in RISK_BANDS
+        if any(ae_audit.get(eff, {}).get(band, 0) > 0 for eff in AUTHORITY_EFFECT_ORDER)
+    }
+    absent_with_population = [
+        band
+        for band in RISK_BANDS
+        if band not in present_in_crosstab and audit_dial.get(band, 0) > 0
+    ]
+    if absent_with_population:
+        present_labels = [
+            _band_label("auditability_risk", b)
+            for b in RISK_BANDS
+            if b in present_in_crosstab
+        ]
+        absent_label_pairs = [
+            (
+                _band_label("auditability_risk", b),
+                audit_dial.get(b, 0),
+            )
+            for b in absent_with_population
+        ]
+        absent_phrase = "; ".join(
+            f"{count:,} {label}" for label, count in absent_label_pairs
+        )
+        present_phrase = (
+            ", ".join(present_labels) if present_labels else "no auditability band"
+        )
+        parts.append(
+            '<p class="small" style="opacity:0.8;">'
+            f'In this window, all classified active event volume came from '
+            f'{escape(present_phrase)} labelers. '
+            f'Labelers with {escape(absent_phrase)} exist but emitted no '
+            f'active classified volume in this cross-tab.'
+            '</p>'
+        )
     parts.append(_crosstab_table(
-        posture["authority_effect_by_auditability_risk"],
+        ae_audit,
         RISK_BANDS,
         column_label_fn=lambda b: _band_label("auditability_risk", b),
     ))
