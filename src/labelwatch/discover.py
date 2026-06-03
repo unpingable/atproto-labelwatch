@@ -316,6 +316,20 @@ def run_discovery(conn, config: Config, did_workers: int = 10,
             """,
             (ref_did,),
         )
+
+    # Demote retired references. A reference labeler is a calibration witness,
+    # not a memorial plaque — if its witness value has collapsed, the editorial
+    # demotion happens here, not by waiting for the next upsert to overwrite.
+    # labeler_class drops back to 'third_party' so the labeler is still tracked
+    # but no longer carries operational privilege.
+    for retired_did in getattr(config, "retired_reference_dids", []):
+        conn.execute(
+            """
+            UPDATE labelers SET is_reference=0, labeler_class='third_party'
+            WHERE labeler_did=? AND (is_reference=1 OR labeler_class='official_platform')
+            """,
+            (retired_did,),
+        )
     conn.commit()
 
     db.set_meta(conn, "last_discovery_ts", format_ts(now_utc()))

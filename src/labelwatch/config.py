@@ -36,17 +36,36 @@ class Config:
 
     discovery_enabled: bool = False
     discovery_interval_hours: int = 24
+
+    # Reference labelers — operational sentinels, not memorial plaques.
+    # Selection criteria (see docs/authority-failure-modes.md § Reference capture):
+    #   - declared service record on the network
+    #   - stable regime or sustained coverage in recent window
+    #   - nonzero 7d events (alive enough to be a witness)
+    #   - low auditability risk
+    #   - not test/dev
+    #   - useful as an ecosystem-wide canary, not just a single-niche labeler
+    # Retirement criteria: sustained loss of any of the above. Retired DIDs
+    # move to `retired_reference_dids`, with a record in
+    # docs/retired-reference-labelers.md.
     reference_dids: List[str] = field(default_factory=lambda: [
         "did:plc:ar7c4by46qjdydhdevvrndac",   # Bluesky Moderation
         "did:plc:e4elbtctnfqocyfcml6h2lf7",   # Skywatch Blue
-        "did:plc:saslbwamakedc4h6c5bmshvz",   # Hailey's Labeler
+        "did:plc:6ebfnuunfngxfw3rth3ewojw",   # label.haus
     ])
 
     # Reference labelers with recurrent quiet/gone_dark behavior. Still tracked
     # and surfaced, but their silence emits an advisory — not a system-wide
     # CRITICAL. Popularity / historical volume is not calibration reliability.
-    flaky_reference_dids: List[str] = field(default_factory=lambda: [
-        "did:plc:saslbwamakedc4h6c5bmshvz",   # Hailey's Labeler
+    flaky_reference_dids: List[str] = field(default_factory=list)
+
+    # Retired references — formerly reference labelers, demoted because they
+    # no longer meet the selection criteria above. Kept tracked normally;
+    # discovery explicitly clears their is_reference flag so we don't ship
+    # them as canaries by inertia. History note in
+    # docs/retired-reference-labelers.md.
+    retired_reference_dids: List[str] = field(default_factory=lambda: [
+        "did:plc:saslbwamakedc4h6c5bmshvz",   # Hailey's Labeler (retired 2026-06-03)
     ])
 
     multi_ingest_timeout: int = 15
