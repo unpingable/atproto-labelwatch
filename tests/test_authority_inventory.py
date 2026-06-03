@@ -18,6 +18,7 @@ import pytest
 from labelwatch.authority_inventory import (
     DEFAULT_OPEN_GROUPS,
     build_authority_effect_inventory,
+    build_per_labeler_authority_inventories,
     render_authority_effect_html,
     render_labeler_authority_profile_html,
 )
@@ -584,6 +585,73 @@ def test_per_labeler_renderer_single_effect_summary_line():
     html = render_labeler_authority_profile_html(inv)
     assert "Primary effect: reputational" in html
     assert "100%" in html
+
+
+def test_bulk_per_labeler_matches_per_call_results():
+    """Bulk build must produce the same per-labeler inventories as N per-call
+    builds. This is what justifies the collapse — same data, fewer queries."""
+    conn = _make_db()
+    _seed(conn, [
+        {"labeler_did": "did:plc:A", "val": "spam", "target_did": "did:plc:t1", "ts": IN_WINDOW},
+        {"labeler_did": "did:plc:A", "val": "spam", "target_did": "did:plc:t2", "ts": IN_WINDOW},
+        {"labeler_did": "did:plc:A", "val": "!hide", "target_did": "did:plc:t1", "ts": IN_WINDOW},
+        {"labeler_did": "did:plc:B", "val": "spam", "target_did": "did:plc:t3", "ts": IN_WINDOW},
+        {"labeler_did": "did:plc:B", "val": "gay-post", "target_did": "did:plc:t4", "ts": IN_WINDOW},
+    ])
+
+    bulk = build_per_labeler_authority_inventories(conn, WINDOW_START, WINDOW_END)
+
+    for did in ("did:plc:A", "did:plc:B"):
+        per_call = build_authority_effect_inventory(
+            conn, WINDOW_START, WINDOW_END, labeler_did=did
+        )
+        # Same totals
+        assert bulk[did]["total_event_count"] == per_call["total_event_count"]
+        assert bulk[did]["total_label_count"] == per_call["total_label_count"]
+        # Same labels in each group
+        for group_name in bulk[did]["group_order"]:
+            bulk_vals = sorted(lbl["value"] for lbl in bulk[did]["groups"][group_name]["labels"])
+            per_vals = sorted(lbl["value"] for lbl in per_call["groups"][group_name]["labels"])
+            assert bulk_vals == per_vals, f"Group {group_name} disagrees for {did}"
+
+
+def test_bulk_per_labeler_scopes_targets_correctly():
+    """target_count in the bulk view must be per-(val, labeler), not network-wide.
+    This is the SQLite trap the per-call version already guards against; the bulk
+    version uses GROUP BY (val, labeler_did) so it gets the same property for free."""
+    conn = _make_db()
+    _seed(conn, [
+        # A's spam targets: t1, t2  (2 distinct)
+        {"labeler_did": "did:plc:A", "val": "spam", "target_did": "did:plc:t1", "ts": IN_WINDOW},
+        {"labeler_did": "did:plc:A", "val": "spam", "target_did": "did:plc:t2", "ts": IN_WINDOW},
+        # B's spam targets: t3 (1 distinct, would inflate to 3 if not scoped)
+        {"labeler_did": "did:plc:B", "val": "spam", "target_did": "did:plc:t3", "ts": IN_WINDOW},
+    ])
+    bulk = build_per_labeler_authority_inventories(conn, WINDOW_START, WINDOW_END)
+
+    a_spam = next(lbl for lbl in bulk["did:plc:A"]["groups"]["reputational"]["labels"] if lbl["value"] == "spam")
+    b_spam = next(lbl for lbl in bulk["did:plc:B"]["groups"]["reputational"]["labels"] if lbl["value"] == "spam")
+    assert a_spam["target_count"] == 2
+    assert b_spam["target_count"] == 1
+
+
+def test_bulk_per_labeler_omits_labelers_with_no_events():
+    """A labeler row in the DB but no events in window must not appear in the
+    bulk dict. Callers should treat a missing key as 'no events'."""
+    conn = _make_db()
+    _seed(conn, [
+        {"labeler_did": "did:plc:has-events", "val": "spam", "target_did": "did:plc:t1", "ts": IN_WINDOW},
+    ])
+    # Also insert a labeler with a row in `labelers` but no events
+    conn.execute(
+        "INSERT INTO labelers(labeler_did) VALUES (?)",
+        ("did:plc:no-events",),
+    )
+    conn.commit()
+
+    bulk = build_per_labeler_authority_inventories(conn, WINDOW_START, WINDOW_END)
+    assert "did:plc:has-events" in bulk
+    assert "did:plc:no-events" not in bulk
 
 
 def test_per_labeler_renderer_multi_effect_summary_line():

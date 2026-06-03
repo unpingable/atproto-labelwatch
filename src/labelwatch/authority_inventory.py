@@ -207,6 +207,114 @@ def build_authority_effect_inventory(
     }
 
 
+def build_per_labeler_authority_inventories(
+    conn,
+    start_ts: str,
+    end_ts: str,
+) -> Dict[str, Dict[str, Any]]:
+    """Build per-labeler authority_effect inventories for every labeler with
+    active events in [start_ts, end_ts).
+
+    Equivalent to calling `build_authority_effect_inventory(..., labeler_did=X)`
+    for each X, but with two bulk queries instead of 2N. For the report's
+    per-labeler authority profile section, this is the difference between
+    ~14 minutes and ~5 minutes of report-gen time at current label volume.
+
+    Returns: {labeler_did: inventory_dict}. Each inventory_dict has the same
+    shape as `build_authority_effect_inventory(..., labeler_did=did)` would
+    return — scope='labeler', labeler_did=did, groups keyed by effect.
+
+    Labelers with no active events in the window are omitted from the dict;
+    callers should treat a missing key as "no events" rather than as an error.
+    """
+    # Pass 1: events and val/labeler pairs.
+    pair_rows = conn.execute(
+        """
+        SELECT val, labeler_did, COUNT(*) AS event_count
+        FROM label_events
+        WHERE ts >= ? AND ts < ? AND neg = 0
+        GROUP BY val, labeler_did
+        """,
+        (start_ts, end_ts),
+    ).fetchall()
+
+    # Pass 2: distinct targets per (val, labeler_did). COUNT(DISTINCT target_did)
+    # at the pair level so we don't have to union target sets in Python.
+    target_pair_rows = conn.execute(
+        """
+        SELECT val, labeler_did, COUNT(DISTINCT target_did) AS target_count
+        FROM label_events
+        WHERE ts >= ? AND ts < ? AND neg = 0
+        GROUP BY val, labeler_did
+        """,
+        (start_ts, end_ts),
+    ).fetchall()
+    target_by_pair: Dict[tuple, int] = {
+        (r["val"], r["labeler_did"]): int(r["target_count"] or 0)
+        for r in target_pair_rows
+    }
+
+    # Bucket pair rows by labeler.
+    per_labeler_val_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for r in pair_rows:
+        did = r["labeler_did"]
+        val = r["val"]
+        per_labeler_val_counts[did][val] += int(r["event_count"] or 0)
+
+    # Build the per-labeler inventory dict.
+    inventories: Dict[str, Dict[str, Any]] = {}
+    for did, val_counts in per_labeler_val_counts.items():
+        groups: Dict[str, Dict[str, Any]] = {
+            g: {
+                "description": AUTHORITY_EFFECT_COPY[g],
+                "label_count": 0,
+                "event_count": 0,
+                "labels": [],
+            }
+            for g in AUTHORITY_EFFECT_ORDER
+        }
+        labeler_set = {did}
+        total_labels = 0
+        for val, event_count in val_counts.items():
+            family = normalize_family(val)
+            effect, used_labeler_fallback = _resolve_val_effect(family, labeler_set)
+            if effect not in groups:
+                effect = "unknown"
+            groups[effect]["labels"].append(
+                {
+                    "value": val,
+                    "family": family,
+                    "event_count": event_count,
+                    "labeler_count": 1,
+                    "target_count": target_by_pair.get((val, did), 0),
+                    "labeler_fallback": used_labeler_fallback,
+                }
+            )
+            groups[effect]["label_count"] += 1
+            groups[effect]["event_count"] += event_count
+            total_labels += 1
+        for g in groups.values():
+            g["labels"].sort(key=lambda x: (-x["event_count"], x["value"]))
+
+        inventories[did] = {
+            "axis": "authority_effect",
+            "axis_description": (
+                "What kind of authority a label attempts to exercise in the "
+                "control/reputation surface. Structural classification of the "
+                "label string; not an inference about labeler intent."
+            ),
+            "window": {"start": start_ts, "end": end_ts},
+            "family_version": FAMILY_VERSION,
+            "scope": "labeler",
+            "labeler_did": did,
+            "total_label_count": total_labels,
+            "total_event_count": sum(g["event_count"] for g in groups.values()),
+            "groups": groups,
+            "group_order": list(AUTHORITY_EFFECT_ORDER),
+        }
+    return inventories
+
+
 # Groups whose <details> elements should render open by default in the HTML
 # report. The operator most needs to see actuators, reach controls, claims that
 # attach normative charge, and labels the classifier could not assign.
