@@ -17,6 +17,10 @@ from .authority_inventory import (
     build_authority_effect_inventory,
     render_authority_effect_html,
 )
+from .authority_posture import (
+    build_authority_posture,
+    render_authority_posture_html,
+)
 from .boundary import (
     boundary_summary_for_report,
     classify_disagreement,
@@ -2029,6 +2033,23 @@ is their output, and how much of the apparent diversity is already degraded.
 </div>
 """
 
+    # --- Authority surface (7d) ---
+    # Ecosystem-level posture aggregate: labeler class + dial bands +
+    # authority_effect × class / × auditability_risk volume crosstabs.
+    # Placed at the top of the findings strip so the governance topology
+    # leads, not just behavioral weather.
+    authority_posture_section = ""
+    try:
+        posture = build_authority_posture(conn, start_7d, now_ts)
+        _write_json(
+            os.path.join(tmp_dir, "authority_posture.json"),
+            posture,
+        )
+        if posture["population"]["labelers_observed"] > 0:
+            authority_posture_section = render_authority_posture_html(posture)
+    except Exception as exc:
+        log.warning("Authority-posture section failed: %s", exc)
+
     # --- Authority-effect inventory (7d) ---
     # Structural classification of labels by what kind of authority they
     # attempt to exercise. JSON artifact always written; HTML section folded
@@ -2090,6 +2111,7 @@ is their output, and how much of the apparent diversity is already degraded.
         + summary_strip
         + climate_card + registry_card
         + explainer_html
+        + authority_posture_section
         + hosting_section
         + boundary_finding
         + authority_effect_section
