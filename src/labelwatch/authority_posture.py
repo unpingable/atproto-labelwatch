@@ -292,6 +292,47 @@ DIAL_HUMAN: Dict[str, str] = {
     "temporal_coherence": "Temporal coherence",
 }
 
+# Polarity disambiguation. Without these, a card titled "Auditability risk"
+# above a row labeled "high" reads dangerously close to "high auditability"
+# (which would imply *good*). The risk dials want "high = bad"; the coherence
+# dial wants "high = good." Render every cell with the dial name baked in so
+# no card-header + cell-row composition can mislead.
+#
+# Two risk dials (high = most concerning):
+#   auditability_risk  — how *opaque* the labeler is to audit
+#   inference_risk     — how much the labeler infers vs. observes
+#
+# One coherence dial (high = most coherent):
+#   temporal_coherence — how stable the labeler's posture is over time
+_BAND_LABEL: Dict[str, Dict[str, str]] = {
+    "auditability_risk": {
+        "low": "low auditability risk",
+        "medium": "medium auditability risk",
+        "high": "high auditability risk",
+        "unknown": "unknown auditability risk",
+    },
+    "inference_risk": {
+        "low": "low inference risk",
+        "medium": "medium inference risk",
+        "high": "high inference risk",
+        "unknown": "unknown inference risk",
+    },
+    "temporal_coherence": {
+        "low": "low temporal coherence",
+        "medium": "medium temporal coherence",
+        "high": "high temporal coherence",
+        "unknown": "unknown temporal coherence",
+    },
+}
+
+
+def _band_label(dial_key: str, bucket: str) -> str:
+    """Polarity-safe display label for a dial bucket.
+
+    Falls back to the raw bucket name for non-polar dials (class).
+    """
+    return _BAND_LABEL.get(dial_key, {}).get(bucket, bucket.replace("_", " "))
+
 
 def render_authority_posture_html(posture: Dict[str, Any]) -> str:
     """Render the authority-posture aggregate as the homepage Authority Surface strip."""
@@ -325,7 +366,8 @@ def render_authority_posture_html(posture: Dict[str, Any]) -> str:
             parts.append(f'<li>{escape(line)}</li>')
         parts.append('</ul>')
 
-    # Dial counts.
+    # Dial counts. Cells carry the dial name baked in so a scanner can't
+    # mentally compose "Auditability risk" + "high" → "high auditability."
     parts.append('<details open>')
     parts.append('<summary><strong>Dial counts</strong></summary>')
     parts.append('<div class="grid">')
@@ -338,7 +380,7 @@ def render_authority_posture_html(posture: Dict[str, Any]) -> str:
             if count == 0:
                 continue
             parts.append(
-                f'<li>{escape(bucket.replace("_", " "))}: {count:,}</li>'
+                f'<li>{escape(_band_label(dial_key, bucket))}: {count:,}</li>'
             )
         parts.append('</ul>')
         parts.append('</div>')
@@ -351,16 +393,24 @@ def render_authority_posture_html(posture: Dict[str, Any]) -> str:
         '<summary><strong>Authority effect by labeler class</strong> '
         '(7d event volume)</summary>'
     )
-    parts.append(_crosstab_table(posture["authority_effect_by_class"], CLASS_BUCKETS))
+    parts.append(_crosstab_table(
+        posture["authority_effect_by_class"],
+        CLASS_BUCKETS,
+        column_label_fn=lambda c: c.replace("_", " "),
+    ))
     parts.append('</details>')
 
     # Crosstab: authority_effect × auditability_risk.
     parts.append('<details>')
     parts.append(
         '<summary><strong>Authority effect by auditability risk</strong> '
-        '(7d event volume; high = most concerning)</summary>'
+        '(7d event volume)</summary>'
     )
-    parts.append(_crosstab_table(posture["authority_effect_by_auditability_risk"], RISK_BANDS))
+    parts.append(_crosstab_table(
+        posture["authority_effect_by_auditability_risk"],
+        RISK_BANDS,
+        column_label_fn=lambda b: _band_label("auditability_risk", b),
+    ))
     parts.append('</details>')
 
     parts.append('</div>')
@@ -370,13 +420,22 @@ def render_authority_posture_html(posture: Dict[str, Any]) -> str:
 def _crosstab_table(
     crosstab: Dict[str, Dict[str, int]],
     column_order: Tuple[str, ...],
+    column_label_fn=None,
 ) -> str:
     """Render a (authority_effect × dial-bucket) crosstab as a small HTML table.
+
+    `column_label_fn` is a callable that maps a bucket key to its display label.
+    Required for polarity-sensitive dials so column headers carry the dial name
+    (e.g. "high auditability risk" rather than a bare "high" that could be
+    read as "high auditability"). Defaults to underscore→space transform.
 
     Rows in AUTHORITY_EFFECT_ORDER; columns suppress all-zero buckets to keep
     the table narrow. Effect rows with zero total are also suppressed.
     """
     from html import escape
+
+    if column_label_fn is None:
+        column_label_fn = lambda c: c.replace("_", " ")
 
     # Which columns have any nonzero cell.
     column_totals = {col: 0 for col in column_order}
@@ -394,7 +453,7 @@ def _crosstab_table(
     parts.append('<thead><tr>')
     parts.append('<th>authority_effect</th>')
     for col in cols:
-        parts.append(f'<th>{escape(col.replace("_", " "))}</th>')
+        parts.append(f'<th>{escape(column_label_fn(col))}</th>')
     parts.append('<th>row total</th>')
     parts.append('</tr></thead>')
     parts.append('<tbody>')

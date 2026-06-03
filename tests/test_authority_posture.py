@@ -268,6 +268,43 @@ def test_html_renders_and_avoids_loaded_language():
     assert "does not infer" in html.lower()
 
 
+def test_html_dial_cells_disambiguate_polarity():
+    """Risk and coherence dial cells must bake the dial name into each row
+    so a scanner can't compose 'Auditability risk' + 'high' into 'high
+    auditability' (which would imply trust)."""
+    conn = _make_db()
+    _seed_labeler(conn, "did:plc:a", labeler_class="third_party",
+                  auditability_risk_band="high",
+                  inference_risk_band="high",
+                  temporal_coherence_band="high",
+                  events_7d=10)
+    p = build_authority_posture(conn, WINDOW_START, WINDOW_END)
+    html = render_authority_posture_html(p)
+    # Each risk dial cell must use the full polar phrase, not bare "high".
+    assert "high auditability risk" in html
+    assert "high inference risk" in html
+    # Temporal coherence reuses the same disambiguation pattern even though
+    # the polarity is inverse — keeps reader scanning consistent.
+    assert "high temporal coherence" in html
+
+
+def test_html_audit_risk_crosstab_columns_disambiguate_polarity():
+    """The auditability_risk crosstab column headers must read
+    'high auditability risk' (etc.), not bare 'high'/'medium'/'low'."""
+    conn = _make_db()
+    _seed_labeler(conn, "did:plc:a", labeler_class="third_party",
+                  auditability_risk_band="high", events_7d=10)
+    _seed_event(conn, "did:plc:a", "spam", "did:plc:t1", idx=1)
+    p = build_authority_posture(conn, WINDOW_START, WINDOW_END)
+    html = render_authority_posture_html(p)
+    # Find the auditability_risk crosstab section by its summary.
+    audit_section_start = html.find("Authority effect by auditability risk")
+    assert audit_section_start > 0
+    audit_section = html[audit_section_start:]
+    # Audit-risk column header must spell out polarity.
+    assert "high auditability risk" in audit_section
+
+
 def test_empty_db_renders_empty_section_gracefully():
     conn = _make_db()
     p = build_authority_posture(conn, WINDOW_START, WINDOW_END)
