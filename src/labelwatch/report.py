@@ -16,6 +16,7 @@ from . import db
 from .authority_inventory import (
     build_authority_effect_inventory,
     render_authority_effect_html,
+    render_labeler_authority_profile_html,
 )
 from .authority_posture import (
     build_authority_posture,
@@ -2354,6 +2355,27 @@ is their output, and how much of the apparent diversity is already degraded.
 </div>
 """
 
+        # Per-labeler authority profile (7d): which authority-effects does
+        # THIS labeler emit? The network-wide authority surface on the
+        # homepage gives the ecosystem aggregate; this is the room behind
+        # that door for one labeler. JSON artifact always written; HTML
+        # section folded in when there are events.
+        labeler_authority_section = ""
+        try:
+            labeler_authority_inv = build_authority_effect_inventory(
+                conn, start_7d, now_ts, labeler_did=did
+            )
+            _write_json(
+                os.path.join(tmp_dir, "labeler", f"{slug}.authority_profile.json"),
+                labeler_authority_inv,
+            )
+            if labeler_authority_inv["total_event_count"] > 0:
+                labeler_authority_section = render_labeler_authority_profile_html(
+                    labeler_authority_inv,
+                )
+        except Exception as exc:
+            log.warning("Labeler authority profile failed for %s: %s", did, exc)
+
         evidence_section = _evidence_expander(conn, did, row)
 
         targets_table = ""
@@ -2401,7 +2423,8 @@ is their output, and how much of the apparent diversity is already degraded.
             f"<p><a href=\"../index.html\">Overview</a> | <a href=\"../census.html\">Census</a></p>"
             + labeler_context + warmup_indicator + health_card + maturity_line
             + behavior_section + explainer_html_block
-            + info_card + scores_card + evidence_section
+            + info_card + scores_card + labeler_authority_section
+            + evidence_section
             + targets_table + probe_section + alerts_table + METHODS_HTML,
             canonical=f"labeler/{slug}.html",
         )

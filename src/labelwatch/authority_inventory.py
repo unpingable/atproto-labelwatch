@@ -59,11 +59,18 @@ def build_authority_effect_inventory(
     conn,
     start_ts: str,
     end_ts: str,
+    labeler_did: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a grouped inventory of observed labels by authority_effect.
 
     Aggregates label_events in [start_ts, end_ts) over neg=0 events
     (active label applications; negations excluded for interpretability).
+
+    If `labeler_did` is given, the inventory is scoped to that labeler only —
+    used by the per-labeler authority profile. Without it, the inventory is
+    network-wide. The labeler-default fallback still applies in both modes
+    (a single emitting labeler that's in LABELER_DEFAULT_EFFECT can resolve
+    an unknown family).
 
     For each observed raw label value, computes:
       - event_count       (rows)
@@ -85,18 +92,32 @@ def build_authority_effect_inventory(
     # when AUTHORITY_EFFECT_MAP has no mapping for the val. Per-val target sets
     # have to be unioned in Python because COUNT(DISTINCT target_did) at the
     # (val, labeler_did) level cannot be summed back up correctly.
-    rows = conn.execute(
-        """
-        SELECT
-            val,
-            labeler_did,
-            COUNT(*) AS event_count
-        FROM label_events
-        WHERE ts >= ? AND ts < ? AND neg = 0
-        GROUP BY val, labeler_did
-        """,
-        (start_ts, end_ts),
-    ).fetchall()
+    if labeler_did is None:
+        rows = conn.execute(
+            """
+            SELECT
+                val,
+                labeler_did,
+                COUNT(*) AS event_count
+            FROM label_events
+            WHERE ts >= ? AND ts < ? AND neg = 0
+            GROUP BY val, labeler_did
+            """,
+            (start_ts, end_ts),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """
+            SELECT
+                val,
+                labeler_did,
+                COUNT(*) AS event_count
+            FROM label_events
+            WHERE ts >= ? AND ts < ? AND neg = 0 AND labeler_did = ?
+            GROUP BY val, labeler_did
+            """,
+            (start_ts, end_ts, labeler_did),
+        ).fetchall()
 
     # Per-val aggregates.
     per_val_event_count: Dict[str, int] = defaultdict(int)
@@ -108,15 +129,26 @@ def build_authority_effect_inventory(
 
     # Distinct target_did per val — single supplementary query rather than
     # passing target sets through the (val, labeler_did) grouping.
-    target_rows = conn.execute(
-        """
-        SELECT val, COUNT(DISTINCT target_did) AS target_count
-        FROM label_events
-        WHERE ts >= ? AND ts < ? AND neg = 0
-        GROUP BY val
-        """,
-        (start_ts, end_ts),
-    ).fetchall()
+    if labeler_did is None:
+        target_rows = conn.execute(
+            """
+            SELECT val, COUNT(DISTINCT target_did) AS target_count
+            FROM label_events
+            WHERE ts >= ? AND ts < ? AND neg = 0
+            GROUP BY val
+            """,
+            (start_ts, end_ts),
+        ).fetchall()
+    else:
+        target_rows = conn.execute(
+            """
+            SELECT val, COUNT(DISTINCT target_did) AS target_count
+            FROM label_events
+            WHERE ts >= ? AND ts < ? AND neg = 0 AND labeler_did = ?
+            GROUP BY val
+            """,
+            (start_ts, end_ts, labeler_did),
+        ).fetchall()
     per_val_target_count = {r["val"]: int(r["target_count"] or 0) for r in target_rows}
 
     groups: Dict[str, Dict[str, Any]] = {
@@ -166,6 +198,8 @@ def build_authority_effect_inventory(
         ),
         "window": {"start": start_ts, "end": end_ts},
         "family_version": FAMILY_VERSION,
+        "scope": "labeler" if labeler_did is not None else "network",
+        "labeler_did": labeler_did,
         "total_label_count": total_labels,
         "total_event_count": sum(g["event_count"] for g in groups.values()),
         "groups": groups,
@@ -261,6 +295,223 @@ def render_authority_effect_html(
                 f'<code>authority_effect_inventory.json</code>)'
                 '</p>'
             )
+        parts.append('</details>')
+
+    parts.append('</div>')
+    return "\n".join(parts)
+
+
+# --- Per-labeler authority profile ---------------------------------------------
+
+# Significance threshold for surfacing an authority_effect in the per-labeler
+# distribution copy. Below this, the effect is volume-dust — included in the
+# distribution strip and the per-group breakdown, but not name-checked in the
+# one-line summary. Tuned to avoid "primarily X (97%); also Y (0.4%)" noise.
+_LABELER_PROFILE_SIGNIFICANT_PCT = 5.0
+
+
+def _labeler_profile_distribution(inventory: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """List of {effect, event_count, pct} for groups with nonzero events,
+    sorted by event_count desc. Used by both the distribution strip and the
+    one-line summary.
+    """
+    total = inventory["total_event_count"]
+    rows: List[Dict[str, Any]] = []
+    for group_name in inventory["group_order"]:
+        group = inventory["groups"][group_name]
+        if group["event_count"] == 0:
+            continue
+        pct = (group["event_count"] / total * 100.0) if total else 0.0
+        rows.append(
+            {
+                "effect": group_name,
+                "event_count": group["event_count"],
+                "pct": pct,
+            }
+        )
+    rows.sort(key=lambda r: -r["event_count"])
+    return rows
+
+
+def _labeler_profile_summary_line(distribution: List[Dict[str, Any]]) -> str:
+    """One descriptive sentence about the labeler's authority-effect mix.
+
+    Stays clinical (percentages of observed events, not "this labeler is X").
+    Only effects above the significance threshold are name-checked.
+    """
+    if not distribution:
+        return "No active label events observed in the window."
+
+    significant = [
+        r for r in distribution if r["pct"] >= _LABELER_PROFILE_SIGNIFICANT_PCT
+    ]
+    if not significant:
+        # All effects are tiny slivers of a tiny pie — describe the leader
+        # plainly without "primarily" framing.
+        top = distribution[0]
+        return (
+            f"Primary effect: {top['effect'].replace('_', ' ')} "
+            f"({top['pct']:.0f}% of {top['event_count']:,} events; "
+            f"all observed effects below {_LABELER_PROFILE_SIGNIFICANT_PCT:.0f}% individually)."
+        )
+
+    fmt = lambda r: f"{r['effect'].replace('_', ' ')} ({r['pct']:.0f}%)"
+    if len(significant) == 1:
+        return f"Primary effect: {fmt(significant[0])} of observed event volume."
+    if len(significant) == 2:
+        return (
+            f"Primary effect: {fmt(significant[0])}; "
+            f"secondary: {fmt(significant[1])}."
+        )
+    # Three or more — list them rather than picking a single "primary."
+    listed = ", ".join(fmt(r) for r in significant)
+    return f"Effects with significant volume share: {listed}."
+
+
+# CSS color hint per effect for the distribution strip. Keeps the visual
+# meaning structural — enforcement/visibility carry weight, decorative is
+# light, unknown is muted-warning. Not a value judgment; the renderer doesn't
+# infer good/bad.
+_EFFECT_STRIP_COLOR: Dict[str, str] = {
+    "descriptive": "#7aa2cc",
+    "advisory": "#8bb38b",
+    "reputational": "#c98a7a",
+    "visibility_affecting": "#c47fb3",
+    "enforcement_instruction": "#b35454",
+    "decorative": "#cdc090",
+    "telemetry": "#9090a8",
+    "unknown": "#c9a55a",
+}
+
+
+def render_labeler_authority_profile_html(inventory: Dict[str, Any]) -> str:
+    """Render a per-labeler authority_effect profile.
+
+    Distinct from the network-wide inventory renderer:
+      - Adds a one-line clinical distribution summary.
+      - Adds a horizontal distribution strip so the mix is visible at a glance.
+      - Skips the long axis description (the per-labeler page already framed
+        the labeler).
+      - Keeps the per-group <details> breakdown for the labels actually emitted.
+    """
+    from html import escape
+
+    if inventory.get("scope") != "labeler":
+        raise ValueError(
+            "render_labeler_authority_profile_html requires an inventory built "
+            "with labeler_did= set (scope='labeler')."
+        )
+
+    parts: List[str] = []
+    parts.append('<div class="labeler-authority-profile">')
+    parts.append('<h2>Authority profile (7d)</h2>')
+
+    total_events = inventory["total_event_count"]
+    if total_events == 0:
+        parts.append(
+            '<p class="labeler-context">'
+            'No active label events observed in the window. '
+            'Authority-effect distribution unavailable.'
+            '</p>'
+            '</div>'
+        )
+        return "\n".join(parts)
+
+    parts.append(
+        '<p class="labeler-context">'
+        'How this labeler’s observed labels distribute across '
+        'authority-effect classes. Structural classification of label strings; '
+        'not an inference of intent. '
+        f'Family version: <code>{escape(inventory.get("family_version", "?"))}</code>.'
+        '</p>'
+    )
+
+    distribution = _labeler_profile_distribution(inventory)
+    summary_line = _labeler_profile_summary_line(distribution)
+    parts.append(
+        '<p class="small" style="opacity:0.85;">'
+        f'{escape(summary_line)}'
+        '</p>'
+    )
+    parts.append(
+        '<p class="small" style="opacity:0.7;margin-top:0;">'
+        f'{inventory["total_label_count"]:,} distinct label values across '
+        f'{total_events:,} active events.'
+        '</p>'
+    )
+
+    # Distribution strip: percent-width segments, ordered by effect mix.
+    if distribution:
+        parts.append(
+            '<div class="authority-profile-strip" '
+            'style="display:flex;width:100%;height:1.4rem;border-radius:4px;'
+            'overflow:hidden;margin:0.5rem 0 0.4rem 0;border:1px solid var(--border,#ccc);">'
+        )
+        for row in distribution:
+            color = _EFFECT_STRIP_COLOR.get(row["effect"], "#888")
+            title = (
+                f"{row['effect'].replace('_', ' ')}: "
+                f"{row['event_count']:,} events ({row['pct']:.1f}%)"
+            )
+            parts.append(
+                f'<div style="flex:0 0 {row["pct"]:.3f}%;'
+                f'background:{color};" title="{escape(title)}"></div>'
+            )
+        parts.append('</div>')
+        # Legend
+        legend_items = []
+        for row in distribution:
+            color = _EFFECT_STRIP_COLOR.get(row["effect"], "#888")
+            legend_items.append(
+                f'<span style="display:inline-block;width:0.7rem;height:0.7rem;'
+                f'background:{color};margin-right:0.3rem;vertical-align:middle;'
+                f'border:1px solid var(--border,#ccc);"></span>'
+                f'{escape(row["effect"].replace("_", " "))} '
+                f'<span class="small">({row["pct"]:.1f}%)</span>'
+            )
+        parts.append(
+            '<p class="small" style="margin-top:0.2rem;line-height:1.8;">'
+            + " &nbsp;&nbsp; ".join(legend_items)
+            + '</p>'
+        )
+
+    # Per-group breakdown — only emit groups with events.
+    for group_name in inventory["group_order"]:
+        group = inventory["groups"][group_name]
+        if group["event_count"] == 0:
+            continue
+        open_attr = " open" if group_name in DEFAULT_OPEN_GROUPS else ""
+        human_name = group_name.replace("_", " ")
+        parts.append(f'<details{open_attr}>')
+        parts.append(
+            '<summary><strong>'
+            f'{escape(human_name)}</strong> &mdash; '
+            f'{group["label_count"]:,} labels, '
+            f'{group["event_count"]:,} events'
+            '</summary>'
+        )
+        parts.append(
+            f'<p class="small" style="opacity:0.7;">'
+            f'{escape(group["description"])}'
+            '</p>'
+        )
+
+        # Per-labeler view: only show this labeler's labels, no labeler_count.
+        parts.append('<ul class="authority-effect-labels">')
+        for lbl in group["labels"]:
+            value = escape(lbl["value"])
+            family = escape(lbl["family"])
+            same_family = lbl["value"] == lbl["family"]
+            family_note = (
+                "" if same_family
+                else f' <span class="small">(family: <code>{family}</code>)</span>'
+            )
+            parts.append(
+                f'<li><code>{value}</code>{family_note} &mdash; '
+                f'{lbl["event_count"]:,} events, '
+                f'{lbl["target_count"]:,} targets</li>'
+            )
+        parts.append('</ul>')
         parts.append('</details>')
 
     parts.append('</div>')

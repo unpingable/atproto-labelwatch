@@ -13,10 +13,13 @@ from __future__ import annotations
 import time
 
 from labelwatch import db
+import pytest
+
 from labelwatch.authority_inventory import (
     DEFAULT_OPEN_GROUPS,
     build_authority_effect_inventory,
     render_authority_effect_html,
+    render_labeler_authority_profile_html,
 )
 from labelwatch.label_family import (
     AUTHORITY_EFFECT_ORDER,
@@ -476,3 +479,126 @@ def test_html_truncation_preserves_full_list_in_json():
     html = render_authority_effect_html(inv, max_labels_per_group=50)
     assert "+10 more labels" in html
     assert "authority_effect_inventory.json" in html
+
+
+# ---------------------------------------------------------------------------
+# Per-labeler authority profile tests
+# ---------------------------------------------------------------------------
+
+
+def test_per_labeler_inventory_filters_to_one_labeler():
+    """Building with labeler_did= must restrict the inventory to that labeler only."""
+    conn = _make_db()
+    _seed(conn, [
+        # Labeler A: spam (reputational) + !hide (visibility)
+        {"labeler_did": "did:plc:A", "val": "spam", "target_did": "did:plc:t1", "ts": IN_WINDOW},
+        {"labeler_did": "did:plc:A", "val": "spam", "target_did": "did:plc:t2", "ts": IN_WINDOW},
+        {"labeler_did": "did:plc:A", "val": "!hide", "target_did": "did:plc:t1", "ts": IN_WINDOW},
+        # Labeler B: emits gay-post — must NOT appear in A's profile
+        {"labeler_did": "did:plc:B", "val": "gay-post", "target_did": "did:plc:t3", "ts": IN_WINDOW},
+    ])
+
+    inv = build_authority_effect_inventory(conn, WINDOW_START, WINDOW_END, labeler_did="did:plc:A")
+    assert inv["scope"] == "labeler"
+    assert inv["labeler_did"] == "did:plc:A"
+    assert inv["total_event_count"] == 3
+    assert inv["total_label_count"] == 2
+
+    a_vals = set()
+    for g in inv["groups"].values():
+        for lbl in g["labels"]:
+            a_vals.add(lbl["value"])
+    assert "spam" in a_vals
+    assert "!hide" in a_vals
+    assert "gay-post" not in a_vals, "Labeler B's labels leaked into A's profile"
+
+
+def test_per_labeler_inventory_target_counts_scoped_to_labeler():
+    """target_count must reflect targets *this* labeler hit, not network-wide."""
+    conn = _make_db()
+    _seed(conn, [
+        # A's spam targets: t1, t2  (2 distinct)
+        {"labeler_did": "did:plc:A", "val": "spam", "target_did": "did:plc:t1", "ts": IN_WINDOW},
+        {"labeler_did": "did:plc:A", "val": "spam", "target_did": "did:plc:t2", "ts": IN_WINDOW},
+        # B's spam targets: t3, t4  (would inflate to 4 if not scoped)
+        {"labeler_did": "did:plc:B", "val": "spam", "target_did": "did:plc:t3", "ts": IN_WINDOW},
+        {"labeler_did": "did:plc:B", "val": "spam", "target_did": "did:plc:t4", "ts": IN_WINDOW},
+    ])
+    inv = build_authority_effect_inventory(conn, WINDOW_START, WINDOW_END, labeler_did="did:plc:A")
+    spam_row = next(
+        lbl for lbl in inv["groups"]["reputational"]["labels"] if lbl["value"] == "spam"
+    )
+    assert spam_row["event_count"] == 2
+    assert spam_row["target_count"] == 2  # A's targets only, not 4
+
+
+def test_per_labeler_renderer_requires_labeler_scope():
+    """render_labeler_authority_profile_html must reject network-scope inventories
+    to keep "per-labeler view" honest. Wrong-scope rendering would silently show
+    network aggregate data on a per-labeler page."""
+    conn = _make_db()
+    _seed(conn, [
+        {"labeler_did": "did:plc:A", "val": "spam", "target_did": "did:plc:t1", "ts": IN_WINDOW},
+    ])
+    inv_network = build_authority_effect_inventory(conn, WINDOW_START, WINDOW_END)
+    with pytest.raises(ValueError, match="labeler_did"):
+        render_labeler_authority_profile_html(inv_network)
+
+
+def test_per_labeler_renderer_empty_window():
+    """A labeler with no events in the window still renders cleanly."""
+    conn = _make_db()
+    inv = build_authority_effect_inventory(
+        conn, WINDOW_START, WINDOW_END, labeler_did="did:plc:noevents"
+    )
+    html = render_labeler_authority_profile_html(inv)
+    assert "Authority profile" in html
+    assert "No active label events" in html
+    # No distribution strip when empty
+    assert "authority-profile-strip" not in html
+
+
+def test_per_labeler_renderer_distribution_strip_present():
+    """The horizontal distribution strip renders when there are events."""
+    conn = _make_db()
+    _seed(conn, [
+        {"labeler_did": "did:plc:A", "val": "spam", "target_did": "did:plc:t1", "ts": IN_WINDOW},
+        {"labeler_did": "did:plc:A", "val": "!hide", "target_did": "did:plc:t1", "ts": IN_WINDOW},
+    ])
+    inv = build_authority_effect_inventory(conn, WINDOW_START, WINDOW_END, labeler_did="did:plc:A")
+    html = render_labeler_authority_profile_html(inv)
+    assert 'class="authority-profile-strip"' in html
+    # Both effects should appear in the strip
+    assert "reputational" in html
+    assert "visibility affecting" in html
+
+
+def test_per_labeler_renderer_single_effect_summary_line():
+    """When all events fall in one effect, the summary names it as primary."""
+    conn = _make_db()
+    _seed(conn, [
+        {"labeler_did": "did:plc:A", "val": "spam", "target_did": f"did:plc:t{i}", "ts": IN_WINDOW}
+        for i in range(10)
+    ])
+    inv = build_authority_effect_inventory(conn, WINDOW_START, WINDOW_END, labeler_did="did:plc:A")
+    html = render_labeler_authority_profile_html(inv)
+    assert "Primary effect: reputational" in html
+    assert "100%" in html
+
+
+def test_per_labeler_renderer_multi_effect_summary_line():
+    """Three or more significant effects switch to a list, not a primary/secondary."""
+    conn = _make_db()
+    events = []
+    # 10 events of each of 3 different families → 33% each
+    for i in range(10):
+        events.append({"labeler_did": "did:plc:A", "val": "spam", "target_did": f"did:plc:r{i}", "ts": IN_WINDOW})
+        events.append({"labeler_did": "did:plc:A", "val": "!hide", "target_did": f"did:plc:v{i}", "ts": IN_WINDOW})
+        events.append({"labeler_did": "did:plc:A", "val": "!warn", "target_did": f"did:plc:a{i}", "ts": IN_WINDOW})
+    _seed(conn, events)
+    inv = build_authority_effect_inventory(conn, WINDOW_START, WINDOW_END, labeler_did="did:plc:A")
+    html = render_labeler_authority_profile_html(inv)
+    assert "Effects with significant volume share" in html
+    assert "reputational" in html
+    assert "visibility affecting" in html
+    assert "advisory" in html
