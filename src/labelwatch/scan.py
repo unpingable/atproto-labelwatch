@@ -53,6 +53,20 @@ _FACTS_MAX_AGE_S = int(os.environ.get("LABELWATCH_FACTS_MAX_AGE_S", "86400"))
 _UPDATE_AUTHOR_DAY_BUDGET_S = float(os.environ.get("LABELWATCH_UPDATE_AUTHOR_DAY_BUDGET_S", "600"))
 _UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB = float(os.environ.get("LABELWATCH_UPDATE_AUTHOR_DAY_WAL_MB", "200"))
 
+# update_author_day resume state. The chunker defers some days when WAL/time
+# pressure trips; this state lets the next cycle resume the deferred range
+# oldest-first instead of restarting newest-first (which would re-do already-
+# fresh days while older deferred days rot indefinitely).
+#
+# Closed-range bounds: pending_oldest..pending_newest inclusive. Two bounds
+# rather than a single cursor so backlog mode processes only the truly-pending
+# days, not already-fresh ones from the prior cycle.
+_META_BACKLOG_ACTIVE = "update_author_day:backlog_active"
+_META_PENDING_OLDEST = "update_author_day:pending_oldest"
+_META_PENDING_NEWEST = "update_author_day:pending_newest"
+_META_LAST_COMPLETED = "update_author_day:last_completed_day_epoch"
+_META_LAST_DEFER_REASON = "update_author_day:last_defer_reason"
+
 
 def _yield_between_derive_steps() -> None:
     """Sleep briefly between derive sub-steps so the discovery writer (and any
@@ -1058,56 +1072,130 @@ def _wal_size_mb_from_conn(conn) -> float:
     return 0.0
 
 
+def _read_resume_state(conn) -> tuple[bool, int | None, int | None]:
+    """Return (backlog_active, pending_oldest, pending_newest) from meta."""
+    active = db.get_meta(conn, _META_BACKLOG_ACTIVE) == "1"
+    oldest_raw = db.get_meta(conn, _META_PENDING_OLDEST)
+    newest_raw = db.get_meta(conn, _META_PENDING_NEWEST)
+    oldest = int(oldest_raw) if oldest_raw else None
+    newest = int(newest_raw) if newest_raw else None
+    return active, oldest, newest
+
+
+def _persist_defer(
+    conn, *, oldest: int, newest: int, reason: str, last_completed: int | None
+) -> None:
+    db.set_meta(conn, _META_BACKLOG_ACTIVE, "1")
+    db.set_meta(conn, _META_PENDING_OLDEST, str(oldest))
+    db.set_meta(conn, _META_PENDING_NEWEST, str(newest))
+    db.set_meta(conn, _META_LAST_DEFER_REASON, reason)
+    if last_completed is not None:
+        db.set_meta(conn, _META_LAST_COMPLETED, str(last_completed))
+
+
+def _clear_backlog(conn, *, last_completed: int | None) -> None:
+    db.set_meta(conn, _META_BACKLOG_ACTIVE, "0")
+    db.set_meta(conn, _META_PENDING_OLDEST, "")
+    db.set_meta(conn, _META_PENDING_NEWEST, "")
+    db.set_meta(conn, _META_LAST_DEFER_REASON, "")
+    if last_completed is not None:
+        db.set_meta(conn, _META_LAST_COMPLETED, str(last_completed))
+
+
 def _update_author_day(conn) -> None:
     """Incrementally update derived_author_day from label_events.
 
-    Chunked by day_epoch: processes the last 7 days as 7 separate
-    DELETE+INSERT+commit cycles, newest day first. The original single
-    INSERT held the SQLite writer lock for ~6.5min and produced the bulk
-    of discovery db-locked retries at the derive tail; chunking releases
-    the writer between days so labelwatch-discovery (and any other writer)
-    can land its writes.
+    Two modes (visible in logs as mode=normal/backlog):
 
-    Defer paths (each emits an explicit log line; remaining days run next
-    derive cycle, picking up where this one left off via day_epoch keys):
+    - Normal mode: process the last 7 days newest-first. Today's freshness
+      takes priority — if pressure trips mid-pass, the oldest days get
+      deferred and persisted as a closed range.
+    - Backlog mode: when a prior cycle deferred days, this cycle processes
+      that deferred range oldest→newest until drained, then the next cycle
+      returns to normal mode. Without this, the same early days win every
+      cycle while days at the back of the window rot in the basement.
+
+    Defer triggers (each persists resume state and emits an explicit log):
       - elapsed > _UPDATE_AUTHOR_DAY_BUDGET_S (backstop; default 600s)
       - WAL size > _UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB (default 200MB)
 
-    Newest-first ordering means today's data lands first even on defer,
-    so per-author/per-day report freshness degrades from the back of the
-    7-day window rather than the front. Retention prune runs only when
-    all 7 days completed — partial cycles preserve old rows that the
-    deferred work might need to reconcile next pass.
+    Resume state is persisted in the meta table as a closed range
+    [pending_oldest..pending_newest]. Two bounds (not one cursor) so backlog
+    mode processes only truly-pending days, not days already refreshed in
+    the prior cycle. If the range falls partly out of the moving 7-day
+    window between cycles, the stale prefix is logged and clamped.
+
+    Retention prune runs only when a cycle completes without deferral —
+    deferred days may need pre-prune context next pass.
 
     Only counts labels on posts (uri LIKE 'at://%/app.bsky.feed.post/%').
     """
     now_epoch = int(time.time())
     today_epoch = (now_epoch // 86400) * 86400
-    day_epochs = [today_epoch - i * 86400 for i in range(7)]  # newest first
+    oldest_in_window = today_epoch - 6 * 86400
     retention_cutoff_day_epoch = today_epoch - 60 * 86400
+
+    backlog_active, pending_oldest, pending_newest = _read_resume_state(conn)
+
+    if backlog_active and pending_oldest is not None and pending_newest is not None:
+        cursor = max(pending_oldest, oldest_in_window)
+        upper = min(pending_newest, today_epoch)
+        if pending_oldest < oldest_in_window:
+            lost_days = (oldest_in_window - pending_oldest) // 86400
+            _log.warning(
+                "update_author_day backlog cursor stale: lost_days=%d (oldest=%s clamped to %s)",
+                lost_days,
+                time.strftime("%Y-%m-%d", time.gmtime(pending_oldest)),
+                time.strftime("%Y-%m-%d", time.gmtime(oldest_in_window)),
+            )
+        if cursor > upper:
+            _log.info(
+                "update_author_day backlog evaporated by window movement; resuming normal mode"
+            )
+            _clear_backlog(conn, last_completed=None)
+            conn.commit()
+            days_to_process = [today_epoch - i * 86400 for i in range(7)]
+            mode = "normal"
+        else:
+            days_to_process = [
+                cursor + i * 86400 for i in range((upper - cursor) // 86400 + 1)
+            ]
+            mode = "backlog"
+            _log.info(
+                "update_author_day backlog mode: from=%s to=%s days=%d",
+                time.strftime("%Y-%m-%d", time.gmtime(cursor)),
+                time.strftime("%Y-%m-%d", time.gmtime(upper)),
+                len(days_to_process),
+            )
+    else:
+        if backlog_active:
+            _log.warning(
+                "update_author_day backlog flag set but bounds missing; resetting"
+            )
+            db.set_meta(conn, _META_BACKLOG_ACTIVE, "0")
+            conn.commit()
+        days_to_process = [today_epoch - i * 86400 for i in range(7)]
+        mode = "normal"
 
     t_start = time.monotonic()
     processed = 0
-    deferred = 0
+    last_completed: int | None = None
+    defer_reason: str | None = None
 
-    for i, day_epoch in enumerate(day_epochs):
+    for i, day_epoch in enumerate(days_to_process):
         # Pressure check before each chunk after the first. Always do at
         # least one chunk so this step makes some forward progress.
         if i > 0:
             wal_mb = _wal_size_mb_from_conn(conn)
             elapsed_s = time.monotonic() - t_start
             if wal_mb > _UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB:
-                deferred = len(day_epochs) - i
-                _log.warning(
-                    "update_author_day deferred: WAL=%.1fMB > %.0fMB processed=%d deferred=%d",
-                    wal_mb, _UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB, processed, deferred,
+                defer_reason = (
+                    f"wal:{wal_mb:.1f}MB>{_UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB:.0f}MB"
                 )
                 break
             if elapsed_s > _UPDATE_AUTHOR_DAY_BUDGET_S:
-                deferred = len(day_epochs) - i
-                _log.warning(
-                    "update_author_day deferred: elapsed=%.1fs > %.0fs processed=%d deferred=%d",
-                    elapsed_s, _UPDATE_AUTHOR_DAY_BUDGET_S, processed, deferred,
+                defer_reason = (
+                    f"budget:{elapsed_s:.1f}s>{_UPDATE_AUTHOR_DAY_BUDGET_S:.0f}s"
                 )
                 break
 
@@ -1137,21 +1225,49 @@ def _update_author_day(conn) -> None:
         """, {"day_epoch": day_epoch, "day_start": day_start_iso, "day_end": day_end_iso})
         conn.commit()
         processed += 1
+        last_completed = day_epoch
         _yield_between_derive_steps()
 
-    # Retention prune only on full completion. Partial cycles keep old rows
-    # in case the deferred work needs reconciliation context next pass.
-    if deferred == 0:
+    deferred = len(days_to_process) - processed
+    total_ms = int((time.monotonic() - t_start) * 1000)
+
+    if defer_reason is not None:
+        remaining = days_to_process[processed:]
+        if remaining:
+            new_oldest = min(remaining)
+            new_newest = max(remaining)
+            _persist_defer(
+                conn,
+                oldest=new_oldest,
+                newest=new_newest,
+                reason=defer_reason,
+                last_completed=last_completed,
+            )
+            conn.commit()
+            _log.warning(
+                "update_author_day deferred: %s mode=%s processed=%d deferred=%d resume_from=%s resume_to=%s",
+                defer_reason, mode, processed, deferred,
+                time.strftime("%Y-%m-%d", time.gmtime(new_oldest)),
+                time.strftime("%Y-%m-%d", time.gmtime(new_newest)),
+            )
+        else:
+            _log.warning(
+                "update_author_day deferred: %s mode=%s processed=%d deferred=0 (no remaining; clearing)",
+                defer_reason, mode, processed,
+            )
+            _clear_backlog(conn, last_completed=last_completed)
+            conn.commit()
+    else:
+        _clear_backlog(conn, last_completed=last_completed)
         conn.execute(
             "DELETE FROM derived_author_day WHERE day_epoch < ?",
             (retention_cutoff_day_epoch,),
         )
         conn.commit()
 
-    total_ms = int((time.monotonic() - t_start) * 1000)
     _log.info(
-        "update_author_day processed=%d deferred=%d total_ms=%d",
-        processed, deferred, total_ms,
+        "update_author_day processed=%d deferred=%d total_ms=%d mode=%s",
+        processed, deferred, total_ms, mode,
     )
 
 

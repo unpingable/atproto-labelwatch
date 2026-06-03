@@ -210,3 +210,238 @@ def test_repeat_call_idempotent():
         "ORDER BY author_did, day_epoch"
     ).fetchall()
     assert [tuple(r) for r in first] == [tuple(r) for r in second]
+
+
+# ---- Resume-semantics tests (Option 2: real backlog with persisted bounds) ----
+
+# Save the truly-original yield at import time so cross-cycle test helpers can
+# restore it after a defer-trigger monkeypatch is no longer wanted.
+_ORIGINAL_YIELD = scan._yield_between_derive_steps
+
+
+def _restore_yield(monkeypatch):
+    """Restore yield to the real, non-trigger version for the next cycle."""
+    monkeypatch.setattr(scan, "_yield_between_derive_steps", _ORIGINAL_YIELD)
+
+
+def _stop_yield_after(monkeypatch, n_yields: int):
+    """Force a budget defer after `n_yields` _yield_between_derive_steps calls.
+
+    Each successful day commit calls _yield once at the end; the next loop
+    iteration's pressure check then trips budget=0. The wrapper always calls
+    through to the saved-at-import-time original so nested setups don't stack.
+    """
+    monkeypatch.setattr(scan, "_UPDATE_AUTHOR_DAY_BUDGET_S", 600.0)
+    call_count = {"n": 0}
+
+    def stop_after():
+        call_count["n"] += 1
+        if call_count["n"] >= n_yields:
+            monkeypatch.setattr(scan, "_UPDATE_AUTHOR_DAY_BUDGET_S", 0.0)
+        _ORIGINAL_YIELD()
+
+    monkeypatch.setattr(scan, "_yield_between_derive_steps", stop_after)
+
+
+def test_defer_persists_pending_range(monkeypatch):
+    """After defer in normal mode, meta keys describe the pending range."""
+    conn = _make_db()
+    _seed_week(conn)
+    _stop_yield_after(monkeypatch, 2)  # commit today + today-1, then defer
+    _update_author_day(conn)
+
+    assert db.get_meta(conn, "update_author_day:backlog_active") == "1"
+    today_epoch = (int(time.time()) // 86400) * 86400
+    oldest = int(db.get_meta(conn, "update_author_day:pending_oldest"))
+    newest = int(db.get_meta(conn, "update_author_day:pending_newest"))
+    # Normal mode (newest-first) processed today + today-1. Remaining = today-2..today-6.
+    assert oldest == today_epoch - 6 * 86400
+    assert newest == today_epoch - 2 * 86400
+    # Defer reason and last-completed are persisted for visibility.
+    assert db.get_meta(conn, "update_author_day:last_defer_reason").startswith("budget:")
+    assert int(db.get_meta(conn, "update_author_day:last_completed_day_epoch")) == today_epoch - 86400
+
+
+def test_backlog_mode_processes_only_pending_range(monkeypatch):
+    """Cycle 2 in backlog mode skips already-fresh days from cycle 1."""
+    conn = _make_db()
+    _seed_week(conn)
+
+    # Cycle 1: defer after 2 days (today + today-1 land).
+    _stop_yield_after(monkeypatch, 2)
+    _update_author_day(conn)
+
+    # Wipe rows that cycle 1 landed so we can prove backlog mode skipped them.
+    # Then cycle 2 in backlog mode should NOT touch today / today-1 (no rows
+    # reappear there), and SHOULD land today-2 through today-6.
+    today_epoch = (int(time.time()) // 86400) * 86400
+    conn.execute(
+        "DELETE FROM derived_author_day WHERE day_epoch IN (?, ?)",
+        (today_epoch, today_epoch - 86400),
+    )
+    conn.commit()
+
+    # Cycle 2: restore real yield + clear budget so backlog drains cleanly.
+    _restore_yield(monkeypatch)
+    monkeypatch.setattr(scan, "_UPDATE_AUTHOR_DAY_BUDGET_S", 600.0)
+    _update_author_day(conn)
+
+    # today and today-1 must remain empty — backlog mode skipped them.
+    skipped = conn.execute(
+        "SELECT COUNT(*) FROM derived_author_day WHERE day_epoch IN (?, ?)",
+        (today_epoch, today_epoch - 86400),
+    ).fetchone()[0]
+    assert skipped == 0
+    # today-2 through today-6 must all be populated by the backlog drain.
+    landed = conn.execute(
+        "SELECT COUNT(DISTINCT day_epoch) FROM derived_author_day WHERE day_epoch BETWEEN ? AND ?",
+        (today_epoch - 6 * 86400, today_epoch - 2 * 86400),
+    ).fetchone()[0]
+    assert landed == 5
+    # Backlog cleared.
+    assert db.get_meta(conn, "update_author_day:backlog_active") == "0"
+
+
+def test_backlog_drains_in_multiple_cycles(monkeypatch):
+    """A backlog that itself can't complete in one cycle advances cursor each time."""
+    conn = _make_db()
+    _seed_week(conn)
+
+    # Cycle 1: defer after 2 days. Pending = today-2..today-6 (5 days).
+    _stop_yield_after(monkeypatch, 2)
+    _update_author_day(conn)
+    today_epoch = (int(time.time()) // 86400) * 86400
+    assert int(db.get_meta(conn, "update_author_day:pending_oldest")) == today_epoch - 6 * 86400
+    assert int(db.get_meta(conn, "update_author_day:pending_newest")) == today_epoch - 2 * 86400
+
+    # Cycle 2: defer after 2 days again. Backlog ascending: today-6, today-5 land;
+    # remaining = today-4, today-3, today-2.
+    _stop_yield_after(monkeypatch, 2)
+    _update_author_day(conn)
+    assert db.get_meta(conn, "update_author_day:backlog_active") == "1"
+    assert int(db.get_meta(conn, "update_author_day:pending_oldest")) == today_epoch - 4 * 86400
+    assert int(db.get_meta(conn, "update_author_day:pending_newest")) == today_epoch - 2 * 86400
+
+    # Cycle 3: complete the remaining 3 days. Backlog should drain.
+    _restore_yield(monkeypatch)
+    monkeypatch.setattr(scan, "_UPDATE_AUTHOR_DAY_BUDGET_S", 600.0)
+    _update_author_day(conn)
+    assert db.get_meta(conn, "update_author_day:backlog_active") == "0"
+
+
+def test_backlog_clamped_when_oldest_falls_out_of_window(monkeypatch, caplog):
+    """If the pending oldest is older than the 7-day window, it gets clamped."""
+    conn = _make_db()
+    _seed_week(conn)
+    today_epoch = (int(time.time()) // 86400) * 86400
+
+    # Forge backlog state where oldest is 10 days back — out of window.
+    db.set_meta(conn, "update_author_day:backlog_active", "1")
+    db.set_meta(conn, "update_author_day:pending_oldest", str(today_epoch - 10 * 86400))
+    db.set_meta(conn, "update_author_day:pending_newest", str(today_epoch - 3 * 86400))
+    conn.commit()
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="labelwatch.scan"):
+        _update_author_day(conn)
+
+    # Stale-cursor warning was emitted.
+    assert any("backlog cursor stale" in r.message for r in caplog.records)
+    # Backlog drained cleanly (days today-6..today-3 within window all landed).
+    assert db.get_meta(conn, "update_author_day:backlog_active") == "0"
+
+
+def test_backlog_evaporates_when_entire_range_out_of_window(monkeypatch):
+    """If both bounds fell out of window, drop backlog and resume normal mode."""
+    conn = _make_db()
+    _seed_week(conn)
+    today_epoch = (int(time.time()) // 86400) * 86400
+
+    # Forge backlog where both bounds are 10+ days old — fully out of window.
+    db.set_meta(conn, "update_author_day:backlog_active", "1")
+    db.set_meta(conn, "update_author_day:pending_oldest", str(today_epoch - 12 * 86400))
+    db.set_meta(conn, "update_author_day:pending_newest", str(today_epoch - 10 * 86400))
+    conn.commit()
+
+    _update_author_day(conn)
+
+    # Backlog should have evaporated and then a full normal cycle should have run.
+    assert db.get_meta(conn, "update_author_day:backlog_active") == "0"
+    # All 7 days in the current window are populated (normal mode took over).
+    landed = conn.execute(
+        "SELECT COUNT(DISTINCT day_epoch) FROM derived_author_day "
+        "WHERE day_epoch BETWEEN ? AND ?",
+        (today_epoch - 6 * 86400, today_epoch),
+    ).fetchone()[0]
+    assert landed == 7
+
+
+def test_full_completion_clears_state_and_prunes(monkeypatch):
+    """Clean cycle clears backlog meta AND runs retention prune."""
+    conn = _make_db()
+    _seed_week(conn)
+
+    # Pre-stage stale backlog meta (simulating a leftover from a prior incident)
+    # and a stale retention row that the prune should remove.
+    today_epoch = (int(time.time()) // 86400) * 86400
+    db.set_meta(conn, "update_author_day:backlog_active", "1")
+    db.set_meta(conn, "update_author_day:pending_oldest", str(today_epoch - 4 * 86400))
+    db.set_meta(conn, "update_author_day:pending_newest", str(today_epoch - 2 * 86400))
+    stale_day = today_epoch - 90 * 86400
+    conn.execute(
+        "INSERT INTO derived_author_day(author_did, day_epoch, events, applies, removes, labelers, targets, vals) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+        (TARGET_A, stale_day, 1, 1, 0, 1, 1, 1),
+    )
+    conn.commit()
+
+    _update_author_day(conn)
+
+    # Backlog drained
+    assert db.get_meta(conn, "update_author_day:backlog_active") == "0"
+    # Retention pruned the stale row
+    stale_remaining = conn.execute(
+        "SELECT COUNT(*) FROM derived_author_day WHERE day_epoch = ?",
+        (stale_day,),
+    ).fetchone()[0]
+    assert stale_remaining == 0
+
+
+def test_normal_mode_after_drain_returns_to_newest_first(monkeypatch):
+    """After backlog drains, the next cycle is normal mode (newest-first)."""
+    conn = _make_db()
+    _seed_week(conn)
+
+    # Cycle 1: defer after 1 day (today only lands).
+    _stop_yield_after(monkeypatch, 1)
+    _update_author_day(conn)
+    assert db.get_meta(conn, "update_author_day:backlog_active") == "1"
+
+    # Cycle 2: clear budget AND restore yield, drain the backlog.
+    _restore_yield(monkeypatch)
+    monkeypatch.setattr(scan, "_UPDATE_AUTHOR_DAY_BUDGET_S", 600.0)
+    _update_author_day(conn)
+    assert db.get_meta(conn, "update_author_day:backlog_active") == "0"
+
+    # Cycle 3: defer after 2 days. Should be normal mode (newest-first),
+    # so today + today-1 land, today-2..today-6 are deferred.
+    today_epoch = (int(time.time()) // 86400) * 86400
+    conn.execute(
+        "DELETE FROM derived_author_day WHERE day_epoch IN (?, ?)",
+        (today_epoch, today_epoch - 86400),
+    )
+    conn.commit()
+    _stop_yield_after(monkeypatch, 2)
+    _update_author_day(conn)
+
+    # today and today-1 landed (newest-first proved by repopulating exactly
+    # the rows we deleted).
+    landed_recent = conn.execute(
+        "SELECT COUNT(DISTINCT day_epoch) FROM derived_author_day "
+        "WHERE day_epoch IN (?, ?)",
+        (today_epoch, today_epoch - 86400),
+    ).fetchone()[0]
+    assert landed_recent == 2
+    # Pending range = today-6..today-2 (the older days that did NOT land).
+    assert int(db.get_meta(conn, "update_author_day:pending_oldest")) == today_epoch - 6 * 86400
+    assert int(db.get_meta(conn, "update_author_day:pending_newest")) == today_epoch - 2 * 86400
