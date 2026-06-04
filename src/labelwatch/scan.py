@@ -44,28 +44,28 @@ _DERIVE_DISABLED = os.environ.get("LABELWATCH_DERIVE_DISABLE", "0") == "1"
 # is frozen and the scan is pure waste. See gap-spec-derive-workload-isolation.md.
 _FACTS_MAX_AGE_S = int(os.environ.get("LABELWATCH_FACTS_MAX_AGE_S", "86400"))
 
-# update_author_day chunking. The original single INSERT held the writer for
-# ~6.5min, producing the bulk of discovery db-locked retries at the derive tail
-# (2026-05-20 evidence: ~11 retries clustered in the 6.5min window). Chunk by
-# day_epoch so each chunk's writer-lock window is bounded; commit between days
-# releases the writer for discovery. Backstop budget + WAL pressure cause
-# explicit defer; remaining days run next cycle.
+# Per-day chunking for the bigger derive sub-steps. The original single INSERT
+# held the writer for several minutes per sub-step (2026-05-20 evidence: ~11
+# discovery db-locked retries clustered in update_author_day's 6.5min window;
+# update_author_labeler_day showed ~17 in its window). Chunk by day_epoch so
+# each chunk's writer-lock window is bounded; commit between days releases the
+# writer for discovery. Backstop budget + WAL pressure cause explicit defer;
+# remaining days run next cycle.
+#
+# Resume state is persisted in meta as a closed range
+# [pending_oldest..pending_newest]. Backlog mode in the next cycle processes
+# only that range oldest-first; without it the same fresh days would win every
+# cycle while older deferred days rotted. Two bounds (not a single cursor) so
+# backlog mode skips already-fresh days from the prior cycle.
+#
+# Each sub-step gets its own constants + meta-key namespace so they can be
+# tuned and observed independently. UALD's per-day INSERT is larger than UAD's
+# (~labelers × authors vs authors) — default WAL ceiling is correspondingly
+# higher.
 _UPDATE_AUTHOR_DAY_BUDGET_S = float(os.environ.get("LABELWATCH_UPDATE_AUTHOR_DAY_BUDGET_S", "600"))
 _UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB = float(os.environ.get("LABELWATCH_UPDATE_AUTHOR_DAY_WAL_MB", "200"))
-
-# update_author_day resume state. The chunker defers some days when WAL/time
-# pressure trips; this state lets the next cycle resume the deferred range
-# oldest-first instead of restarting newest-first (which would re-do already-
-# fresh days while older deferred days rot indefinitely).
-#
-# Closed-range bounds: pending_oldest..pending_newest inclusive. Two bounds
-# rather than a single cursor so backlog mode processes only the truly-pending
-# days, not already-fresh ones from the prior cycle.
-_META_BACKLOG_ACTIVE = "update_author_day:backlog_active"
-_META_PENDING_OLDEST = "update_author_day:pending_oldest"
-_META_PENDING_NEWEST = "update_author_day:pending_newest"
-_META_LAST_COMPLETED = "update_author_day:last_completed_day_epoch"
-_META_LAST_DEFER_REASON = "update_author_day:last_defer_reason"
+_UPDATE_AUTHOR_LABELER_DAY_BUDGET_S = float(os.environ.get("LABELWATCH_UPDATE_AUTHOR_LABELER_DAY_BUDGET_S", "600"))
+_UPDATE_AUTHOR_LABELER_DAY_WAL_PRESSURE_MB = float(os.environ.get("LABELWATCH_UPDATE_AUTHOR_LABELER_DAY_WAL_MB", "300"))
 
 
 def _yield_between_derive_steps() -> None:
@@ -1072,70 +1072,103 @@ def _wal_size_mb_from_conn(conn) -> float:
     return 0.0
 
 
-def _read_resume_state(conn) -> tuple[bool, int | None, int | None]:
+def _read_resume_state(
+    conn, meta_prefix: str
+) -> tuple[bool, int | None, int | None]:
     """Return (backlog_active, pending_oldest, pending_newest) from meta."""
-    active = db.get_meta(conn, _META_BACKLOG_ACTIVE) == "1"
-    oldest_raw = db.get_meta(conn, _META_PENDING_OLDEST)
-    newest_raw = db.get_meta(conn, _META_PENDING_NEWEST)
+    active = db.get_meta(conn, f"{meta_prefix}:backlog_active") == "1"
+    oldest_raw = db.get_meta(conn, f"{meta_prefix}:pending_oldest")
+    newest_raw = db.get_meta(conn, f"{meta_prefix}:pending_newest")
     oldest = int(oldest_raw) if oldest_raw else None
     newest = int(newest_raw) if newest_raw else None
     return active, oldest, newest
 
 
 def _persist_defer(
-    conn, *, oldest: int, newest: int, reason: str, last_completed: int | None
+    conn,
+    meta_prefix: str,
+    *,
+    oldest: int,
+    newest: int,
+    reason: str,
+    last_completed: int | None,
 ) -> None:
-    db.set_meta(conn, _META_BACKLOG_ACTIVE, "1")
-    db.set_meta(conn, _META_PENDING_OLDEST, str(oldest))
-    db.set_meta(conn, _META_PENDING_NEWEST, str(newest))
-    db.set_meta(conn, _META_LAST_DEFER_REASON, reason)
+    db.set_meta(conn, f"{meta_prefix}:backlog_active", "1")
+    db.set_meta(conn, f"{meta_prefix}:pending_oldest", str(oldest))
+    db.set_meta(conn, f"{meta_prefix}:pending_newest", str(newest))
+    db.set_meta(conn, f"{meta_prefix}:last_defer_reason", reason)
     if last_completed is not None:
-        db.set_meta(conn, _META_LAST_COMPLETED, str(last_completed))
+        db.set_meta(
+            conn, f"{meta_prefix}:last_completed_day_epoch", str(last_completed)
+        )
 
 
-def _clear_backlog(conn, *, last_completed: int | None) -> None:
-    db.set_meta(conn, _META_BACKLOG_ACTIVE, "0")
-    db.set_meta(conn, _META_PENDING_OLDEST, "")
-    db.set_meta(conn, _META_PENDING_NEWEST, "")
-    db.set_meta(conn, _META_LAST_DEFER_REASON, "")
+def _clear_backlog(
+    conn, meta_prefix: str, *, last_completed: int | None
+) -> None:
+    db.set_meta(conn, f"{meta_prefix}:backlog_active", "0")
+    db.set_meta(conn, f"{meta_prefix}:pending_oldest", "")
+    db.set_meta(conn, f"{meta_prefix}:pending_newest", "")
+    db.set_meta(conn, f"{meta_prefix}:last_defer_reason", "")
     if last_completed is not None:
-        db.set_meta(conn, _META_LAST_COMPLETED, str(last_completed))
+        db.set_meta(
+            conn, f"{meta_prefix}:last_completed_day_epoch", str(last_completed)
+        )
 
 
-def _update_author_day(conn) -> None:
-    """Incrementally update derived_author_day from label_events.
+def _run_per_day_chunked(
+    conn,
+    *,
+    log_name: str,
+    budget_s_fn,
+    wal_pressure_mb_fn,
+    rebuild_day,
+    prune_old,
+    window_days: int = 7,
+    retention_days: int = 60,
+) -> None:
+    """Per-day chunked derive substep with backlog-mode resume.
 
     Two modes (visible in logs as mode=normal/backlog):
 
-    - Normal mode: process the last 7 days newest-first. Today's freshness
-      takes priority — if pressure trips mid-pass, the oldest days get
-      deferred and persisted as a closed range.
+    - Normal mode: process the last ``window_days`` days newest-first. Today's
+      freshness takes priority — if pressure trips mid-pass, the oldest days
+      get deferred and persisted as a closed range.
     - Backlog mode: when a prior cycle deferred days, this cycle processes
       that deferred range oldest→newest until drained, then the next cycle
       returns to normal mode. Without this, the same early days win every
       cycle while days at the back of the window rot in the basement.
 
     Defer triggers (each persists resume state and emits an explicit log):
-      - elapsed > _UPDATE_AUTHOR_DAY_BUDGET_S (backstop; default 600s)
-      - WAL size > _UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB (default 200MB)
+      - elapsed > ``budget_s_fn()`` (backstop)
+      - WAL size > ``wal_pressure_mb_fn()``
 
-    Resume state is persisted in the meta table as a closed range
-    [pending_oldest..pending_newest]. Two bounds (not one cursor) so backlog
-    mode processes only truly-pending days, not days already refreshed in
-    the prior cycle. If the range falls partly out of the moving 7-day
-    window between cycles, the stale prefix is logged and clamped.
+    The thresholds are read via callables — not bound at entry — so that
+    monkeypatched module-level constants take effect mid-pass (tests rely
+    on this; prod just reads the constant once per check).
+
+    Resume state is persisted in the meta table under ``log_name`` as a closed
+    range [pending_oldest..pending_newest]. Two bounds (not one cursor) so
+    backlog mode processes only truly-pending days, not days already refreshed
+    in the prior cycle. If the range falls partly out of the moving window
+    between cycles, the stale prefix is logged and clamped.
 
     Retention prune runs only when a cycle completes without deferral —
     deferred days may need pre-prune context next pass.
 
-    Only counts labels on posts (uri LIKE 'at://%/app.bsky.feed.post/%').
+    ``rebuild_day(conn, day_epoch)`` and ``prune_old(conn, retention_cutoff)``
+    are callables provided by the substep — they encode the only per-table
+    variation (which derived table, which SELECT/GROUP BY, which prune query).
     """
+    meta_prefix = log_name
     now_epoch = int(time.time())
     today_epoch = (now_epoch // 86400) * 86400
-    oldest_in_window = today_epoch - 6 * 86400
-    retention_cutoff_day_epoch = today_epoch - 60 * 86400
+    oldest_in_window = today_epoch - (window_days - 1) * 86400
+    retention_cutoff_day_epoch = today_epoch - retention_days * 86400
 
-    backlog_active, pending_oldest, pending_newest = _read_resume_state(conn)
+    backlog_active, pending_oldest, pending_newest = _read_resume_state(
+        conn, meta_prefix
+    )
 
     if backlog_active and pending_oldest is not None and pending_newest is not None:
         cursor = max(pending_oldest, oldest_in_window)
@@ -1143,18 +1176,20 @@ def _update_author_day(conn) -> None:
         if pending_oldest < oldest_in_window:
             lost_days = (oldest_in_window - pending_oldest) // 86400
             _log.warning(
-                "update_author_day backlog cursor stale: lost_days=%d (oldest=%s clamped to %s)",
+                "%s backlog cursor stale: lost_days=%d (oldest=%s clamped to %s)",
+                log_name,
                 lost_days,
                 time.strftime("%Y-%m-%d", time.gmtime(pending_oldest)),
                 time.strftime("%Y-%m-%d", time.gmtime(oldest_in_window)),
             )
         if cursor > upper:
             _log.info(
-                "update_author_day backlog evaporated by window movement; resuming normal mode"
+                "%s backlog evaporated by window movement; resuming normal mode",
+                log_name,
             )
-            _clear_backlog(conn, last_completed=None)
+            _clear_backlog(conn, meta_prefix, last_completed=None)
             conn.commit()
-            days_to_process = [today_epoch - i * 86400 for i in range(7)]
+            days_to_process = [today_epoch - i * 86400 for i in range(window_days)]
             mode = "normal"
         else:
             days_to_process = [
@@ -1162,7 +1197,8 @@ def _update_author_day(conn) -> None:
             ]
             mode = "backlog"
             _log.info(
-                "update_author_day backlog mode: from=%s to=%s days=%d",
+                "%s backlog mode: from=%s to=%s days=%d",
+                log_name,
                 time.strftime("%Y-%m-%d", time.gmtime(cursor)),
                 time.strftime("%Y-%m-%d", time.gmtime(upper)),
                 len(days_to_process),
@@ -1170,11 +1206,11 @@ def _update_author_day(conn) -> None:
     else:
         if backlog_active:
             _log.warning(
-                "update_author_day backlog flag set but bounds missing; resetting"
+                "%s backlog flag set but bounds missing; resetting", log_name
             )
-            db.set_meta(conn, _META_BACKLOG_ACTIVE, "0")
+            db.set_meta(conn, f"{meta_prefix}:backlog_active", "0")
             conn.commit()
-        days_to_process = [today_epoch - i * 86400 for i in range(7)]
+        days_to_process = [today_epoch - i * 86400 for i in range(window_days)]
         mode = "normal"
 
     t_start = time.monotonic()
@@ -1188,41 +1224,16 @@ def _update_author_day(conn) -> None:
         if i > 0:
             wal_mb = _wal_size_mb_from_conn(conn)
             elapsed_s = time.monotonic() - t_start
-            if wal_mb > _UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB:
-                defer_reason = (
-                    f"wal:{wal_mb:.1f}MB>{_UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB:.0f}MB"
-                )
+            wal_threshold = wal_pressure_mb_fn()
+            budget = budget_s_fn()
+            if wal_mb > wal_threshold:
+                defer_reason = f"wal:{wal_mb:.1f}MB>{wal_threshold:.0f}MB"
                 break
-            if elapsed_s > _UPDATE_AUTHOR_DAY_BUDGET_S:
-                defer_reason = (
-                    f"budget:{elapsed_s:.1f}s>{_UPDATE_AUTHOR_DAY_BUDGET_S:.0f}s"
-                )
+            if elapsed_s > budget:
+                defer_reason = f"budget:{elapsed_s:.1f}s>{budget:.0f}s"
                 break
 
-        day_start_iso = time.strftime("%Y-%m-%dT00:00:00.000000Z", time.gmtime(day_epoch))
-        day_end_iso = time.strftime("%Y-%m-%dT00:00:00.000000Z", time.gmtime(day_epoch + 86400))
-
-        conn.execute(
-            "DELETE FROM derived_author_day WHERE day_epoch = ?",
-            (day_epoch,),
-        )
-        conn.execute("""
-            INSERT OR REPLACE INTO derived_author_day
-                (author_did, day_epoch, events, applies, removes, labelers, targets, vals)
-            SELECT  le.target_did AS author_did,
-                    :day_epoch AS day_epoch,
-                    COUNT(*) AS events,
-                    SUM(CASE WHEN le.neg = 0 THEN 1 ELSE 0 END) AS applies,
-                    SUM(CASE WHEN le.neg = 1 THEN 1 ELSE 0 END) AS removes,
-                    COUNT(DISTINCT le.labeler_did) AS labelers,
-                    COUNT(DISTINCT le.uri) AS targets,
-                    COUNT(DISTINCT le.val) AS vals
-            FROM label_events le
-            WHERE le.target_did IS NOT NULL
-              AND le.uri LIKE 'at://%/app.bsky.feed.post/%'
-              AND le.ts >= :day_start AND le.ts < :day_end
-            GROUP BY le.target_did
-        """, {"day_epoch": day_epoch, "day_start": day_start_iso, "day_end": day_end_iso})
+        rebuild_day(conn, day_epoch)
         conn.commit()
         processed += 1
         last_completed = day_epoch
@@ -1238,6 +1249,7 @@ def _update_author_day(conn) -> None:
             new_newest = max(remaining)
             _persist_defer(
                 conn,
+                meta_prefix,
                 oldest=new_oldest,
                 newest=new_newest,
                 reason=defer_reason,
@@ -1245,55 +1257,99 @@ def _update_author_day(conn) -> None:
             )
             conn.commit()
             _log.warning(
-                "update_author_day deferred: %s mode=%s processed=%d deferred=%d resume_from=%s resume_to=%s",
-                defer_reason, mode, processed, deferred,
+                "%s deferred: %s mode=%s processed=%d deferred=%d resume_from=%s resume_to=%s",
+                log_name, defer_reason, mode, processed, deferred,
                 time.strftime("%Y-%m-%d", time.gmtime(new_oldest)),
                 time.strftime("%Y-%m-%d", time.gmtime(new_newest)),
             )
         else:
             _log.warning(
-                "update_author_day deferred: %s mode=%s processed=%d deferred=0 (no remaining; clearing)",
-                defer_reason, mode, processed,
+                "%s deferred: %s mode=%s processed=%d deferred=0 (no remaining; clearing)",
+                log_name, defer_reason, mode, processed,
             )
-            _clear_backlog(conn, last_completed=last_completed)
+            _clear_backlog(conn, meta_prefix, last_completed=last_completed)
             conn.commit()
     else:
-        _clear_backlog(conn, last_completed=last_completed)
-        conn.execute(
-            "DELETE FROM derived_author_day WHERE day_epoch < ?",
-            (retention_cutoff_day_epoch,),
-        )
+        _clear_backlog(conn, meta_prefix, last_completed=last_completed)
+        prune_old(conn, retention_cutoff_day_epoch)
         conn.commit()
 
     _log.info(
-        "update_author_day processed=%d deferred=%d total_ms=%d mode=%s",
-        processed, deferred, total_ms, mode,
+        "%s processed=%d deferred=%d total_ms=%d mode=%s",
+        log_name, processed, deferred, total_ms, mode,
     )
 
 
-def _update_author_labeler_day(conn) -> None:
-    """Incrementally update derived_author_labeler_day from label_events.
-
-    Recomputes the last 7 days. Prunes rows older than 60 days.
-    Only counts labels on posts (uri LIKE 'at://%/app.bsky.feed.post/%').
-    """
-    now_epoch = int(time.time())
-    start_day_epoch = ((now_epoch // 86400) - 6) * 86400
-    cutoff_iso = time.strftime("%Y-%m-%dT00:00:00.000000Z", time.gmtime(start_day_epoch))
-    retention_cutoff_day_epoch = ((now_epoch // 86400) - 60) * 86400
-
-    # Delete recompute window
+def _rebuild_author_day(conn, day_epoch: int) -> None:
+    day_start_iso = time.strftime(
+        "%Y-%m-%dT00:00:00.000000Z", time.gmtime(day_epoch)
+    )
+    day_end_iso = time.strftime(
+        "%Y-%m-%dT00:00:00.000000Z", time.gmtime(day_epoch + 86400)
+    )
     conn.execute(
-        "DELETE FROM derived_author_labeler_day WHERE day_epoch >= ?",
-        (start_day_epoch,),
+        "DELETE FROM derived_author_day WHERE day_epoch = ?", (day_epoch,)
+    )
+    conn.execute("""
+        INSERT OR REPLACE INTO derived_author_day
+            (author_did, day_epoch, events, applies, removes, labelers, targets, vals)
+        SELECT  le.target_did AS author_did,
+                :day_epoch AS day_epoch,
+                COUNT(*) AS events,
+                SUM(CASE WHEN le.neg = 0 THEN 1 ELSE 0 END) AS applies,
+                SUM(CASE WHEN le.neg = 1 THEN 1 ELSE 0 END) AS removes,
+                COUNT(DISTINCT le.labeler_did) AS labelers,
+                COUNT(DISTINCT le.uri) AS targets,
+                COUNT(DISTINCT le.val) AS vals
+        FROM label_events le
+        WHERE le.target_did IS NOT NULL
+          AND le.uri LIKE 'at://%/app.bsky.feed.post/%'
+          AND le.ts >= :day_start AND le.ts < :day_end
+        GROUP BY le.target_did
+    """, {"day_epoch": day_epoch, "day_start": day_start_iso, "day_end": day_end_iso})
+
+
+def _prune_author_day(conn, retention_cutoff_day_epoch: int) -> None:
+    conn.execute(
+        "DELETE FROM derived_author_day WHERE day_epoch < ?",
+        (retention_cutoff_day_epoch,),
     )
 
-    # Reinsert from label_events
+
+def _update_author_day(conn) -> None:
+    """Incrementally update derived_author_day from label_events.
+
+    Counts labels on posts only (``uri LIKE 'at://%/app.bsky.feed.post/%'``).
+    Chunked per-day; see ``_run_per_day_chunked`` for mode/defer/resume
+    semantics. Tuning: ``_UPDATE_AUTHOR_DAY_BUDGET_S``,
+    ``_UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB``.
+    """
+    _run_per_day_chunked(
+        conn,
+        log_name="update_author_day",
+        budget_s_fn=lambda: _UPDATE_AUTHOR_DAY_BUDGET_S,
+        wal_pressure_mb_fn=lambda: _UPDATE_AUTHOR_DAY_WAL_PRESSURE_MB,
+        rebuild_day=_rebuild_author_day,
+        prune_old=_prune_author_day,
+    )
+
+
+def _rebuild_author_labeler_day(conn, day_epoch: int) -> None:
+    day_start_iso = time.strftime(
+        "%Y-%m-%dT00:00:00.000000Z", time.gmtime(day_epoch)
+    )
+    day_end_iso = time.strftime(
+        "%Y-%m-%dT00:00:00.000000Z", time.gmtime(day_epoch + 86400)
+    )
+    conn.execute(
+        "DELETE FROM derived_author_labeler_day WHERE day_epoch = ?",
+        (day_epoch,),
+    )
     conn.execute("""
         INSERT OR REPLACE INTO derived_author_labeler_day
             (author_did, day_epoch, labeler_did, events, applies, removes, targets)
         SELECT  le.target_did AS author_did,
-                (CAST(strftime('%s', le.ts) AS INTEGER) / 86400) * 86400 AS day_epoch,
+                :day_epoch AS day_epoch,
                 le.labeler_did,
                 COUNT(*) AS events,
                 SUM(CASE WHEN le.neg = 0 THEN 1 ELSE 0 END) AS applies,
@@ -1302,14 +1358,35 @@ def _update_author_labeler_day(conn) -> None:
         FROM label_events le
         WHERE le.target_did IS NOT NULL
           AND le.uri LIKE 'at://%/app.bsky.feed.post/%'
-          AND le.ts >= :cutoff_iso
-        GROUP BY le.target_did, day_epoch, le.labeler_did
-    """, {"cutoff_iso": cutoff_iso})
+          AND le.ts >= :day_start AND le.ts < :day_end
+        GROUP BY le.target_did, le.labeler_did
+    """, {"day_epoch": day_epoch, "day_start": day_start_iso, "day_end": day_end_iso})
 
-    # Prune old rows
+
+def _prune_author_labeler_day(conn, retention_cutoff_day_epoch: int) -> None:
     conn.execute(
         "DELETE FROM derived_author_labeler_day WHERE day_epoch < ?",
         (retention_cutoff_day_epoch,),
+    )
+
+
+def _update_author_labeler_day(conn) -> None:
+    """Incrementally update derived_author_labeler_day from label_events.
+
+    Counts labels on posts only (``uri LIKE 'at://%/app.bsky.feed.post/%'``).
+    Chunked per-day; see ``_run_per_day_chunked`` for mode/defer/resume
+    semantics. Per-day INSERT is larger than UAD's (~labelers × authors), so
+    the default WAL ceiling is correspondingly higher. Tuning:
+    ``_UPDATE_AUTHOR_LABELER_DAY_BUDGET_S``,
+    ``_UPDATE_AUTHOR_LABELER_DAY_WAL_PRESSURE_MB``.
+    """
+    _run_per_day_chunked(
+        conn,
+        log_name="update_author_labeler_day",
+        budget_s_fn=lambda: _UPDATE_AUTHOR_LABELER_DAY_BUDGET_S,
+        wal_pressure_mb_fn=lambda: _UPDATE_AUTHOR_LABELER_DAY_WAL_PRESSURE_MB,
+        rebuild_day=_rebuild_author_labeler_day,
+        prune_old=_prune_author_labeler_day,
     )
 
 
