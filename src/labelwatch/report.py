@@ -138,7 +138,7 @@ def _visibility_badge(vis_class: Optional[str]) -> str:
 
 STYLE = """
 :root {
-  --bg: #fff; --fg: #111; --fg-muted: #666; --border: #ddd;
+  --bg: #fff; --fg: #111; --fg-muted: #666; --border: #ddd; --bg-muted: #f6f7f9;
   --link: #0b5394; --link-hover-bg: #f0f7fb; --accent: #2980b9;
   --card-bg: #fff; --card-border: #ddd;
   --anomaly-bg: #fff8f0;
@@ -156,7 +156,7 @@ STYLE = """
   --pre-bg: #f5f5f5;
 }
 [data-theme="dark"] {
-  --bg: #1a1a2e; --fg: #e0e0e0; --fg-muted: #999; --border: #333;
+  --bg: #1a1a2e; --fg: #e0e0e0; --fg-muted: #999; --border: #333; --bg-muted: #16213e;
   --link: #6db3f2; --link-hover-bg: #252545;
   --card-bg: #16213e; --card-border: #333;
   --anomaly-bg: #2a2218;
