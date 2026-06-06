@@ -138,7 +138,7 @@ def _visibility_badge(vis_class: Optional[str]) -> str:
 
 STYLE = """
 :root {
-  --bg: #fff; --fg: #111; --fg-muted: #666; --border: #ddd; --bg-muted: #f6f7f9;
+  --bg: #fff; --fg: #111; --fg-muted: #666; --border: #ddd; --bg-muted: #f6f7f9; --bar-fill: #0b5394;
   --link: #0b5394; --link-hover-bg: #f0f7fb; --accent: #2980b9;
   --card-bg: #fff; --card-border: #ddd;
   --anomaly-bg: #fff8f0;
@@ -156,7 +156,7 @@ STYLE = """
   --pre-bg: #f5f5f5;
 }
 [data-theme="dark"] {
-  --bg: #1a1a2e; --fg: #e0e0e0; --fg-muted: #999; --border: #333; --bg-muted: #16213e;
+  --bg: #1a1a2e; --fg: #e0e0e0; --fg-muted: #999; --border: #333; --bg-muted: #16213e; --bar-fill: #6db3f2;
   --link: #6db3f2; --link-hover-bg: #252545;
   --card-bg: #16213e; --card-border: #333;
   --anomaly-bg: #2a2218;
@@ -207,6 +207,11 @@ pre { background: var(--pre-bg); padding: 0.5rem; border-radius: 4px; overflow-x
 .health-metric .value { font-size: 1.4rem; font-weight: bold; }
 .health-metric .label { font-size: 0.75rem; color: var(--fg-muted); }
 .sparkline { vertical-align: middle; }
+.hbar-chart { display: block; max-width: 100%; }
+.hbar-chart text { font-family: Georgia, "Times New Roman", serif; font-size: 0.85rem; }
+.hbar-label { fill: var(--fg); }
+.hbar-value { fill: var(--fg-muted); }
+.hbar-bar   { fill: var(--bar-fill, #0b5394); }
 .anomaly-row { background: var(--anomaly-bg); }
 .methods { background: var(--methods-bg); border: 1px solid var(--methods-border); padding: 1rem; border-radius: 6px; margin-top: 2rem; font-size: 0.85rem; }
 .reference-lane { border: 2px solid var(--ref-border); background: var(--ref-bg); padding: 1rem; border-radius: 6px; margin-bottom: 1.5rem; }
@@ -585,6 +590,64 @@ def _sparkline_svg(values: List[int], width: int = 120, height: int = 24,
         f'<polyline points="{polyline}" fill="none" stroke="var(--sparkline-stroke, #0b5394)" stroke-width="1.5" />'
         f'</svg>'
     )
+
+
+def _truncate_label(s: str, max_chars: int = 24) -> str:
+    """Truncate a label with a leading ellipsis-free shape, trailing single-char ellipsis."""
+    if len(s) <= max_chars:
+        return s
+    return s[: max_chars - 1] + "…"
+
+
+def _horizontal_bar_svg(
+    rows: List[dict],
+    *,
+    width: int = 460,
+    bar_height: int = 18,
+    gap: int = 6,
+    label_width: int = 170,
+    value_width: int = 90,
+    value_fmt=None,
+    aria_label: str = "Horizontal bar chart",
+) -> str:
+    """Render a horizontal bar chart as inline SVG. Substrate, not "a chart."
+
+    rows: pre-sorted descending; each item {"label": str, "value": int|float}.
+    width/label_width/value_width: px reservations (labels left, values right).
+    bar_height/gap: per-row sizing.
+    value_fmt: callable(value) -> str; default is integer with thousands separators.
+
+    Empty rows render a tiny placeholder so callers can drop it in unconditionally.
+    Single dominant value still scales correctly; tiny values get min-width 1px so
+    they remain visible on a high-skew distribution.
+    """
+    if not rows:
+        return (
+            f'<svg class="hbar-chart" width="{width}" height="20" role="img" aria-label="empty">'
+            f'<text x="0" y="14" class="hbar-value">No data.</text></svg>'
+        )
+    fmt = value_fmt or (lambda v: f"{int(v):,}")
+    max_v = max((r["value"] for r in rows), default=0) or 1
+    chart_x = label_width + 8
+    chart_w = max(40, width - label_width - value_width - 16)
+    height = len(rows) * (bar_height + gap) - gap
+    parts = [
+        f'<svg class="hbar-chart" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="{escape(aria_label)}">'
+    ]
+    for i, row in enumerate(rows):
+        y = i * (bar_height + gap)
+        cy = y + bar_height * 0.72
+        label = _truncate_label(str(row["label"]))
+        bar_w = max(1, int(round(chart_w * row["value"] / max_v)))
+        val_text = fmt(row["value"])
+        parts.append(
+            f'<text x="{label_width}" y="{cy:.1f}" text-anchor="end" class="hbar-label">{escape(label)}</text>'
+            f'<rect x="{chart_x}" y="{y}" width="{bar_w}" height="{bar_height}" class="hbar-bar" rx="2" />'
+            f'<text x="{chart_x + bar_w + 6}" y="{cy:.1f}" class="hbar-value">{escape(val_text)}</text>'
+        )
+    parts.append("</svg>")
+    return "".join(parts)
 
 
 def _hourly_counts(conn, labeler_did: str, start: str, end: str, buckets: int = 168) -> List[int]:
@@ -1804,6 +1867,49 @@ is their output, and how much of the apparent diversity is already degraded.
     except Exception as exc:
         _log.warning("Ecosystem health section failed: %s", exc)
 
+    # --- Hosting locus: long-tail of non-major PDS hosts ---
+    # Bar-chart substrate. Answers: "where do labeled accounts live outside
+    # the Bluesky-hosted PDSes?" Shape over depth: short, no narrative, leans
+    # on the existing ecosystem health and hosting-locus methodology pages.
+    hosting_locus_section = ""
+    try:
+        from .hosting import query_hosting_summary
+        hsummary = query_hosting_summary(conn, days=7)
+        top_fams = hsummary.get("top_non_major_families") or []
+        if hsummary.get("status") == "ok" and top_fams:
+            top10 = top_fams[:10]
+            nm_total = hsummary.get("non_major_targets", 0) or 0
+            nm_families = hsummary.get("non_major_host_families", 0) or 0
+            def _fmt(v, _nm=nm_total):
+                if _nm:
+                    return f"{int(v):,} · {round(100.0 * v / _nm, 1)}%"
+                return f"{int(v):,}"
+            bar_rows = [{"label": fam, "value": cnt} for fam, cnt in top10]
+            bar_svg = _horizontal_bar_svg(
+                bar_rows,
+                width=460, label_width=170, value_width=110,
+                value_fmt=_fmt,
+                aria_label="Top non-major host families by labeled-target count (7d)",
+            )
+            shown = sum(v for _, v in top10)
+            tail = nm_total - shown
+            tail_note = (
+                f' (top 10 shown; {tail:,} more in long tail across {max(0, nm_families - len(top10))} other families)'
+                if tail > 0 else ''
+            )
+            hosting_locus_section = f"""
+<div class="boundary-section" style="margin-top:1.5rem;">
+<h2>Hosting locus &mdash; non-major PDSes</h2>
+<p class="labeler-context">Where labeled accounts live outside the Bluesky-hosted PDSes.
+Bars are unique labeled targets per host family, last 7d. {nm_total:,} non-major
+targets across {nm_families} host families{tail_note}.</p>
+{bar_svg}
+<p class="small" style="margin-top:0.5rem;color:var(--fg-muted);">Resolved via the driftwatch facts bridge.</p>
+</div>
+"""
+    except Exception as exc:
+        _log.warning("Hosting locus section failed: %s", exc)
+
     # --- Triage view with tabs ---
     tab_bar = f"""
 <div class="search-bar">
@@ -2175,6 +2281,7 @@ is their output, and how much of the apparent diversity is already degraded.
         + authority_link_card
         + reference_lane
         + hosting_section
+        + hosting_locus_section
         + boundary_finding
         + recent_alerts_card
         + registry_card
