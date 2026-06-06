@@ -1270,6 +1270,15 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None, facts_pa
         clamped = True
     now_ts = format_ts(now)
 
+    # ATTACH the driftwatch facts bridge to this read connection if a path was
+    # provided. facts_path was plumbed through generate_report's signature but
+    # never used; sections that join against drift.actor_identity_facts (e.g.
+    # hosting_locus_section) silently no-op'd without it.
+    if facts_path:
+        from .hosting import attach_facts
+        if attach_facts(conn, facts_path):
+            _log.info("Facts bridge attached for report: %s", facts_path)
+
     last_ingest = _max_ts(conn, "label_events")
     last_scan = _max_ts(conn, "alerts")
     last_discovery = db.get_meta(conn, "last_discovery_ts")
