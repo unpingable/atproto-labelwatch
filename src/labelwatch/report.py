@@ -1277,7 +1277,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None, facts_pa
     if facts_path:
         from .hosting import attach_facts
         if attach_facts(conn, facts_path):
-            _log.info("Facts bridge attached for report: %s", facts_path)
+            log.info("Facts bridge attached for report: %s", facts_path)
 
     last_ingest = _max_ts(conn, "label_events")
     last_scan = _max_ts(conn, "alerts")
@@ -1785,7 +1785,7 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
                 + '</div>'
             )
     except Exception as exc:
-        _log.warning("Boundary report section failed: %s", exc)
+        log.warning("Boundary report section failed: %s", exc)
 
     # --- Labeler Ecosystem Health ---
     hosting_section = ""
@@ -1874,7 +1874,7 @@ is their output, and how much of the apparent diversity is already degraded.
 </div>
 """
     except Exception as exc:
-        _log.warning("Ecosystem health section failed: %s", exc)
+        log.warning("Ecosystem health section failed: %s", exc)
 
     # --- Hosting locus: long-tail of non-major PDS hosts ---
     # Bar-chart substrate. Answers: "where do labeled accounts live outside
@@ -1917,7 +1917,7 @@ targets across {nm_families} host families{tail_note}.</p>
 </div>
 """
     except Exception as exc:
-        _log.warning("Hosting locus section failed: %s", exc)
+        log.warning("Hosting locus section failed: %s", exc)
 
     # --- Triage view with tabs ---
     tab_bar = f"""
