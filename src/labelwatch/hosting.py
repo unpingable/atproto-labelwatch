@@ -205,12 +205,17 @@ def query_hosting_summary(
                  and r.provider_group != "unknown"]
     invalid_handles = sum(r.invalid_handle_count for r in rows)
 
-    # Host family rollup for non-majors
+    # Host family rollup for non-majors.
+    # Aggregating by unique_accounts (not labeled_target_count) answers the
+    # "where do labeled accounts live?" question without inflating hosts that
+    # see repeated/churning label activity on the same accounts. Per-account
+    # values are well-defined because actor_identity_facts maps each DID to a
+    # single pds_host (and therefore a single host_family).
     from collections import defaultdict
     family_counts: dict[str, int] = defaultdict(int)
     for r in non_major:
         fam = r.host_family or r.pds_host or "unknown"
-        family_counts[fam] += r.labeled_target_count
+        family_counts[fam] += r.unique_accounts
     top_families = sorted(family_counts.items(), key=lambda x: -x[1])[:10]
 
     # Actor coverage: unique resolved DIDs / unique target DIDs
@@ -244,6 +249,7 @@ def query_hosting_summary(
         "event_coverage_pct": event_coverage_pct,
         "major_provider_pct": round(100.0 * major_targets / total_resolved, 1) if total_resolved else 0,
         "non_major_targets": sum(r.labeled_target_count for r in non_major),
+        "non_major_unique_accounts": sum(r.unique_accounts for r in non_major),
         "non_major_hosts": len(set(r.pds_host for r in non_major if r.pds_host)),
         "non_major_host_families": len(set(r.host_family for r in non_major if r.host_family)),
         "invalid_handle_count": invalid_handles,

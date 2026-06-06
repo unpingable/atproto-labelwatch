@@ -1887,9 +1887,9 @@ is their output, and how much of the apparent diversity is already degraded.
         top_fams = hsummary.get("top_non_major_families") or []
         if hsummary.get("status") == "ok" and top_fams:
             top10 = top_fams[:10]
-            nm_total = hsummary.get("non_major_targets", 0) or 0
+            nm_accounts = hsummary.get("non_major_unique_accounts", 0) or 0
             nm_families = hsummary.get("non_major_host_families", 0) or 0
-            def _fmt(v, _nm=nm_total):
+            def _fmt(v, _nm=nm_accounts):
                 if _nm:
                     return f"{int(v):,} · {round(100.0 * v / _nm, 1)}%"
                 return f"{int(v):,}"
@@ -1898,20 +1898,20 @@ is their output, and how much of the apparent diversity is already degraded.
                 bar_rows,
                 width=460, label_width=170, value_width=110,
                 value_fmt=_fmt,
-                aria_label="Top non-major host families by labeled-target count (7d)",
+                aria_label="Top non-major host families by unique labeled accounts (7d)",
             )
             shown = sum(v for _, v in top10)
-            tail = nm_total - shown
+            tail = nm_accounts - shown
             tail_note = (
-                f' (top 10 shown; {tail:,} more in long tail across {max(0, nm_families - len(top10))} other families)'
+                f' (top 10 shown; {tail:,} more in the long tail across {max(0, nm_families - len(top10))} other families)'
                 if tail > 0 else ''
             )
             hosting_locus_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
 <h2>Hosting locus &mdash; non-major PDSes</h2>
-<p class="labeler-context">Where labeled accounts live outside the Bluesky-hosted PDSes.
-Bars are unique labeled targets per host family, last 7d. {nm_total:,} non-major
-targets across {nm_families} host families{tail_note}.</p>
+<p class="labeler-context">Where labeled accounts live outside Bluesky-hosted PDSes.
+Bars show unique labeled account targets per host family, last 7d.
+{nm_accounts:,} accounts across {nm_families} host families{tail_note}.</p>
 {bar_svg}
 <p class="small" style="margin-top:0.5rem;color:var(--fg-muted);">Resolved via the driftwatch facts bridge.</p>
 </div>
