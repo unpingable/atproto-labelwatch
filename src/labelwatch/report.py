@@ -211,6 +211,7 @@ pre { background: var(--pre-bg); padding: 0.5rem; border-radius: 4px; overflow-x
 .hbar-chart text { font-family: Georgia, "Times New Roman", serif; font-size: 0.85rem; }
 .hbar-label { fill: var(--fg); }
 .hbar-value { fill: var(--fg-muted); }
+.hbar-chart text.hbar-secondary { fill: var(--fg-muted); font-size: 0.75rem; }
 .hbar-bar   { fill: var(--bar-fill, #0b5394); }
 .anomaly-row { background: var(--anomaly-bg); }
 .methods { background: var(--methods-bg); border: 1px solid var(--methods-border); padding: 1rem; border-radius: 6px; margin-top: 2rem; font-size: 0.85rem; }
@@ -607,13 +608,20 @@ def _horizontal_bar_svg(
     gap: int = 6,
     label_width: int = 170,
     value_width: int = 90,
+    secondary_width: int = 0,
     value_fmt=None,
     aria_label: str = "Horizontal bar chart",
 ) -> str:
     """Render a horizontal bar chart as inline SVG. Substrate, not "a chart."
 
-    rows: pre-sorted descending; each item {"label": str, "value": int|float}.
+    rows: pre-sorted descending; each item {"label": str, "value": int|float,
+          "secondary": Optional[str]}. The "secondary" field, when present,
+          renders right-aligned at the SVG's right edge in muted style — used
+          for an ancillary per-row signal (e.g. "events/account" pressure)
+          without competing with the primary bar magnitude.
     width/label_width/value_width: px reservations (labels left, values right).
+    secondary_width: px reserved at the right edge for the optional secondary
+          annotation column. Set to 0 (default) when no row has a secondary.
     bar_height/gap: per-row sizing.
     value_fmt: callable(value) -> str; default is integer with thousands separators.
 
@@ -629,7 +637,7 @@ def _horizontal_bar_svg(
     fmt = value_fmt or (lambda v: f"{int(v):,}")
     max_v = max((r["value"] for r in rows), default=0) or 1
     chart_x = label_width + 8
-    chart_w = max(40, width - label_width - value_width - 16)
+    chart_w = max(40, width - label_width - value_width - secondary_width - 16)
     height = len(rows) * (bar_height + gap) - gap
     parts = [
         f'<svg class="hbar-chart" width="{width}" height="{height}" '
@@ -646,6 +654,12 @@ def _horizontal_bar_svg(
             f'<rect x="{chart_x}" y="{y}" width="{bar_w}" height="{bar_height}" class="hbar-bar" rx="2" />'
             f'<text x="{chart_x + bar_w + 6}" y="{cy:.1f}" class="hbar-value">{escape(val_text)}</text>'
         )
+        secondary = row.get("secondary")
+        if secondary:
+            parts.append(
+                f'<text x="{width - 4}" y="{cy:.1f}" text-anchor="end" '
+                f'class="hbar-secondary">{escape(str(secondary))}</text>'
+            )
     parts.append("</svg>")
     return "".join(parts)
 
@@ -1884,23 +1898,30 @@ is their output, and how much of the apparent diversity is already degraded.
     try:
         from .hosting import query_hosting_summary
         hsummary = query_hosting_summary(conn, days=7)
-        top_fams = hsummary.get("top_non_major_families") or []
-        if hsummary.get("status") == "ok" and top_fams:
-            top10 = top_fams[:10]
+        details = hsummary.get("top_non_major_family_details") or []
+        if hsummary.get("status") == "ok" and details:
+            top10 = details[:10]
             nm_accounts = hsummary.get("non_major_unique_accounts", 0) or 0
             nm_families = hsummary.get("non_major_host_families", 0) or 0
             def _fmt(v, _nm=nm_accounts):
                 if _nm:
                     return f"{int(v):,} · {round(100.0 * v / _nm, 1)}%"
                 return f"{int(v):,}"
-            bar_rows = [{"label": fam, "value": cnt} for fam, cnt in top10]
+            bar_rows = [
+                {
+                    "label": d["family"],
+                    "value": d["accounts"],
+                    "secondary": f"{d['events_per_account']:.1f}×",
+                }
+                for d in top10
+            ]
             bar_svg = _horizontal_bar_svg(
                 bar_rows,
-                width=460, label_width=170, value_width=110,
+                width=520, label_width=170, value_width=110, secondary_width=70,
                 value_fmt=_fmt,
-                aria_label="Top non-major host families by unique labeled accounts (7d)",
+                aria_label="Top non-major host families by unique labeled accounts, with events-per-account pressure (7d)",
             )
-            shown = sum(v for _, v in top10)
+            shown = sum(d["accounts"] for d in top10)
             tail = nm_accounts - shown
             tail_note = (
                 f' (top 10 shown; {tail:,} more in the long tail across {max(0, nm_families - len(top10))} other families)'
@@ -1910,8 +1931,8 @@ is their output, and how much of the apparent diversity is already degraded.
 <div class="boundary-section" style="margin-top:1.5rem;">
 <h2>Hosting locus &mdash; non-major PDSes</h2>
 <p class="labeler-context">Where labeled accounts live outside Bluesky-hosted PDSes.
-Bars show unique labeled account targets per host family, last 7d.
-{nm_accounts:,} accounts across {nm_families} host families{tail_note}.</p>
+Bars count unique labeled accounts; ratios show repeat-label pressure (events
+per account). {nm_accounts:,} accounts across {nm_families} host families{tail_note}.</p>
 {bar_svg}
 <p class="small" style="margin-top:0.5rem;color:var(--fg-muted);">Resolved via the driftwatch facts bridge.</p>
 </div>

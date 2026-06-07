@@ -206,17 +206,32 @@ def query_hosting_summary(
     invalid_handles = sum(r.invalid_handle_count for r in rows)
 
     # Host family rollup for non-majors.
-    # Aggregating by unique_accounts (not labeled_target_count) answers the
-    # "where do labeled accounts live?" question without inflating hosts that
-    # see repeated/churning label activity on the same accounts. Per-account
-    # values are well-defined because actor_identity_facts maps each DID to a
-    # single pds_host (and therefore a single host_family).
+    # Primary aggregate is unique_accounts — "where do labeled accounts live?"
+    # without inflating hosts that see repeated/churning label activity on the
+    # same accounts. Per-account values are well-defined because
+    # actor_identity_facts maps each DID to a single pds_host (and therefore a
+    # single host_family).
+    #
+    # Event totals are rolled up in parallel so callers can derive a secondary
+    # "events per account" pressure signal (repeat-label / churn / fixation)
+    # without re-querying.
     from collections import defaultdict
     family_counts: dict[str, int] = defaultdict(int)
+    family_events: dict[str, int] = defaultdict(int)
     for r in non_major:
         fam = r.host_family or r.pds_host or "unknown"
         family_counts[fam] += r.unique_accounts
+        family_events[fam] += r.labeled_target_count
     top_families = sorted(family_counts.items(), key=lambda x: -x[1])[:10]
+    top_family_details = [
+        {
+            "family": fam,
+            "accounts": acc,
+            "events": family_events[fam],
+            "events_per_account": round(family_events[fam] / acc, 2) if acc else 0.0,
+        }
+        for fam, acc in top_families
+    ]
 
     # Actor coverage: unique resolved DIDs / unique target DIDs
     # (not event-based — avoids inflating coverage because heavily-labeled accounts are resolved)
@@ -255,6 +270,7 @@ def query_hosting_summary(
         "invalid_handle_count": invalid_handles,
         "unresolved_count": total_unresolved,
         "top_non_major_families": top_families,
+        "top_non_major_family_details": top_family_details,
         "top_non_major_hosts": [
             {
                 "host": r.pds_host,
