@@ -223,6 +223,8 @@ pre { background: var(--pre-bg); padding: 0.5rem; border-radius: 4px; overflow-x
 .sbar-chart text { font-family: Georgia, "Times New Roman", serif; font-size: 0.7rem; fill: var(--fg-muted); }
 .sbar-legend { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.4rem; font-size: 0.85rem; }
 .sbar-legend .swatch { display: inline-block; width: 10px; height: 10px; vertical-align: middle; margin-right: 4px; border-radius: 2px; }
+.line-chart { display: block; max-width: 100%; }
+.line-chart text { font-family: Georgia, "Times New Roman", serif; font-size: 0.7rem; fill: var(--fg-muted); }
 .anomaly-row { background: var(--anomaly-bg); }
 .methods { background: var(--methods-bg); border: 1px solid var(--methods-border); padding: 1rem; border-radius: 6px; margin-top: 2rem; font-size: 0.85rem; }
 .reference-lane { border: 2px solid var(--ref-border); background: var(--ref-bg); padding: 1rem; border-radius: 6px; margin-bottom: 1.5rem; }
@@ -750,6 +752,105 @@ def _stacked_bar_svg(
             parts.append(
                 f'<text x="{x + bar_w / 2:.1f}" y="{baseline_y + 14}" text-anchor="middle">{escape(xlabel)}</text>'
             )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _line_svg(
+    points: List[tuple],
+    *,
+    width: int = 400,
+    height: int = 180,
+    left_pad: int = 40,
+    bottom_pad: int = 28,
+    top_pad: int = 8,
+    right_pad: int = 12,
+    x_max: Optional[float] = None,
+    y_max: Optional[float] = None,
+    reference_diagonal: bool = False,
+    x_label: str = "",
+    y_label: str = "",
+    line_color: str = "var(--bar-fill, #0b5394)",
+    aria_label: str = "Line chart",
+) -> str:
+    """Render a single-series line chart as inline SVG. Substrate for CDF /
+    Lorenz / any cumulative shape.
+
+    points: ordered (x, y) tuples. x assumed monotone non-decreasing from 0.
+    {x,y}_max: clamp the axis maximums; defaults to max of the data.
+    reference_diagonal: when True, draw a dashed line from (0,0) to (x_max, y_max)
+        — useful as the "perfect equality" reference for Lorenz-like reads.
+    {x,y}_label: optional axis labels (y_label is rendered rotated).
+
+    Y-axis ticks at 0 and max only (rendered as % when y_max <= 1, else
+    integer). Same minimalism as _stacked_bar_svg — precise reads belong
+    to a hover/table affordance later.
+    """
+    if not points:
+        return (
+            f'<svg class="line-chart" width="{width}" height="40" role="img" aria-label="empty">'
+            f'<text x="0" y="22">No data.</text></svg>'
+        )
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    xmx = x_max if x_max is not None else (max(xs) or 1)
+    ymx = y_max if y_max is not None else (max(ys) or 1)
+    chart_w = width - left_pad - right_pad
+    chart_h = height - top_pad - bottom_pad
+
+    def sx(x: float) -> float:
+        return left_pad + (x / xmx) * chart_w if xmx else left_pad
+
+    def sy(y: float) -> float:
+        return top_pad + chart_h - (y / ymx) * chart_h if ymx else top_pad + chart_h
+
+    baseline_y = top_pad + chart_h
+    parts = [
+        f'<svg class="line-chart" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="{escape(aria_label)}">'
+    ]
+    parts.append(
+        f'<line x1="{left_pad}" y1="{baseline_y}" x2="{width - right_pad}" y2="{baseline_y}" '
+        f'stroke="var(--border, #ddd)" stroke-width="1" />'
+    )
+    parts.append(
+        f'<line x1="{left_pad}" y1="{top_pad}" x2="{left_pad}" y2="{baseline_y}" '
+        f'stroke="var(--border, #ddd)" stroke-width="1" />'
+    )
+    # y ticks (0 and max)
+    y_top_label = f"{int(round(ymx * 100))}%" if ymx <= 1 else f"{int(ymx):,}"
+    parts.append(
+        f'<text x="{left_pad - 4}" y="{top_pad + 8}" text-anchor="end">{y_top_label}</text>'
+    )
+    parts.append(
+        f'<text x="{left_pad - 4}" y="{baseline_y + 2}" text-anchor="end">0</text>'
+    )
+    # x ticks (0 and max)
+    x_right_label = f"{int(round(xmx * 100))}%" if xmx <= 1 else f"{int(xmx):,}"
+    parts.append(
+        f'<text x="{left_pad}" y="{baseline_y + 14}" text-anchor="start">0</text>'
+    )
+    parts.append(
+        f'<text x="{width - right_pad}" y="{baseline_y + 14}" text-anchor="end">{x_right_label}</text>'
+    )
+    if reference_diagonal:
+        parts.append(
+            f'<line x1="{sx(0):.1f}" y1="{sy(0):.1f}" x2="{sx(xmx):.1f}" y2="{sy(ymx):.1f}" '
+            f'stroke="var(--fg-muted, #999)" stroke-width="1" stroke-dasharray="3,3" />'
+        )
+    polyline = " ".join(f"{sx(x):.1f},{sy(y):.1f}" for x, y in points)
+    parts.append(
+        f'<polyline points="{polyline}" fill="none" stroke="{line_color}" stroke-width="1.6" />'
+    )
+    if x_label:
+        parts.append(
+            f'<text x="{left_pad + chart_w / 2:.1f}" y="{height - 4}" text-anchor="middle">{escape(x_label)}</text>'
+        )
+    if y_label:
+        cy = top_pad + chart_h / 2
+        parts.append(
+            f'<text x="10" y="{cy:.1f}" text-anchor="middle" transform="rotate(-90, 10, {cy:.1f})">{escape(y_label)}</text>'
+        )
     parts.append("</svg>")
     return "".join(parts)
 
@@ -1980,6 +2081,53 @@ is their output, and how much of the apparent diversity is already degraded.
     except Exception as exc:
         log.warning("Ecosystem health section failed: %s", exc)
 
+    # --- Concentration curve: cumulative share of 7d events by labeler rank ---
+    # SNAPSHOT of the current 7d window (not a trend). The Ecosystem Health
+    # cards above carry the top-3 percentage; this graph makes the SHAPE of
+    # that concentration visible: a near-diagonal curve = pluralistic; a curve
+    # bowing toward the top-left = a few labelers carry most of the volume.
+    concentration_section = ""
+    try:
+        nt_lab = [r for r in labelers if not r["likely_test_dev"] and (r["events_7d"] or 0) > 0]
+        nt_sorted = sorted(nt_lab, key=lambda r: r["events_7d"] or 0, reverse=True)
+        n_lab = len(nt_sorted)
+        total_events = sum(r["events_7d"] or 0 for r in nt_sorted)
+        if n_lab >= 5 and total_events > 0:
+            cc_points = [(0.0, 0.0)]
+            cum = 0
+            for i, r in enumerate(nt_sorted, start=1):
+                cum += r["events_7d"] or 0
+                cc_points.append((i / n_lab, cum / total_events))
+            def _share_at(frac, _pts=cc_points):
+                return next((y for x, y in _pts if x >= frac), 1.0)
+            top10_share = _share_at(0.10)
+            top50_share = _share_at(0.50)
+            top10_count = max(1, int(round(0.10 * n_lab)))
+            top50_count = max(1, int(round(0.50 * n_lab)))
+            cc_svg = _line_svg(
+                cc_points,
+                width=420, height=190,
+                x_max=1.0, y_max=1.0,
+                reference_diagonal=True,
+                x_label="Labelers, ranked by 7d volume (cumulative)",
+                y_label="Share of events",
+                aria_label="Concentration curve: cumulative share of 7d label events by labeler rank",
+            )
+            concentration_section = f"""
+<div class="boundary-section" style="margin-top:1.5rem;">
+<h2>Concentration curve</h2>
+<p class="labeler-context">Cumulative share of 7d label events by labeler rank.
+Dashed diagonal = perfect equality; bowing toward the top-left = a few labelers
+carry most of the volume. Top 10% of active labelers ({top10_count} of {n_lab})
+carry <strong>{int(round(top10_share * 100))}%</strong> of events; top 50%
+({top50_count}) carry <strong>{int(round(top50_share * 100))}%</strong>.
+Snapshot of the current 7d window — not a trend.</p>
+{cc_svg}
+</div>
+"""
+    except Exception as exc:
+        log.warning("Concentration section failed: %s", exc)
+
     # --- Hosting locus: long-tail of non-major PDS hosts ---
     # Bar-chart substrate. Answers: "where do labeled accounts live outside
     # the Bluesky-hosted PDSes?" Shape over depth: short, no narrative, leans
@@ -2570,6 +2718,7 @@ events. This is a flow graph — event volume per day, not active inventory.</p>
         + authority_link_card
         + reference_lane
         + hosting_section
+        + concentration_section
         + hosting_locus_section
         + contradiction_inventory_section
         + boundary_finding
