@@ -2058,8 +2058,13 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
     # Reference lane — with interpretation sentences
     reference_lane = ""
     if ref_labelers:
+        # Sort by 7d event volume desc so the section ordering matches the
+        # resilience table inside Ecosystem Health (same labelers, same axis).
+        ref_labelers_sorted = sorted(
+            ref_labelers, key=lambda r: r["events_7d"] or 0, reverse=True
+        )
         ref_cards = ""
-        for r in ref_labelers:
+        for r in ref_labelers_sorted:
             did = r["labeler_did"]
             counts = _hourly_counts(conn, did, start_7d, now_ts)
             events_7d_ref = r["events_7d"] or sum(counts)
@@ -2090,9 +2095,9 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
 
             ref_cards += f'<h3>{_labeler_link(did, handles, display_names)}</h3>{ref_card}{interp_html}'
         reference_lane = (
-            f'<div class="reference-lane"><h2>Major labelers</h2>'
-            f'<p class="labeler-context">The highest-volume or most structurally important labelers on the network. '
-            f'Their behavioral patterns affect the most users.</p>'
+            f'<div class="reference-lane"><h2>Reference labelers</h2>'
+            f'<p class="labeler-context">Curated set of high-volume, structurally important labelers used as calibration anchors. '
+            f'Their behavioral patterns affect the most users. Same set as the Reference Labeler resilience table in Ecosystem Health below.</p>'
             f'{ref_cards}</div>'
         )
 

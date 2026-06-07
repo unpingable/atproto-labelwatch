@@ -452,11 +452,6 @@ def render_authority_posture_html(posture: Dict[str, Any]) -> str:
         if band not in present_in_crosstab and audit_dial.get(band, 0) > 0
     ]
     if absent_with_population:
-        present_labels = [
-            _band_label("auditability_risk", b)
-            for b in RISK_BANDS
-            if b in present_in_crosstab
-        ]
         absent_label_pairs = [
             (
                 _band_label("auditability_risk", b),
@@ -467,15 +462,12 @@ def render_authority_posture_html(posture: Dict[str, Any]) -> str:
         absent_phrase = "; ".join(
             f"{count:,} {label}" for label, count in absent_label_pairs
         )
-        present_phrase = (
-            ", ".join(present_labels) if present_labels else "no auditability band"
-        )
         parts.append(
             '<p class="small" style="opacity:0.8;">'
-            f'In this window, all classified active event volume came from '
-            f'{escape(present_phrase)} labelers. '
-            f'Labelers with {escape(absent_phrase)} exist but emitted no '
-            f'active classified volume in this cross-tab.'
+            f'No classified event volume is attributed to {escape(absent_phrase)} '
+            f'labelers in this window. This is a visibility/coverage statement, '
+            f'not proof of inactivity or harmlessness — high auditability risk '
+            f'means insufficient observable surface to classify.'
             '</p>'
         )
     parts.append(_crosstab_table(
