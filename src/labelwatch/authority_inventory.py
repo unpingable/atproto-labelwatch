@@ -207,6 +207,64 @@ def build_authority_effect_inventory(
     }
 
 
+def daily_authority_effect_counts(conn, days: int = 30) -> list[dict]:
+    """Daily event counts grouped by authority_effect classification.
+
+    For each UTC day in the window, sums label_events (neg=0) grouped by the
+    authority_effect of each val (via normalize_family + classify_authority_effect,
+    with the labeler-default fallback used by build_authority_effect_inventory).
+    Counts are EVENTS — this is a flow graph: volume per day, not stock.
+
+    val -> effect classification uses the GLOBAL labeler set across the whole
+    window (not per-day), so classification is stable across days even though
+    it's computed at render time. Classifier or labeler-default changes shift
+    historical reads.
+
+    Each bucket: {"date": "YYYY-MM-DD", "values": {effect: count}, "total": int}
+    Buckets are returned in chronological order.
+    """
+    cutoff = f"-{days} days"
+    rows = conn.execute(
+        """
+        SELECT DATE(ts) AS day, val, labeler_did, COUNT(*) AS n
+        FROM label_events
+        WHERE ts >= datetime('now', ?) AND neg = 0
+        GROUP BY day, val, labeler_did
+        """,
+        (cutoff,),
+    ).fetchall()
+    if not rows:
+        return []
+
+    per_val_labelers: Dict[str, set[str]] = defaultdict(set)
+    per_day_val_count: Dict[tuple, int] = defaultdict(int)  # (day, val) -> events
+    for r in rows:
+        per_val_labelers[r["val"]].add(r["labeler_did"])
+        per_day_val_count[(r["day"], r["val"])] += int(r["n"] or 0)
+
+    val_effect: Dict[str, str] = {}
+    for val, labelers in per_val_labelers.items():
+        family = normalize_family(val)
+        effect, _ = _resolve_val_effect(family, labelers)
+        if effect not in AUTHORITY_EFFECT_ORDER:
+            effect = "unknown"
+        val_effect[val] = effect
+
+    day_buckets: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for (day, val), n in per_day_val_count.items():
+        day_buckets[day][val_effect[val]] += n
+
+    days_sorted = sorted(day_buckets.keys())
+    return [
+        {
+            "date": d,
+            "values": dict(day_buckets[d]),
+            "total": sum(day_buckets[d].values()),
+        }
+        for d in days_sorted
+    ]
+
+
 def build_per_labeler_authority_inventories(
     conn,
     start_ts: str,

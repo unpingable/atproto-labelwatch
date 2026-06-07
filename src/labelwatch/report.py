@@ -140,6 +140,8 @@ STYLE = """
 :root {
   --bg: #fff; --fg: #111; --fg-muted: #666; --border: #ddd; --bg-muted: #f6f7f9; --bar-fill: #0b5394;
   --cat-shear: #8a9aa8; --cat-severity: #d49a2d; --cat-claim-action: #cc6633; --cat-substantive: #c44545;
+  --auth-enforcement: #c44545; --auth-visibility: #cc6633; --auth-advisory: #d4a017; --auth-reputational: #8e44ad;
+  --auth-descriptive: #2980b9; --auth-telemetry: #2a9d8f; --auth-decorative: #95a5a6; --auth-unknown: #b8c0c4;
   --link: #0b5394; --link-hover-bg: #f0f7fb; --accent: #2980b9;
   --card-bg: #fff; --card-border: #ddd;
   --anomaly-bg: #fff8f0;
@@ -159,6 +161,8 @@ STYLE = """
 [data-theme="dark"] {
   --bg: #1a1a2e; --fg: #e0e0e0; --fg-muted: #999; --border: #333; --bg-muted: #16213e; --bar-fill: #6db3f2;
   --cat-shear: #99aabb; --cat-severity: #e6c866; --cat-claim-action: #ef8d4d; --cat-substantive: #e68888;
+  --auth-enforcement: #e68888; --auth-visibility: #ef8d4d; --auth-advisory: #e6c866; --auth-reputational: #b48bd8;
+  --auth-descriptive: #6db3f2; --auth-telemetry: #5fd4c4; --auth-decorative: #b8c0c4; --auth-unknown: #888;
   --link: #6db3f2; --link-hover-bg: #252545;
   --card-bg: #16213e; --card-border: #333;
   --anomaly-bg: #2a2218;
@@ -2434,6 +2438,76 @@ snapshot time, not event totals.</p>
     except Exception as exc:
         log.warning("Authority-effect inventory failed: %s", exc)
 
+    # --- Authority-effect over time (daily event volume by classification) ---
+    # FLOW graph (event counts per day) — distinct from the contradiction
+    # surface, which is stock. Caption is explicit so a reader doesn't infer
+    # network "growth" from what is actually classifier composition shift.
+    authority_over_time_section = ""
+    try:
+        from .authority_inventory import daily_authority_effect_counts
+        aot_buckets = daily_authority_effect_counts(conn, days=30)
+        if aot_buckets:
+            # Ordered same as AUTHORITY_EFFECT_ORDER, with the severity-graded
+            # palette: enforcement (red) -> visibility -> advisory -> reputational
+            # -> descriptive -> telemetry -> decorative -> unknown (muted).
+            aot_series = [
+                {"key": "enforcement_instruction", "label": "Enforcement",        "color": "var(--auth-enforcement)"},
+                {"key": "visibility_affecting",    "label": "Visibility-affecting","color": "var(--auth-visibility)"},
+                {"key": "advisory",                "label": "Advisory",           "color": "var(--auth-advisory)"},
+                {"key": "reputational",            "label": "Reputational",       "color": "var(--auth-reputational)"},
+                {"key": "descriptive",             "label": "Descriptive",        "color": "var(--auth-descriptive)"},
+                {"key": "telemetry",               "label": "Telemetry",          "color": "var(--auth-telemetry)"},
+                {"key": "decorative",              "label": "Decorative",         "color": "var(--auth-decorative)"},
+                {"key": "unknown",                 "label": "Unknown",            "color": "var(--auth-unknown)"},
+            ]
+            aot_chart_buckets = [
+                {"label": b["date"][5:], "values": b["values"]}
+                for b in aot_buckets
+            ]
+            aot_svg = _stacked_bar_svg(
+                aot_chart_buckets,
+                series=aot_series,
+                width=520, height=180,
+                aria_label="Daily label event volume by authority-effect classification, last 30 days",
+            )
+            aot_legend = '<div class="sbar-legend">' + "".join(
+                f'<span><span class="swatch" style="background:{s["color"]};"></span>{escape(s["label"])}</span>'
+                for s in aot_series
+            ) + '</div>'
+            aot_empty = [
+                s["label"] for s in aot_series
+                if not any(b["values"].get(s["key"], 0) for b in aot_buckets)
+            ]
+            if aot_empty:
+                if len(aot_empty) == 1:
+                    names = aot_empty[0]; verb = "is"; aux = "does"
+                elif len(aot_empty) == 2:
+                    names = f"{aot_empty[0]} and {aot_empty[1]}"; verb = "are"; aux = "do"
+                else:
+                    names = ", ".join(aot_empty[:-1]) + f", and {aot_empty[-1]}"; verb = "are"; aux = "do"
+                aot_empty_html = (
+                    f'<p class="small" style="margin:0.4rem 0 0 0;">'
+                    f'Empty series are retained intentionally: {escape(names)} {verb} defined '
+                    f'but {aux} not appear in this 30-day window.</p>'
+                )
+            else:
+                aot_empty_html = ""
+            aot_latest = aot_buckets[-1]
+            authority_over_time_section = f"""
+<div class="boundary-section" style="margin-top:1.5rem;">
+<h2>Authority effect &mdash; daily event volume</h2>
+<p class="labeler-context">Daily count of label events grouped by authority-effect
+classification. Last day ({escape(aot_latest['date'])}): <strong>{aot_latest['total']:,}</strong>
+events. This is a flow graph — event volume per day, not active inventory.</p>
+{aot_svg}
+{aot_legend}
+{aot_empty_html}
+<p class="small" style="margin-top:0.4rem;color:var(--fg-muted);">Classified at render time. Classifier or labeler-default changes shift historical reads. Negations (neg=1) excluded.</p>
+</div>
+"""
+    except Exception as exc:
+        log.warning("Authority over-time section failed: %s", exc)
+
     # --- Recent alerts (top 10) ---
     # Promote a small alerts view onto the homepage. The full 200-row table
     # remains inside ops_detail for operator deep-dives.
@@ -2492,6 +2566,7 @@ snapshot time, not event totals.</p>
         hero_html
         + summary_strip
         + authority_posture_section
+        + authority_over_time_section
         + authority_link_card
         + reference_lane
         + hosting_section
