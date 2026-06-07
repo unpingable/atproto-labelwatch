@@ -353,18 +353,9 @@ def unknown_decomposition(conn, days: int = 7) -> Dict[str, Any]:
     end_iso = end.strftime("%Y-%m-%dT%H:%M:%SZ")
     start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # Reuse the inventory pipeline for top unknown vals (already sorted desc
-    # within the unknown group). The inventory also already handles the
-    # labeler-default fallback for unknown resolution.
-    inv = build_authority_effect_inventory(conn, start_iso, end_iso)
-    unknown_group = inv["groups"].get("unknown", {})
-    top_vals = unknown_group.get("labels", [])[:20]
-    total_unknown_events_from_inv = unknown_group.get("event_count", 0)
-    total_events_in_window = inv.get("total_event_count", 0) or 0
-
-    # Per-labeler unknown volume requires re-aggregating at the (val,
-    # labeler_did) grain and classifying each row against the global per-val
-    # labeler set (so the fallback resolution matches the inventory).
+    # Single per-(val, labeler_did) aggregation pass — same SQL the inventory
+    # uses, but we keep the raw rows so we can build top_vals AND per-labeler
+    # totals from one scan instead of double-running build_authority_effect_inventory.
     rows = conn.execute(
         """
         SELECT val, labeler_did, COUNT(*) AS event_count
@@ -376,9 +367,36 @@ def unknown_decomposition(conn, days: int = 7) -> Dict[str, Any]:
     ).fetchall()
 
     per_val_labelers: Dict[str, set[str]] = defaultdict(set)
+    per_val_events: Dict[str, int] = defaultdict(int)
     for r in rows:
         per_val_labelers[r["val"]].add(r["labeler_did"])
+        per_val_events[r["val"]] += int(r["event_count"] or 0)
 
+    # Classify each val ONCE using the global per-val labeler set so the
+    # fallback resolution matches build_authority_effect_inventory.
+    val_effect: Dict[str, str] = {}
+    for val, labelers in per_val_labelers.items():
+        family = normalize_family(val)
+        effect, _ = _resolve_val_effect(family, labelers)
+        val_effect[val] = effect if effect in AUTHORITY_EFFECT_ORDER else "unknown"
+
+    # Top unknown vals — filter + sort directly from per_val_events.
+    top_vals = sorted(
+        (
+            {
+                "value": val,
+                "family": normalize_family(val),
+                "event_count": per_val_events[val],
+                "labeler_count": len(per_val_labelers[val]),
+            }
+            for val in per_val_events
+            if val_effect.get(val) == "unknown"
+        ),
+        key=lambda v: -v["event_count"],
+    )[:20]
+    total_events_in_window = sum(per_val_events.values())
+
+    # Per-labeler unknown volume + total (single pass over the same rows).
     unknown_per_labeler: Dict[str, int] = defaultdict(int)
     total_per_labeler: Dict[str, int] = defaultdict(int)
     for r in rows:
@@ -386,9 +404,7 @@ def unknown_decomposition(conn, days: int = 7) -> Dict[str, Any]:
         did = r["labeler_did"]
         n = int(r["event_count"] or 0)
         total_per_labeler[did] += n
-        family = normalize_family(val)
-        effect, _ = _resolve_val_effect(family, per_val_labelers[val])
-        if effect == "unknown":
+        if val_effect.get(val) == "unknown":
             unknown_per_labeler[did] += n
 
     # Resolve labeler metadata (handle + class) for the top-labelers table.
@@ -427,7 +443,6 @@ def unknown_decomposition(conn, days: int = 7) -> Dict[str, Any]:
     top5_labeler_vol = sum(int(l["unknown_volume"]) for l in top_labelers[:5])
     return {
         "total_unknown_events": total_unknown,
-        "total_unknown_events_from_inv": total_unknown_events_from_inv,
         "total_events": total_events_in_window,
         "window_days": days,
         "top_vals": top_vals,
