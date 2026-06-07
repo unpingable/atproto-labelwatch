@@ -289,6 +289,14 @@ svg.hbar-chart, svg.sbar-chart, svg.line-chart, svg.scatter-chart, svg.heatmap-c
 .chart-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .graph-semantics-note { font-size: 0.85rem; color: var(--fg-muted); margin: 1rem 0; padding: 0.6rem 0.8rem; border-left: 3px solid var(--border); background: var(--bg-muted, transparent); border-radius: 0 4px 4px 0; }
 .graph-semantics-note strong { color: var(--fg); }
+/* Usability pass: orientation + navigation + per-chart interpretation guidance. */
+.read-spine { font-size: 0.95rem; line-height: 1.55; margin: 1rem 0; padding: 0.75rem 1rem; border-left: 3px solid var(--link); background: var(--bg-muted, transparent); border-radius: 0 4px 4px 0; }
+.read-spine strong { color: var(--fg); }
+.jump-nav { display: flex; flex-wrap: wrap; gap: 0.6rem 1.1rem; margin: 0.75rem 0 1.25rem 0; padding: 0.5rem 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); font-size: 0.88rem; }
+.jump-nav a { color: var(--link); text-decoration: none; }
+.jump-nav a:hover { text-decoration: underline; }
+.use-for { font-size: 0.9rem; font-style: italic; color: var(--fg-muted); margin: 0.3rem 0 0.85rem 0; }
+.use-for strong { color: var(--fg); font-style: normal; }
 @media (max-width: 700px) {
   body { margin: 1rem; font-size: 0.95rem; }
   h1 { font-size: 1.4rem; }
@@ -2332,7 +2340,8 @@ is their output, and how much of the apparent diversity is already degraded.
             )
             concentration_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
-<h2>Concentration curve</h2>
+<h2 id="concentration">Concentration curve</h2>
+<p class="use-for"><strong>Use this to see:</strong> how diffuse (or not) labeling power is. <strong>Not for:</strong> ranking labelers, or deciding whether any one of them is right.</p>
 <p class="labeler-context">Cumulative share of 7d label events by labeler rank.
 Dashed diagonal = perfect equality; bowing toward the top-left = a few labelers
 carry most of the volume. Top 10% of active labelers ({top10_count} of {n_lab})
@@ -2425,7 +2434,8 @@ Snapshot of the current 7d window — not a trend.</p>
             )
             hosting_locus_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
-<h2>Hosting locus &mdash; non-major PDSes</h2>
+<h2 id="hosting">Hosting locus &mdash; non-major PDSes</h2>
+<p class="use-for"><strong>Use this to see:</strong> where labeled accounts live outside the major Bluesky-hosted PDSes, and where repeat-label pressure is disproportionate to population. <strong>Not for:</strong> deciding whether any host is hostile, or whether any account deserves a label.</p>
 <p class="labeler-context">Where labeled accounts live outside Bluesky-hosted PDSes, last 7d.
 Bars count unique labeled accounts. Ratios show repeat-label pressure (events per account).
 {nm_accounts:,} accounts across {nm_families} host families{tail_note}.</p>
@@ -2504,7 +2514,8 @@ Bars count unique labeled accounts. Ratios show repeat-label pressure (events pe
                 )
             contradiction_inventory_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
-<h2>Contradiction surface</h2>
+<h2 id="contradictions">Contradiction surface</h2>
+<p class="use-for"><strong>Use this to see:</strong> whether the volume and mix of active contradictions between labelers is changing day to day. <strong>Not for:</strong> deciding which labeler in a disagreement is correct.</p>
 <p class="labeler-context">Active contradiction edges by type, daily snapshot.
 Last snapshot ({latest_snap_human}): <strong>{latest['total']:,}</strong> active edges.
 Daily snapshots of the rolling 24h boundary window &mdash; counts are edges present at
@@ -2570,7 +2581,8 @@ snapshot time, not event totals.</p>
             )
             churn_reversal_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
-<h2>Churn vs reversal &mdash; behavioral quadrant <span class="badge badge-low-conf" style="font-size:0.7rem;vertical-align:middle;">experimental</span></h2>
+<h2 id="churn-reversal">Churn vs reversal &mdash; behavioral quadrant <span class="badge badge-low-conf" style="font-size:0.7rem;vertical-align:middle;">experimental</span></h2>
+<p class="use-for"><strong>Use this to:</strong> locate labelers with unusual alert-fire patterns that might be worth investigating by hand. <strong>Not for:</strong> convicting labelers or inferring intent — axes are observed alert-fire patterns, not weirdness verdicts.</p>
 <p class="labeler-context">Behavioral surface of labelers with active alerts or non-trivial volume.
 X-axis: number of <code>churn_index</code> alerts in the last 30 days. Y-axis: number of
 <code>flip_flop</code> alerts. Point size scales with 7d event volume.
@@ -2632,7 +2644,8 @@ Top-4 by reversal annotated. {len(cr_points)} labelers plotted.</p>
                 hm_human_ts = escape(str(latest_ts)[:16].replace("T", " ") + " UTC")
                 conflict_heatmap_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
-<h2>Conflict family heatmap <span class="badge badge-low-conf" style="font-size:0.7rem;vertical-align:middle;">experimental</span></h2>
+<h2 id="heatmap">Conflict family heatmap <span class="badge badge-low-conf" style="font-size:0.7rem;vertical-align:middle;">experimental</span></h2>
+<p class="use-for"><strong>Use this to see:</strong> which moderation families keep colliding in the current snapshot. <strong>Not for:</strong> ranking or rating labels — the matrix is thresholded; absent pairs are not necessarily harmonious.</p>
 <p class="labeler-context">Active contradiction edges by family pair, most recent snapshot
 ({hm_human_ts}). Top 12 families by edge involvement; rows = family A, columns = family B.
 Cell intensity scales with edge count. Matrix accounts for <strong>{total_in_matrix:,}</strong>
@@ -3012,6 +3025,7 @@ of {total_in_snapshot:,} edges in the snapshot.</p>
             authority_over_time_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
 <h2>Authority effect &mdash; daily event volume</h2>
+<p class="use-for"><strong>Use this to see:</strong> whether the network is emitting more enforcement-shaped or more decorative-shaped labels over time. <strong>Not for:</strong> measuring "moderation activity" — descriptive and decorative labels inflate counts but carry no consequence.</p>
 <p class="labeler-context">Daily count of label events grouped by authority-effect
 classification. Last day ({escape(aot_latest['date'])}): <strong>{aot_latest['total']:,}</strong>
 events. This is a flow graph — event volume per day, not active inventory.</p>
@@ -3082,6 +3096,27 @@ events. This is a flow graph — event volume per day, not active inventory.</p>
         hero_html
         + summary_strip
         + (
+            '<div class="read-spine">'
+            '<strong>How to read this page.</strong> '
+            'Start with <a href="#authority">Authority</a> for the shape of consequence (what kind of claims labelers emit); '
+            '<a href="#concentration">Concentration</a> for how diffuse labeling power is; '
+            '<a href="#hosting">Hosting</a> for where labeled accounts live and where force is disproportionate; '
+            '<a href="#contradictions">Contradictions</a> for where labelers actively disagree; '
+            '<a href="#registry">Registry</a> for per-labeler detail. Graphs are instruments, not verdicts.'
+            '</div>'
+        )
+        + (
+            '<nav class="jump-nav" aria-label="Section jump links">'
+            '<a href="#authority">Authority</a>'
+            '<a href="#concentration">Concentration</a>'
+            '<a href="#hosting">Hosting</a>'
+            '<a href="#contradictions">Contradictions</a>'
+            '<a href="#alerts">Alerts</a>'
+            '<a href="#registry">Registry</a>'
+            '<a href="#lookup">Lookup</a>'
+            '</nav>'
+        )
+        + (
             '<div class="graph-semantics-note">'
             'Graph semantics on this page: '
             '<strong>flow</strong> graphs count events per time bucket (e.g. authority-effect daily volume); '
@@ -3090,7 +3125,7 @@ events. This is a flow graph — event volume per day, not active inventory.</p>
             '<strong>thresholded surfaces</strong> show only entries above a display cutoff (e.g. conflict heatmap, churn/reversal quadrant) — absence does not imply none.'
             '</div>'
         )
-        + authority_posture_section
+        + f'<div id="authority">{authority_posture_section}</div>'
         + authority_over_time_section
         + authority_link_card
         + reference_lane
@@ -3100,17 +3135,17 @@ events. This is a flow graph — event volume per day, not active inventory.</p>
         + contradiction_inventory_section
         + churn_reversal_section
         + conflict_heatmap_section
-        + boundary_finding
-        + recent_alerts_card
+        + f'<div id="conflicts">{boundary_finding}</div>'
+        + f'<div id="alerts">{recent_alerts_card}</div>'
         + registry_card
-        + climate_card
+        + f'<div id="lookup">{climate_card}</div>'
         + explainer_html
         # All-labelers triage table — kept on the homepage but as a
         # collapsed <details> at the bottom so its triage tab bar
         # (Active/Alerts/New/Opaque/All) stays available without
         # dominating the fold. The /v1/registry page is the proper
         # browse surface; this stays here for in-page filtering only.
-        + labeler_section
+        + f'<div id="registry">{labeler_section}</div>'
         + ops_detail
         + TRIAGE_JS,
     )
