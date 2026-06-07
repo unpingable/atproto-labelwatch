@@ -277,6 +277,31 @@ th.sort-desc::after { content: " \\25BC"; font-size: 0.7em; }
 .explainer { background: var(--methods-bg); border: 1px solid var(--methods-border); padding: 1rem 1.25rem; border-radius: 6px; margin-bottom: 1.5rem; max-width: 52rem; font-size: 0.95rem; line-height: 1.5; }
 .explainer p { margin: 0.4rem 0; }
 .labeler-context { color: var(--fg-muted); font-size: 0.9rem; margin-bottom: 0.75rem; }
+
+/* Responsive pass: minimum viable mobile readability. Charts scale via their
+   viewBox (set in each helper); these rules let them respect container width.
+   Tables get a horizontal-scroll affordance on narrow screens rather than
+   being squeezed into unreadable dust. Body margins and headings shrink at
+   phone widths so the page doesn't waste a third of the screen on whitespace. */
+svg.hbar-chart, svg.sbar-chart, svg.line-chart, svg.scatter-chart, svg.heatmap-chart {
+  max-width: 100%; height: auto;
+}
+.chart-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.graph-semantics-note { font-size: 0.85rem; color: var(--fg-muted); margin: 1rem 0; padding: 0.6rem 0.8rem; border-left: 3px solid var(--border); background: var(--bg-muted, transparent); border-radius: 0 4px 4px 0; }
+.graph-semantics-note strong { color: var(--fg); }
+@media (max-width: 700px) {
+  body { margin: 1rem; font-size: 0.95rem; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.15rem; }
+  h3 { font-size: 1.0rem; }
+  header { flex-direction: column; gap: 0.5rem; align-items: flex-start; }
+  /* Wide tables: stay scrollable horizontally instead of compressing cells. */
+  table { display: block; overflow-x: auto; white-space: nowrap; max-width: 100%; -webkit-overflow-scrolling: touch; }
+  /* Hero stats: stack instead of squeeze. */
+  .hero-stats { flex-direction: column; gap: 0.4rem !important; }
+  /* Boundary section gutter shrinks. */
+  .boundary-section { padding: 0.75rem; }
+}
 """
 
 TRIAGE_JS = """
@@ -2612,7 +2637,7 @@ Top-4 by reversal annotated. {len(cr_points)} labelers plotted.</p>
 ({hm_human_ts}). Top 12 families by edge involvement; rows = family A, columns = family B.
 Cell intensity scales with edge count. Matrix accounts for <strong>{total_in_matrix:,}</strong>
 of {total_in_snapshot:,} edges in the snapshot.</p>
-{heatmap_svg}
+<div class="chart-scroll">{heatmap_svg}</div>
 <p class="small" style="margin-top:0.4rem;color:var(--fg-muted);">Thresholded surface: only pairs with at least one active edge appear. Absence does not imply no disagreement (may be below threshold or unobserved pair). Same classifier-drift caveat as the contradiction surface above.</p>
 </div>
 """
@@ -3056,6 +3081,15 @@ events. This is a flow graph — event volume per day, not active inventory.</p>
         "Labelwatch",
         hero_html
         + summary_strip
+        + (
+            '<div class="graph-semantics-note">'
+            'Graph semantics on this page: '
+            '<strong>flow</strong> graphs count events per time bucket (e.g. authority-effect daily volume); '
+            '<strong>snapshot inventory</strong> graphs count entities present at observation time (e.g. contradiction surface); '
+            '<strong>snapshot distribution</strong> graphs describe the shape of a single window (e.g. concentration curve, hosting locus); '
+            '<strong>thresholded surfaces</strong> show only entries above a display cutoff (e.g. conflict heatmap, churn/reversal quadrant) — absence does not imply none.'
+            '</div>'
+        )
         + authority_posture_section
         + authority_over_time_section
         + authority_link_card
