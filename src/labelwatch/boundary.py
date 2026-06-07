@@ -448,6 +448,61 @@ def human_disagreement_type(dtype: str) -> str:
     return ""
 
 
+def daily_disagreement_snapshots(conn, days: int = 30) -> list[dict]:
+    """One snapshot per day: counts of active contradiction edges by type.
+
+    For each day in the last N, picks the LAST successful boundary
+    computation (`MAX(computed_at)` within that UTC day) and classifies
+    every contradiction edge from that single snapshot via the current
+    `classify_disagreement` taxonomy. Counts are edges PRESENT at snapshot
+    time — this is a stock graph (the rolling 24h boundary state), not
+    an event flow.
+
+    Each bucket: {"date": "YYYY-MM-DD", "snapshot_at": ISO, "values":
+                  {disagreement_type: count, ...}, "total": int}
+    Buckets are returned in chronological order.
+
+    Edges missing `top_family_a` or `top_family_b` are skipped (the
+    classifier requires both).
+    """
+    from collections import defaultdict
+    cutoff = f"-{days} days"
+    day_rows = conn.execute(
+        """
+        SELECT DATE(computed_at) AS day, MAX(computed_at) AS snapshot_at
+        FROM boundary_edges
+        WHERE edge_type = 'contradiction'
+          AND computed_at >= datetime('now', ?)
+        GROUP BY DATE(computed_at)
+        ORDER BY day
+        """,
+        (cutoff,),
+    ).fetchall()
+    results = []
+    for day, snapshot_at in day_rows:
+        edges = conn.execute(
+            """
+            SELECT top_family_a, top_family_b
+            FROM boundary_edges
+            WHERE edge_type = 'contradiction'
+              AND computed_at = ?
+            """,
+            (snapshot_at,),
+        ).fetchall()
+        counts: dict[str, int] = defaultdict(int)
+        for top_a, top_b in edges:
+            if not top_a or not top_b:
+                continue
+            counts[classify_disagreement(top_a, top_b)] += 1
+        results.append({
+            "date": day,
+            "snapshot_at": snapshot_at,
+            "values": dict(counts),
+            "total": sum(counts.values()),
+        })
+    return results
+
+
 def filter_fight_edges(
     conn,
     window_start: str,

@@ -139,6 +139,7 @@ def _visibility_badge(vis_class: Optional[str]) -> str:
 STYLE = """
 :root {
   --bg: #fff; --fg: #111; --fg-muted: #666; --border: #ddd; --bg-muted: #f6f7f9; --bar-fill: #0b5394;
+  --cat-shear: #8a9aa8; --cat-severity: #d49a2d; --cat-claim-action: #cc6633; --cat-substantive: #c44545;
   --link: #0b5394; --link-hover-bg: #f0f7fb; --accent: #2980b9;
   --card-bg: #fff; --card-border: #ddd;
   --anomaly-bg: #fff8f0;
@@ -157,6 +158,7 @@ STYLE = """
 }
 [data-theme="dark"] {
   --bg: #1a1a2e; --fg: #e0e0e0; --fg-muted: #999; --border: #333; --bg-muted: #16213e; --bar-fill: #6db3f2;
+  --cat-shear: #99aabb; --cat-severity: #e6c866; --cat-claim-action: #ef8d4d; --cat-substantive: #e68888;
   --link: #6db3f2; --link-hover-bg: #252545;
   --card-bg: #16213e; --card-border: #333;
   --anomaly-bg: #2a2218;
@@ -213,6 +215,10 @@ pre { background: var(--pre-bg); padding: 0.5rem; border-radius: 4px; overflow-x
 .hbar-value { fill: var(--fg-muted); }
 .hbar-chart text.hbar-secondary { fill: var(--fg-muted); font-size: 0.75rem; }
 .hbar-bar   { fill: var(--bar-fill, #0b5394); }
+.sbar-chart { display: block; max-width: 100%; }
+.sbar-chart text { font-family: Georgia, "Times New Roman", serif; font-size: 0.7rem; fill: var(--fg-muted); }
+.sbar-legend { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 0.4rem; font-size: 0.85rem; }
+.sbar-legend .swatch { display: inline-block; width: 10px; height: 10px; vertical-align: middle; margin-right: 4px; border-radius: 2px; }
 .anomaly-row { background: var(--anomaly-bg); }
 .methods { background: var(--methods-bg); border: 1px solid var(--methods-border); padding: 1rem; border-radius: 6px; margin-top: 2rem; font-size: 0.85rem; }
 .reference-lane { border: 2px solid var(--ref-border); background: var(--ref-bg); padding: 1rem; border-radius: 6px; margin-bottom: 1.5rem; }
@@ -659,6 +665,86 @@ def _horizontal_bar_svg(
             parts.append(
                 f'<text x="{width - 4}" y="{cy:.1f}" text-anchor="end" '
                 f'class="hbar-secondary">{escape(str(secondary))}</text>'
+            )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _stacked_bar_svg(
+    buckets: List[dict],
+    *,
+    series: List[dict],
+    width: int = 520,
+    height: int = 180,
+    bar_gap: int = 2,
+    bottom_pad: int = 24,
+    left_pad: int = 36,
+    top_pad: int = 8,
+    label_every: Optional[int] = None,
+    aria_label: str = "Stacked bar chart",
+) -> str:
+    """Vertical stacked bars. One column per bucket; one stacked segment per series.
+
+    buckets: ordered list of {"label": x_axis_str, "values": {series_key: count}}.
+    series:  ordered list of {"key": str, "label": str, "color": str} — defines
+             stacking order (bottom→top) and palette. Series with zero across
+             all buckets are still legal (they just don't render).
+    width/height: chart pixel size.
+    bar_gap: pixels between adjacent bars.
+    {left,bottom,top}_pad: pixels reserved for axis labels.
+    label_every: render an x-axis label every Nth bar (default: ~7 labels total).
+
+    Y-axis is a single baseline + max/0 tick (deliberately spartan — composition
+    and trend dominate; precise reads belong to a hover/table affordance later).
+    """
+    if not buckets:
+        return (
+            f'<svg class="sbar-chart" width="{width}" height="40" role="img" aria-label="empty">'
+            f'<text x="0" y="22">No data.</text></svg>'
+        )
+    chart_w = width - left_pad - 10
+    chart_h = height - top_pad - bottom_pad
+    n = len(buckets)
+    bar_w = max(1, (chart_w - (n - 1) * bar_gap) // n)
+    max_total = max(
+        (sum(b["values"].get(s["key"], 0) for s in series) for b in buckets),
+        default=0,
+    ) or 1
+    if label_every is None:
+        label_every = max(1, n // 7)
+    baseline_y = top_pad + chart_h
+    parts = [
+        f'<svg class="sbar-chart" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="{escape(aria_label)}">'
+    ]
+    # baseline + min/max y ticks
+    parts.append(
+        f'<line x1="{left_pad}" y1="{baseline_y}" x2="{width - 10}" y2="{baseline_y}" '
+        f'stroke="var(--border, #ddd)" stroke-width="1" />'
+    )
+    parts.append(
+        f'<text x="{left_pad - 4}" y="{top_pad + 8}" text-anchor="end">{max_total:,}</text>'
+    )
+    parts.append(
+        f'<text x="{left_pad - 4}" y="{baseline_y + 2}" text-anchor="end">0</text>'
+    )
+    # bars
+    for i, b in enumerate(buckets):
+        x = left_pad + i * (bar_w + bar_gap)
+        y_cursor = baseline_y
+        for s in series:
+            val = b["values"].get(s["key"], 0)
+            if val <= 0:
+                continue
+            seg_h = max(1, int(round(chart_h * val / max_total)))
+            y_cursor -= seg_h
+            parts.append(
+                f'<rect x="{x}" y="{y_cursor}" width="{bar_w}" height="{seg_h}" fill="{s["color"]}" />'
+            )
+        if i % label_every == 0 or i == n - 1:
+            xlabel = _truncate_label(str(b["label"]), 7)
+            parts.append(
+                f'<text x="{x + bar_w / 2:.1f}" y="{baseline_y + 14}" text-anchor="middle">{escape(xlabel)}</text>'
             )
     parts.append("</svg>")
     return "".join(parts)
@@ -1960,6 +2046,53 @@ Bars count unique labeled accounts. Ratios show repeat-label pressure (events pe
     except Exception as exc:
         log.warning("Hosting locus section failed: %s", exc)
 
+    # --- Contradiction inventory: daily snapshot of active edges by type ---
+    # Stock graph, not flow. Each daily bar = one observation (the last
+    # boundary computation that day) of the rolling 24h contradiction state,
+    # classified by current disagreement taxonomy. NOT event counts — see the
+    # design note in boundary.daily_disagreement_snapshots.
+    contradiction_inventory_section = ""
+    try:
+        from .boundary import daily_disagreement_snapshots
+        ci_buckets = daily_disagreement_snapshots(conn, days=30)
+        if ci_buckets:
+            ci_series = [
+                {"key": "taxonomy_shear",         "label": "Taxonomy shear",       "color": "var(--cat-shear)"},
+                {"key": "severity_difference",    "label": "Severity difference",  "color": "var(--cat-severity)"},
+                {"key": "claim_vs_action",        "label": "Claim vs action",      "color": "var(--cat-claim-action)"},
+                {"key": "substantive_disagreement","label": "Substantive",         "color": "var(--cat-substantive)"},
+            ]
+            ci_chart_buckets = [
+                {"label": b["date"][5:], "values": b["values"]}  # MM-DD
+                for b in ci_buckets
+            ]
+            ci_svg = _stacked_bar_svg(
+                ci_chart_buckets,
+                series=ci_series,
+                width=520, height=180,
+                aria_label="Active contradiction edges by type, daily snapshot, last 30 days",
+            )
+            ci_legend = '<div class="sbar-legend">' + "".join(
+                f'<span><span class="swatch" style="background:{s["color"]};"></span>{escape(s["label"])}</span>'
+                for s in ci_series
+            ) + '</div>'
+            latest = ci_buckets[-1]
+            latest_snap_human = escape(str(latest["snapshot_at"])[:16].replace("T", " ") + " UTC")
+            contradiction_inventory_section = f"""
+<div class="boundary-section" style="margin-top:1.5rem;">
+<h2>Contradiction inventory</h2>
+<p class="labeler-context">Active contradiction edges by type, daily snapshot.
+Last snapshot ({latest_snap_human}): <strong>{latest['total']:,}</strong> active edges.
+Daily snapshots of the rolling 24h boundary window &mdash; counts are edges present at
+snapshot time, not event totals.</p>
+{ci_svg}
+{ci_legend}
+<p class="small" style="margin-top:0.4rem;color:var(--fg-muted);">Classified at render time by the current disagreement taxonomy. Classifier changes shift historical reads.</p>
+</div>
+"""
+    except Exception as exc:
+        log.warning("Contradiction inventory section failed: %s", exc)
+
     # --- Triage view with tabs ---
     tab_bar = f"""
 <div class="search-bar">
@@ -2332,6 +2465,7 @@ Bars count unique labeled accounts. Ratios show repeat-label pressure (events pe
         + reference_lane
         + hosting_section
         + hosting_locus_section
+        + contradiction_inventory_section
         + boundary_finding
         + recent_alerts_card
         + registry_card
