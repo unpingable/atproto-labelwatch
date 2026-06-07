@@ -15,9 +15,14 @@ finding: it surfaces labels the namespace grew without the classifier guessing.
 """
 from __future__ import annotations
 
+import logging
+import threading
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from collections import defaultdict
+
+log = logging.getLogger(__name__)
 
 from .label_family import (
     AUTHORITY_EFFECT_COPY,
@@ -207,13 +212,50 @@ def build_authority_effect_inventory(
     }
 
 
+# --- Per-day raw aggregation cache ---------------------------------------
+# Module-level: each entry is the result of one full-day SELECT (~5s on the
+# current prod DB). Past days are immutable once the UTC day rolls over, so a
+# cache hit is correct as long as the dict is keyed by UTC date string. Today's
+# bucket is always re-queried since events keep arriving.
+#
+# val -> authority_effect resolution is NOT cached here — it depends on the
+# global labeler set across the whole window, which can shift when a new
+# labeler appears. We re-resolve fresh on each call using merged raw data,
+# which is O(distinct vals) and cheap.
+#
+# Cache is per-process. Service restart pays full cold cost once (~3 min at
+# current 30d volume); subsequent cycles within the same process serve the
+# past 29 days from RAM and only pay for today (~5–10s).
+_DAILY_AUTH_RAW_CACHE: Dict[str, Dict[tuple, int]] = {}
+_DAILY_AUTH_CACHE_LOCK = threading.Lock()
+
+
+def _query_day_raw(conn, day: str) -> Dict[tuple, int]:
+    """One UTC day: aggregate label_events (neg=0) by (val, labeler_did).
+
+    Day boundaries are exact ISO UTC ranges ['<day>T00:00:00Z', '<next>T00:00:00Z')
+    rather than relative datetime('now',...) so the query is cache-friendly
+    (same day name => same boundaries => same result) and consistent across
+    cycles regardless of when within the day the report runs.
+    """
+    day_dt = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    next_dt = day_dt + timedelta(days=1)
+    rows = conn.execute(
+        """
+        SELECT val, labeler_did, COUNT(*) AS n
+        FROM label_events
+        WHERE ts >= ? AND ts < ? AND neg = 0
+        GROUP BY val, labeler_did
+        """,
+        (day_dt.strftime("%Y-%m-%dT%H:%M:%SZ"), next_dt.strftime("%Y-%m-%dT%H:%M:%SZ")),
+    ).fetchall()
+    return {(r["val"], r["labeler_did"]): int(r["n"] or 0) for r in rows}
+
+
 def daily_authority_effect_counts(conn, days: int = 30) -> list[dict]:
     """Daily event counts grouped by authority_effect classification.
 
-    For each UTC day in the window, sums label_events (neg=0) grouped by the
-    authority_effect of each val (via normalize_family + classify_authority_effect,
-    with the labeler-default fallback used by build_authority_effect_inventory).
-    Counts are EVENTS — this is a flow graph: volume per day, not stock.
+    Counts are EVENTS — flow graph: volume per day, not stock.
 
     val -> effect classification uses the GLOBAL labeler set across the whole
     window (not per-day), so classification is stable across days even though
@@ -221,27 +263,46 @@ def daily_authority_effect_counts(conn, days: int = 30) -> list[dict]:
     historical reads.
 
     Each bucket: {"date": "YYYY-MM-DD", "values": {effect: count}, "total": int}
-    Buckets are returned in chronological order.
+    Buckets are returned in chronological order; days with no data are omitted.
+
+    Implementation: per-day raw aggregation is cached in process memory; past
+    days served from cache, current UTC day always re-queried. See
+    _DAILY_AUTH_RAW_CACHE for the design note.
     """
-    cutoff = f"-{days} days"
-    rows = conn.execute(
-        """
-        SELECT DATE(ts) AS day, val, labeler_did, COUNT(*) AS n
-        FROM label_events
-        WHERE ts >= datetime('now', ?) AND neg = 0
-        GROUP BY day, val, labeler_did
-        """,
-        (cutoff,),
-    ).fetchall()
-    if not rows:
-        return []
+    today_dt = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today = today_dt.strftime("%Y-%m-%d")
+    day_list = [(today_dt - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
+    day_list.reverse()  # chronological
 
+    all_raw: Dict[str, Dict[tuple, int]] = {}
+    miss_count = 0
+    with _DAILY_AUTH_CACHE_LOCK:
+        for d in day_list:
+            if d == today:
+                # Today is mutable — always re-query.
+                all_raw[d] = _query_day_raw(conn, d)
+            elif d in _DAILY_AUTH_RAW_CACHE:
+                all_raw[d] = _DAILY_AUTH_RAW_CACHE[d]
+            else:
+                all_raw[d] = _query_day_raw(conn, d)
+                _DAILY_AUTH_RAW_CACHE[d] = all_raw[d]
+                miss_count += 1
+        # Bound cache growth: drop entries older than 2x the requested window.
+        cutoff = (today_dt - timedelta(days=days * 2)).strftime("%Y-%m-%d")
+        stale = [d for d in _DAILY_AUTH_RAW_CACHE if d < cutoff]
+        for d in stale:
+            del _DAILY_AUTH_RAW_CACHE[d]
+    if miss_count:
+        log.info(
+            "daily_authority_effect_counts: %d/%d days queried (rest cached); cache size=%d",
+            miss_count + 1, days, len(_DAILY_AUTH_RAW_CACHE),
+        )
+
+    # Re-resolve val -> effect using the merged GLOBAL labeler set.
     per_val_labelers: Dict[str, set[str]] = defaultdict(set)
-    per_day_val_count: Dict[tuple, int] = defaultdict(int)  # (day, val) -> events
-    for r in rows:
-        per_val_labelers[r["val"]].add(r["labeler_did"])
-        per_day_val_count[(r["day"], r["val"])] += int(r["n"] or 0)
-
+    for raw in all_raw.values():
+        for (val, labeler_did) in raw.keys():
+            per_val_labelers[val].add(labeler_did)
     val_effect: Dict[str, str] = {}
     for val, labelers in per_val_labelers.items():
         family = normalize_family(val)
@@ -251,17 +312,18 @@ def daily_authority_effect_counts(conn, days: int = 30) -> list[dict]:
         val_effect[val] = effect
 
     day_buckets: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for (day, val), n in per_day_val_count.items():
-        day_buckets[day][val_effect[val]] += n
+    for d, raw in all_raw.items():
+        for (val, _), n in raw.items():
+            day_buckets[d][val_effect[val]] += n
 
-    days_sorted = sorted(day_buckets.keys())
     return [
         {
             "date": d,
             "values": dict(day_buckets[d]),
             "total": sum(day_buckets[d].values()),
         }
-        for d in days_sorted
+        for d in day_list
+        if day_buckets.get(d)
     ]
 
 
