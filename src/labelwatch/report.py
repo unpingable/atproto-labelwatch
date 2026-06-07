@@ -2341,14 +2341,15 @@ is their output, and how much of the apparent diversity is already degraded.
             concentration_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
 <h2 id="concentration">Concentration curve</h2>
+<p class="labeler-context" style="font-size:1.0rem;">
+<strong>Labeling volume is concentrated:</strong> top 10% of plotted labelers
+({top10_count} of {n_lab}) carry <strong>{int(round(top10_share * 100))}%</strong>
+of 7d events; top 50% ({top50_count}) carry <strong>{int(round(top50_share * 100))}%</strong>.
+Below: cumulative share by labeler rank. Dashed diagonal = perfect equality;
+bowing toward the top-left = a few labelers carry most of the volume.
+Plotted = non-test labelers with &ge;1 event in window. Snapshot of the
+current 7d window — not a trend.</p>
 <p class="use-for"><strong>Use this to see:</strong> how diffuse (or not) labeling power is. <strong>Not for:</strong> ranking labelers, or deciding whether any one of them is right.</p>
-<p class="labeler-context">Cumulative share of 7d label events by labeler rank.
-Dashed diagonal = perfect equality; bowing toward the top-left = a few labelers
-carry most of the volume. Top 10% of plotted labelers ({top10_count} of {n_lab})
-carry <strong>{int(round(top10_share * 100))}%</strong> of events; top 50%
-({top50_count}) carry <strong>{int(round(top50_share * 100))}%</strong>.
-Plotted = non-test labelers with &ge;1 event in window. Snapshot of the current
-7d window — not a trend.</p>
 {cc_svg}
 </div>
 """
@@ -2436,10 +2437,13 @@ Plotted = non-test labelers with &ge;1 event in window. Snapshot of the current
             hosting_locus_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
 <h2 id="hosting">Hosting locus &mdash; non-major PDSes</h2>
+<p class="labeler-context" style="font-size:1.0rem;">
+<strong>{nm_accounts:,} non-major-hosted labeled accounts</strong> cluster across
+{nm_families} host families{tail_note}, with repeat-label pressure
+disproportionate to population on a few. Below: unique labeled accounts per
+non-major host family, last 7d. Bars count accounts; ratios show events per
+account (repeat-label pressure).</p>
 <p class="use-for"><strong>Use this to see:</strong> where labeled accounts live outside the major Bluesky-hosted PDSes, and where repeat-label pressure is disproportionate to population. <strong>Not for:</strong> deciding whether any host is hostile, or whether any account deserves a label.</p>
-<p class="labeler-context">Where labeled accounts live outside Bluesky-hosted PDSes, last 7d.
-Bars count unique labeled accounts. Ratios show repeat-label pressure (events per account).
-{nm_accounts:,} accounts across {nm_families} host families{tail_note}.</p>
 {bar_svg}
 {pressure_callout}
 <h3 style="margin-top:1.25rem;font-size:1.05rem;">Repeat-pressure scatter</h3>
@@ -2516,11 +2520,13 @@ Bars count unique labeled accounts. Ratios show repeat-label pressure (events pe
             contradiction_inventory_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
 <h2 id="contradictions">Contradiction surface</h2>
+<p class="labeler-context" style="font-size:1.0rem;">
+<strong>{latest['total']:,} active contradictions</strong> between labelers in
+the current 24h boundary window ({latest_snap_human}). Below: that count over
+time, classified by disagreement type. Stock graph — daily snapshots of the
+rolling 24h boundary window, counts are edges present at snapshot time, not
+event totals.</p>
 <p class="use-for"><strong>Use this to see:</strong> whether the volume and mix of active contradictions between labelers is changing day to day. <strong>Not for:</strong> deciding which labeler in a disagreement is correct.</p>
-<p class="labeler-context">Active contradiction edges by type, daily snapshot.
-Last snapshot ({latest_snap_human}): <strong>{latest['total']:,}</strong> active edges.
-Daily snapshots of the rolling 24h boundary window &mdash; counts are edges present at
-snapshot time, not event totals.</p>
 {ci_svg}
 {ci_legend}
 {empty_note_html}
@@ -2583,11 +2589,13 @@ snapshot time, not event totals.</p>
             churn_reversal_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
 <h2 id="churn-reversal">Churn vs reversal &mdash; behavioral quadrant <span class="badge badge-low-conf" style="font-size:0.7rem;vertical-align:middle;">experimental</span></h2>
+<p class="labeler-context" style="font-size:1.0rem;">
+<strong>{len(cr_points)} labelers</strong> show enough alert-firing pattern
+(30d) to plot a behavioral surface. Outliers — top-right cluster, isolated
+high-reversal point — are the ones worth looking at by hand. Below:
+<code>churn_index</code> alerts (x) vs <code>flip_flop</code> alerts (y),
+last 30d; point size scales with 7d event volume; top-4 by reversal annotated.</p>
 <p class="use-for"><strong>Use this to:</strong> locate labelers with unusual alert-fire patterns that might be worth investigating by hand. <strong>Not for:</strong> convicting labelers or inferring intent — axes are observed alert-fire patterns, not weirdness verdicts.</p>
-<p class="labeler-context">Behavioral surface of labelers with active alerts or non-trivial volume.
-X-axis: number of <code>churn_index</code> alerts in the last 30 days. Y-axis: number of
-<code>flip_flop</code> alerts. Point size scales with 7d event volume.
-Top-4 by reversal annotated. {len(cr_points)} labelers plotted.</p>
 {cr_svg}
 <p class="small" style="margin-top:0.4rem;color:var(--fg-muted);">Axes are observed alert-fire patterns, not intent. Experimental — the chart locates labelers worth looking at by hand, not verdicts.</p>
 </div>
@@ -2646,11 +2654,13 @@ Top-4 by reversal annotated. {len(cr_points)} labelers plotted.</p>
                 conflict_heatmap_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
 <h2 id="heatmap">Conflict family heatmap <span class="badge badge-low-conf" style="font-size:0.7rem;vertical-align:middle;">experimental</span></h2>
+<p class="labeler-context" style="font-size:1.0rem;">
+<strong>Top 12 conflict-involved families account for {total_in_matrix:,}
+of {total_in_snapshot:,} active contradictions</strong> in the current snapshot
+({hm_human_ts}). The brightest cells point to the family pairs that keep
+colliding. Below: pairwise edge counts; rows = family A, columns = family B;
+cell intensity scales with edge count.</p>
 <p class="use-for"><strong>Use this to see:</strong> which moderation families keep colliding in the current snapshot. <strong>Not for:</strong> ranking or rating labels — the matrix is thresholded; absent pairs are not necessarily harmonious.</p>
-<p class="labeler-context">Active contradiction edges by family pair, most recent snapshot
-({hm_human_ts}). Top 12 families by edge involvement; rows = family A, columns = family B.
-Cell intensity scales with edge count. Matrix accounts for <strong>{total_in_matrix:,}</strong>
-of {total_in_snapshot:,} edges in the snapshot.</p>
 <div class="chart-scroll">{heatmap_svg}</div>
 <p class="small" style="margin-top:0.4rem;color:var(--fg-muted);">Thresholded surface: only pairs with at least one active edge appear. Absence does not imply no disagreement (may be below threshold or unobserved pair). Same classifier-drift caveat as the contradiction surface above.</p>
 </div>
@@ -2663,12 +2673,12 @@ of {total_in_snapshot:,} edges in the snapshot.</p>
 <div class="search-bar">
   <input type="text" id="labeler-search" placeholder="Search labelers by name, handle, or DID\u2026">
 </div>
-<div class="tab-bar">
-  <button data-view="active">Active <span class="tab-count"></span></button>
-  <button class="active" data-view="alerts">Alerts <span class="tab-count"></span></button>
-  <button data-view="new">New <span class="tab-count"></span></button>
-  <button data-view="opaque">Opaque <span class="tab-count"></span></button>
-  <button data-view="all">All <span class="tab-count"></span></button>
+<div class="tab-bar" role="tablist" aria-label="Find labelers by">
+  <button data-view="active" title="Labelers with at least one event in the last 7d">Ingesting now <span class="tab-count"></span></button>
+  <button class="active" data-view="alerts" title="Labelers with active rule-firings in the alert window">Recently alerting <span class="tab-count"></span></button>
+  <button data-view="new" title="Labelers first seen within the last 7d">First seen this week <span class="tab-count"></span></button>
+  <button data-view="opaque" title="Labelers we can't fully observe — auth-required, unresolved, or down endpoints">Hard to observe <span class="tab-count"></span></button>
+  <button data-view="all" title="Browse the full discovered population">Browse all <span class="tab-count"></span></button>
 </div>
 <div style="margin:0.5rem 0;font-size:0.85rem;">
   <label><input type="checkbox" id="toggle-test-dev"> Show test/dev ({test_dev_count})</label>
@@ -3026,10 +3036,14 @@ of {total_in_snapshot:,} edges in the snapshot.</p>
             authority_over_time_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
 <h2>Authority effect &mdash; daily event volume</h2>
+<p class="labeler-context" style="font-size:1.0rem;">
+<strong>{aot_latest['total']:,}</strong> label events on {escape(aot_latest['date'])},
+classified by what kind of authority each label attempts to exercise. Use the
+bar shape to read whether the network is emitting more enforcement-shaped or
+more decorative-shaped labels over time.
+Below: daily event volume by authority-effect classification (30d). Flow graph —
+events per day, not active inventory.</p>
 <p class="use-for"><strong>Use this to see:</strong> whether the network is emitting more enforcement-shaped or more decorative-shaped labels over time. <strong>Not for:</strong> measuring "moderation activity" — descriptive and decorative labels inflate counts but carry no consequence.</p>
-<p class="labeler-context">Daily count of label events grouped by authority-effect
-classification. Last day ({escape(aot_latest['date'])}): <strong>{aot_latest['total']:,}</strong>
-events. This is a flow graph — event volume per day, not active inventory.</p>
 {aot_svg}
 {aot_legend}
 {aot_empty_html}

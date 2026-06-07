@@ -266,13 +266,28 @@ def _disposition_lines(
         )
 
     # 3) Active volume share emitted by high auditability-risk labelers.
+    # When the high-risk share is zero, reframe as a visibility/coverage
+    # statement instead of an "innocence finding" — high auditability risk
+    # means we can't observe the labeler well enough to classify, so silence
+    # in the classified volume is partly definitional. A naive "0% from
+    # high-risk labelers" line reads as "high-risk labelers are quiet,"
+    # which is the opposite of the intended dial semantics.
     total_active = sum(vol_by_audit.values())
     if total_active >= 1000:
-        high_share = (vol_by_audit.get("high", 0) / total_active) * 100.0
-        lines.append(
-            f"{high_share:.0f}% of active 7d event volume is emitted by labelers "
-            f"with high auditability risk."
-        )
+        high_vol = vol_by_audit.get("high", 0)
+        high_share = (high_vol / total_active) * 100.0
+        if high_vol == 0:
+            lines.append(
+                "No classified event volume is attributed to high-auditability-risk "
+                "labelers in this window. This is a visibility/coverage statement, "
+                "not proof of inactivity or harmlessness — high auditability risk "
+                "means insufficient observable surface to classify."
+            )
+        else:
+            lines.append(
+                f"{high_share:.0f}% of active 7d event volume is emitted by labelers "
+                f"with high auditability risk."
+            )
 
     return lines
 
@@ -344,11 +359,14 @@ def render_authority_posture_html(posture: Dict[str, Any]) -> str:
 
     pop = posture["population"]
     parts.append(
-        '<p class="labeler-context">'
-        'Ecosystem-level view of labeler class, dial posture, and how event '
-        'volume distributes across authority_effect when crossed with class '
-        'and auditability risk. Descriptive — does not infer intent or '
-        'assert verdicts.'
+        '<p class="labeler-context" style="font-size:1.0rem;">'
+        '<strong>Binding label authority remains platform-concentrated.</strong> '
+        'Official-platform labelers emit nearly all enforcement-instruction, '
+        'visibility-affecting, and advisory volume in the current 7d window; '
+        'third-party labelers dominate reputational, telemetry, decorative, '
+        'and unknown flow. Below: event volume crossed by authority effect, '
+        'labeler class, and auditability risk. Descriptive — does not infer '
+        'intent or assert verdicts.'
         '</p>'
     )
     parts.append(
@@ -356,6 +374,14 @@ def render_authority_posture_html(posture: Dict[str, Any]) -> str:
         f'{pop["labelers_observed"]:,} labelers observed; '
         f'{pop["labelers_active_7d"]:,} emitting (7d); '
         f'{pop["events_in_window"]:,} active events in window.'
+        '</p>'
+    )
+    parts.append(
+        '<p class="small" style="opacity:0.8;margin-top:0.4rem;font-style:italic;">'
+        '<strong>Unknown</strong> = not classified into an authority-effect '
+        'bucket; may reflect unmapped labels, ambiguous authority posture, '
+        'or insufficient observable surface. Treat as instrumentation debt '
+        'unless separately classified.'
         '</p>'
     )
 
