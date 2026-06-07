@@ -354,7 +354,7 @@ def render_authority_posture_html(posture: Dict[str, Any]) -> str:
     parts.append(
         '<p class="small" style="opacity:0.7;margin-top:0;">'
         f'{pop["labelers_observed"]:,} labelers observed; '
-        f'{pop["labelers_active_7d"]:,} active in 7d; '
+        f'{pop["labelers_active_7d"]:,} emitting (7d); '
         f'{pop["events_in_window"]:,} active events in window.'
         '</p>'
     )

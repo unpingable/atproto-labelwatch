@@ -1854,7 +1854,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None, facts_pa
     staleness_cards = f"""
 <div class="grid">
   <div class="card"><h3>Last updated</h3><div>{escape(_human_ts(now_ts))}</div></div>
-  <div class="card"><h3>Last ingest</h3><div>{escape(_human_ts(last_ingest))}</div></div>
+  <div class="card"><h3>Latest event observed</h3><div>{escape(_human_ts(last_ingest))}</div></div>
   <div class="card"><h3>Last scan</h3><div>{escape(_human_ts(last_scan))}</div></div>
   <div class="card"><h3>Last discovery</h3><div>{escape(_human_ts(last_discovery))}</div></div>
   <div class="card"><h3>Labelers tracked</h3><div>{len(labelers)}</div></div>
@@ -1876,7 +1876,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None, facts_pa
             pass
     else:
         stream_label = "Not configured"
-    staleness_cards += f'  <div class="card"><h3>Stream liveness</h3><div>{stream_label}</div></div>'
+    staleness_cards += f'  <div class="card"><h3>Stream heartbeat</h3><div>{stream_label}</div></div>'
 
     # discovery_events may not exist on older schemas
     _has_discovery_events = conn.execute(
@@ -2284,8 +2284,8 @@ is their output, and how much of the apparent diversity is already degraded.
   <div class="card health-metric">
     <div class="label">Coverage</div>
     <div class="value">{active_count}</div>
-    <div class="small">active labelers (7d)<br/>
-    {minimal_count} minimal, {silent_count} silent, {total_non_test} tracked</div>
+    <div class="small">materially active (&ge;10 events, 7d)<br/>
+    {minimal_count} minimal, {silent_count} silent, {total_non_test} non-test tracked</div>
   </div>
   <div class="card health-metric">
     <div class="label">Concentration</div>
@@ -2344,10 +2344,11 @@ is their output, and how much of the apparent diversity is already degraded.
 <p class="use-for"><strong>Use this to see:</strong> how diffuse (or not) labeling power is. <strong>Not for:</strong> ranking labelers, or deciding whether any one of them is right.</p>
 <p class="labeler-context">Cumulative share of 7d label events by labeler rank.
 Dashed diagonal = perfect equality; bowing toward the top-left = a few labelers
-carry most of the volume. Top 10% of active labelers ({top10_count} of {n_lab})
+carry most of the volume. Top 10% of plotted labelers ({top10_count} of {n_lab})
 carry <strong>{int(round(top10_share * 100))}%</strong> of events; top 50%
 ({top50_count}) carry <strong>{int(round(top50_share * 100))}%</strong>.
-Snapshot of the current 7d window — not a trend.</p>
+Plotted = non-test labelers with &ge;1 event in window. Snapshot of the current
+7d window — not a trend.</p>
 {cc_svg}
 </div>
 """
@@ -2776,9 +2777,9 @@ of {total_in_snapshot:,} edges in the snapshot.</p>
     hero_stat_row = f"""
 <div class="hero-stats" style="display:flex;flex-wrap:wrap;gap:1.2rem;margin:0.75rem 0 0 0;padding:0.6rem 0.8rem;border:1px solid var(--border,#ccc);border-radius:6px;background:var(--bg-muted,#f6f7f9);">
   <div><strong>{len(labelers):,}</strong> <span class="small">labelers observed</span></div>
-  <div><strong>{labelers_active_7d:,}</strong> <span class="small">active in 7d</span></div>
+  <div><strong>{labelers_active_7d:,}</strong> <span class="small">labelers emitting (7d)</span></div>
   <div><strong>{total_events_7d:,}</strong> <span class="small">events in 7d</span></div>
-  <div><strong>{escape(last_ingest_label)}</strong> <span class="small">last ingest</span></div>
+  <div><strong>{escape(last_ingest_label)}</strong> <span class="small">last ingest cycle</span></div>
 </div>
 """
     hero_html = f"""
