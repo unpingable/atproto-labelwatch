@@ -1907,17 +1907,25 @@ is their output, and how much of the apparent diversity is already degraded.
                 if _nm:
                     return f"{int(v):,} · {round(100.0 * v / _nm, 1)}%"
                 return f"{int(v):,}"
+            # Per-row secondary annotation: pressure ratio, with an "n=N"
+            # suffix when the account count is small. A 4-account family at
+            # 18x is "hmm" not "finding"; the suffix admits the sample size
+            # without burying the signal.
             bar_rows = [
                 {
                     "label": d["family"],
                     "value": d["accounts"],
-                    "secondary": f"{d['events_per_account']:.1f}×",
+                    "secondary": (
+                        f"{d['events_per_account']:.1f}× · n={d['accounts']}"
+                        if d["accounts"] < 10
+                        else f"{d['events_per_account']:.1f}×"
+                    ),
                 }
                 for d in top10
             ]
             bar_svg = _horizontal_bar_svg(
                 bar_rows,
-                width=520, label_width=170, value_width=110, secondary_width=70,
+                width=520, label_width=170, value_width=110, secondary_width=110,
                 value_fmt=_fmt,
                 aria_label="Top non-major host families by unique labeled accounts, with events-per-account pressure (7d)",
             )
@@ -1927,13 +1935,25 @@ is their output, and how much of the apparent diversity is already degraded.
                 f' (top 10 shown; {tail:,} more in the long tail across {max(0, nm_families - len(top10))} other families)'
                 if tail > 0 else ''
             )
+            # Top-pressure anomaly callout — surfaces the smell without
+            # changing the chart's sort. Scoped to top10 so it relates to
+            # what the reader is looking at.
+            max_p = max(top10, key=lambda d: d["events_per_account"])
+            pressure_callout = (
+                f'<p class="small" style="margin:0.5rem 0 0 0;">'
+                f'Highest repeat-label pressure in view: <strong>{escape(str(max_p["family"]))}</strong>, '
+                f'{max_p["events_per_account"]:.1f}× across {max_p["accounts"]} account'
+                f'{"s" if max_p["accounts"] != 1 else ""}.'
+                f'</p>'
+            )
             hosting_locus_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
 <h2>Hosting locus &mdash; non-major PDSes</h2>
-<p class="labeler-context">Where labeled accounts live outside Bluesky-hosted PDSes.
-Bars count unique labeled accounts; ratios show repeat-label pressure (events
-per account). {nm_accounts:,} accounts across {nm_families} host families{tail_note}.</p>
+<p class="labeler-context">Where labeled accounts live outside Bluesky-hosted PDSes, last 7d.
+Bars count unique labeled accounts. Ratios show repeat-label pressure (events per account).
+{nm_accounts:,} accounts across {nm_families} host families{tail_note}.</p>
 {bar_svg}
+{pressure_callout}
 <p class="small" style="margin-top:0.5rem;color:var(--fg-muted);">Resolved via the driftwatch facts bridge.</p>
 </div>
 """
