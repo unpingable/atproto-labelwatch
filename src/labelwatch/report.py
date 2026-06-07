@@ -225,6 +225,13 @@ pre { background: var(--pre-bg); padding: 0.5rem; border-radius: 4px; overflow-x
 .sbar-legend .swatch { display: inline-block; width: 10px; height: 10px; vertical-align: middle; margin-right: 4px; border-radius: 2px; }
 .line-chart { display: block; max-width: 100%; }
 .line-chart text { font-family: Georgia, "Times New Roman", serif; font-size: 0.7rem; fill: var(--fg-muted); }
+.scatter-chart { display: block; max-width: 100%; }
+.scatter-chart text { font-family: Georgia, "Times New Roman", serif; font-size: 0.7rem; fill: var(--fg-muted); }
+.scatter-chart text.scatter-anno { fill: var(--fg); font-size: 0.78rem; }
+.heatmap-chart { display: block; max-width: 100%; }
+.heatmap-chart text { font-family: Georgia, "Times New Roman", serif; font-size: 0.68rem; }
+.heatmap-chart text.heatmap-label { fill: var(--fg-muted); }
+.heatmap-chart text.heatmap-cell { font-size: 0.7rem; }
 .anomaly-row { background: var(--anomaly-bg); }
 .methods { background: var(--methods-bg); border: 1px solid var(--methods-border); padding: 1rem; border-radius: 6px; margin-top: 2rem; font-size: 0.85rem; }
 .reference-lane { border: 2px solid var(--ref-border); background: var(--ref-bg); padding: 1rem; border-radius: 6px; margin-bottom: 1.5rem; }
@@ -851,6 +858,191 @@ def _line_svg(
         parts.append(
             f'<text x="10" y="{cy:.1f}" text-anchor="middle" transform="rotate(-90, 10, {cy:.1f})">{escape(y_label)}</text>'
         )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _scatter_svg(
+    points: List[dict],
+    *,
+    width: int = 480,
+    height: int = 220,
+    left_pad: int = 44,
+    bottom_pad: int = 28,
+    top_pad: int = 12,
+    right_pad: int = 16,
+    x_max: Optional[float] = None,
+    y_max: Optional[float] = None,
+    x_log: bool = False,
+    y_log: bool = False,
+    x_label: str = "",
+    y_label: str = "",
+    point_radius: int = 4,
+    point_color: str = "var(--bar-fill, #0b5394)",
+    annotate_top_n: int = 0,
+    annotate_by: str = "y",
+    aria_label: str = "Scatter plot",
+) -> str:
+    """Render a scatter plot as inline SVG. Substrate for (x, y) clouds.
+
+    points: [{"x": float, "y": float, "label": Optional[str]}, ...]
+    {x,y}_log: log10 the axis (values <= 0 clamped to 1 before log).
+    annotate_top_n: render labels for the top-N points by annotate_by ("x"|"y").
+    """
+    if not points:
+        return (
+            f'<svg class="scatter-chart" width="{width}" height="40" role="img" aria-label="empty">'
+            f'<text x="0" y="22">No data.</text></svg>'
+        )
+    import math
+
+    def lg(v: float) -> float:
+        return math.log10(max(v, 1.0)) if v else 0.0
+
+    xs = [p["x"] for p in points]
+    ys = [p["y"] for p in points]
+    xmx = x_max if x_max is not None else (max(xs) or 1)
+    ymx = y_max if y_max is not None else (max(ys) or 1)
+    if x_log:
+        x_min_v, x_max_v = lg(max(min(xs), 1)), lg(max(xmx, 1))
+    else:
+        x_min_v, x_max_v = 0, xmx or 1
+    if y_log:
+        y_min_v, y_max_v = lg(max(min(ys), 1)), lg(max(ymx, 1))
+    else:
+        y_min_v, y_max_v = 0, ymx or 1
+    chart_w = width - left_pad - right_pad
+    chart_h = height - top_pad - bottom_pad
+
+    def sx(x: float) -> float:
+        v = lg(x) if x_log else x
+        rng = x_max_v - x_min_v or 1
+        return left_pad + (v - x_min_v) / rng * chart_w
+
+    def sy(y: float) -> float:
+        v = lg(y) if y_log else y
+        rng = y_max_v - y_min_v or 1
+        return top_pad + chart_h - (v - y_min_v) / rng * chart_h
+
+    baseline_y = top_pad + chart_h
+    parts = [
+        f'<svg class="scatter-chart" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="{escape(aria_label)}">'
+    ]
+    parts.append(
+        f'<line x1="{left_pad}" y1="{baseline_y}" x2="{width - right_pad}" y2="{baseline_y}" '
+        f'stroke="var(--border, #ddd)" stroke-width="1" />'
+    )
+    parts.append(
+        f'<line x1="{left_pad}" y1="{top_pad}" x2="{left_pad}" y2="{baseline_y}" '
+        f'stroke="var(--border, #ddd)" stroke-width="1" />'
+    )
+    x_low_label = f"{int(round(10 ** x_min_v)):,}" if x_log else "0"
+    x_top_label = f"{int(round(10 ** x_max_v)):,}" if x_log else f"{int(round(xmx)):,}"
+    y_low_label = f"{int(round(10 ** y_min_v)):,}" if y_log else "0"
+    y_top_label = f"{int(round(10 ** y_max_v)):,}" if y_log else f"{int(round(ymx)):,}"
+    parts.append(f'<text x="{left_pad}" y="{baseline_y + 14}" text-anchor="start">{x_low_label}</text>')
+    parts.append(f'<text x="{width - right_pad}" y="{baseline_y + 14}" text-anchor="end">{x_top_label}</text>')
+    parts.append(f'<text x="{left_pad - 4}" y="{top_pad + 8}" text-anchor="end">{y_top_label}</text>')
+    parts.append(f'<text x="{left_pad - 4}" y="{baseline_y + 2}" text-anchor="end">{y_low_label}</text>')
+    for p in points:
+        cx, cy = sx(p["x"]), sy(p["y"])
+        r = p.get("r", point_radius)
+        parts.append(
+            f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r}" fill="{point_color}" fill-opacity="0.65" />'
+        )
+    if annotate_top_n > 0:
+        keyfn = (lambda p: p.get(annotate_by, 0))
+        for p in sorted(points, key=keyfn, reverse=True)[:annotate_top_n]:
+            if not p.get("label"):
+                continue
+            cx, cy = sx(p["x"]), sy(p["y"])
+            parts.append(
+                f'<text x="{cx + 6:.1f}" y="{cy - 3:.1f}" text-anchor="start" class="scatter-anno">{escape(str(p["label"]))}</text>'
+            )
+    if x_label:
+        parts.append(
+            f'<text x="{left_pad + chart_w / 2:.1f}" y="{height - 4}" text-anchor="middle">{escape(x_label)}</text>'
+        )
+    if y_label:
+        cy = top_pad + chart_h / 2
+        parts.append(
+            f'<text x="10" y="{cy:.1f}" text-anchor="middle" transform="rotate(-90, 10, {cy:.1f})">{escape(y_label)}</text>'
+        )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _heatmap_svg(
+    cell_values: Dict[tuple, int],
+    *,
+    row_labels: List[str],
+    col_labels: List[str],
+    width: int = 480,
+    height: int = 340,
+    left_pad: int = 110,
+    top_pad: int = 70,
+    right_pad: int = 8,
+    bottom_pad: int = 4,
+    color_high: str = "#0b5394",
+    show_values_min: int = 1,
+    aria_label: str = "Heatmap",
+) -> str:
+    """Minimal categorical heatmap as inline SVG.
+
+    cell_values: {(row_label, col_label): int}. Missing cells render empty (0).
+    row_labels / col_labels: ordered lists; define grid dimensions.
+    color_high: hex color used for max intensity. Lower intensities are the
+        same color at reduced opacity (linear in count vs max).
+    show_values_min: render the numeric value in the cell when value >= this.
+    """
+    if not row_labels or not col_labels:
+        return (
+            f'<svg class="heatmap-chart" width="{width}" height="40" role="img" aria-label="empty">'
+            f'<text x="0" y="22">No data.</text></svg>'
+        )
+    grid_w = width - left_pad - right_pad
+    grid_h = height - top_pad - bottom_pad
+    cell_w = grid_w / len(col_labels)
+    cell_h = grid_h / len(row_labels)
+    max_v = max(cell_values.values()) if cell_values else 1
+    parts = [
+        f'<svg class="heatmap-chart" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="{escape(aria_label)}">'
+    ]
+    # row labels (right-aligned)
+    for i, rlbl in enumerate(row_labels):
+        y = top_pad + (i + 0.65) * cell_h
+        parts.append(
+            f'<text x="{left_pad - 4}" y="{y:.1f}" text-anchor="end" class="heatmap-label">{escape(_truncate_label(str(rlbl), 18))}</text>'
+        )
+    # col labels (rotated -45°)
+    for j, clbl in enumerate(col_labels):
+        x = left_pad + (j + 0.5) * cell_w
+        parts.append(
+            f'<text x="{x:.1f}" y="{top_pad - 6}" text-anchor="start" class="heatmap-label" '
+            f'transform="rotate(-45, {x:.1f}, {top_pad - 6})">{escape(_truncate_label(str(clbl), 14))}</text>'
+        )
+    # cells
+    for i, rlbl in enumerate(row_labels):
+        for j, clbl in enumerate(col_labels):
+            v = cell_values.get((rlbl, clbl), 0)
+            x = left_pad + j * cell_w
+            y = top_pad + i * cell_h
+            opacity = (v / max_v) if max_v else 0
+            # cell border so empty/low cells stay legible against the page
+            parts.append(
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{cell_w:.1f}" height="{cell_h:.1f}" '
+                f'fill="{color_high}" fill-opacity="{opacity:.3f}" stroke="var(--border, #ddd)" stroke-width="0.5" />'
+            )
+            if v >= show_values_min:
+                # legible foreground: dark for low opacity, white for high
+                fg = "var(--fg)" if opacity < 0.55 else "#fff"
+                cx = x + cell_w / 2
+                cy = y + cell_h * 0.65
+                parts.append(
+                    f'<text x="{cx:.1f}" y="{cy:.1f}" text-anchor="middle" class="heatmap-cell" fill="{fg}">{v}</text>'
+                )
     parts.append("</svg>")
     return "".join(parts)
 
@@ -2184,6 +2376,28 @@ Snapshot of the current 7d window — not a trend.</p>
                 f'{"s" if max_p["accounts"] != 1 else ""}.'
                 f'</p>'
             )
+            # Repeat-pressure scatter (SNAPSHOT, same window as the bars).
+            # The bar chart answers "where are labeled accounts?"; the scatter
+            # answers "where is force concentrated?". Y axis log-scale because
+            # ratios range from ~1× to several hundred×; a linear y would let
+            # one skyscraper bully the rest of the parking lot.
+            scatter_points = [
+                {
+                    "x": d["accounts"],
+                    "y": max(d["events_per_account"], 1.0),
+                    "label": d["family"],
+                }
+                for d in top10
+            ]
+            scatter_svg = _scatter_svg(
+                scatter_points,
+                width=480, height=220,
+                x_log=False, y_log=True,
+                x_label="Unique labeled accounts (7d)",
+                y_label="Events / account (log)",
+                annotate_top_n=3, annotate_by="y",
+                aria_label="Repeat-label pressure scatter: accounts vs events-per-account",
+            )
             hosting_locus_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
 <h2>Hosting locus &mdash; non-major PDSes</h2>
@@ -2192,6 +2406,9 @@ Bars count unique labeled accounts. Ratios show repeat-label pressure (events pe
 {nm_accounts:,} accounts across {nm_families} host families{tail_note}.</p>
 {bar_svg}
 {pressure_callout}
+<h3 style="margin-top:1.25rem;font-size:1.05rem;">Repeat-pressure scatter</h3>
+<p class="small">Same 10 families. Where is force concentrated, independent of population? Top-3 by pressure annotated. Snapshot of the current 7d window.</p>
+{scatter_svg}
 <p class="small" style="margin-top:0.5rem;color:var(--fg-muted);">Resolved via the driftwatch facts bridge.</p>
 </div>
 """
@@ -2275,6 +2492,132 @@ snapshot time, not event totals.</p>
 """
     except Exception as exc:
         log.warning("Contradiction inventory section failed: %s", exc)
+
+    # --- Churn / reversal quadrant (experimental) ---
+    # SNAPSHOT of behavioral state. Plots labelers in a 2D behavioral surface:
+    # x = churn_index alert fire count (30d), y = flip_flop alert fire count
+    # (30d), point size = log(events_7d). Filters to labelers with at least
+    # one alert in either rule OR with >5k events_7d so the plot doesn't
+    # become a clump at origin.
+    #
+    # Marked experimental: alert fire counts are an observed pattern, not
+    # intent or "weirdness verdict." The chart helps locate labelers worth
+    # looking at by hand, nothing more.
+    churn_reversal_section = ""
+    try:
+        cr_rows = conn.execute(
+            """
+            SELECT
+                l.labeler_did,
+                l.handle,
+                l.events_7d,
+                SUM(CASE WHEN a.rule_id = 'churn_index' AND a.ts >= datetime('now','-30 days')
+                         AND a.warmup_alert = 0 THEN 1 ELSE 0 END) AS churn,
+                SUM(CASE WHEN a.rule_id = 'flip_flop'   AND a.ts >= datetime('now','-30 days')
+                         AND a.warmup_alert = 0 THEN 1 ELSE 0 END) AS flip
+            FROM labelers l
+            LEFT JOIN alerts a ON a.labeler_did = l.labeler_did
+            WHERE l.likely_test_dev = 0
+            GROUP BY l.labeler_did
+            HAVING (churn > 0 OR flip > 0) AND (l.events_7d > 100 OR churn + flip >= 3)
+            """
+        ).fetchall()
+        if cr_rows and len(cr_rows) >= 3:
+            import math as _math
+            cr_points = []
+            for r in cr_rows:
+                ev = max(int(r["events_7d"] or 0), 1)
+                radius = max(3.0, min(10.0, 2.0 + _math.log10(ev)))
+                cr_points.append({
+                    "x": int(r["churn"]),
+                    "y": int(r["flip"]),
+                    "label": (r["handle"] or r["labeler_did"][:18]),
+                    "r": round(radius, 1),
+                })
+            cr_svg = _scatter_svg(
+                cr_points,
+                width=500, height=240,
+                x_log=False, y_log=False,
+                x_label="churn_index alerts (30d)",
+                y_label="flip_flop alerts (30d)",
+                annotate_top_n=4, annotate_by="y",
+                aria_label="Churn vs reversal quadrant: labeler behavioral surface (experimental)",
+            )
+            churn_reversal_section = f"""
+<div class="boundary-section" style="margin-top:1.5rem;">
+<h2>Churn vs reversal &mdash; behavioral quadrant <span class="badge badge-low-conf" style="font-size:0.7rem;vertical-align:middle;">experimental</span></h2>
+<p class="labeler-context">Behavioral surface of labelers with active alerts or non-trivial volume.
+X-axis: number of <code>churn_index</code> alerts in the last 30 days. Y-axis: number of
+<code>flip_flop</code> alerts. Point size scales with 7d event volume.
+Top-4 by reversal annotated. {len(cr_points)} labelers plotted.</p>
+{cr_svg}
+<p class="small" style="margin-top:0.4rem;color:var(--fg-muted);">Axes are observed alert-fire patterns, not intent. Experimental — the chart locates labelers worth looking at by hand, not verdicts.</p>
+</div>
+"""
+    except Exception as exc:
+        log.warning("Churn/reversal section failed: %s", exc)
+
+    # --- Conflict family heatmap (experimental) ---
+    # SNAPSHOT of the most recent contradiction-snapshot's family pair matrix.
+    # Thresholded surface — by construction, only pairs with at least one
+    # active contradiction edge appear. Absence in the heatmap does NOT imply
+    # no disagreement (it may mean below-threshold or unobserved pair).
+    conflict_heatmap_section = ""
+    try:
+        latest_row = conn.execute(
+            "SELECT MAX(computed_at) FROM boundary_edges WHERE edge_type='contradiction'"
+        ).fetchone()
+        latest_ts = latest_row[0] if latest_row else None
+        if latest_ts:
+            pair_rows = conn.execute(
+                """
+                SELECT top_family_a, top_family_b, COUNT(*) AS n
+                FROM boundary_edges
+                WHERE edge_type='contradiction' AND computed_at = ?
+                  AND top_family_a IS NOT NULL AND top_family_b IS NOT NULL
+                GROUP BY top_family_a, top_family_b
+                """,
+                (latest_ts,),
+            ).fetchall()
+            from collections import defaultdict as _dd
+            cell_map: Dict[tuple, int] = {}
+            fam_totals: Dict[str, int] = _dd(int)
+            for r in pair_rows:
+                a, b, n = r["top_family_a"], r["top_family_b"], int(r["n"])
+                cell_map[(a, b)] = n
+                fam_totals[a] += n
+                fam_totals[b] += n
+            top_fams = [f for f, _ in sorted(fam_totals.items(), key=lambda x: -x[1])[:12]]
+            if len(top_fams) >= 3:
+                # Restrict matrix to top families x top families
+                shown_cells = {
+                    (a, b): v
+                    for (a, b), v in cell_map.items()
+                    if a in set(top_fams) and b in set(top_fams)
+                }
+                heatmap_svg = _heatmap_svg(
+                    shown_cells,
+                    row_labels=top_fams, col_labels=top_fams,
+                    width=520, height=360,
+                    color_high="#0b5394",
+                    aria_label="Conflict heatmap: active contradiction edges by family pair (most recent snapshot)",
+                )
+                total_in_matrix = sum(shown_cells.values())
+                total_in_snapshot = sum(cell_map.values())
+                hm_human_ts = escape(str(latest_ts)[:16].replace("T", " ") + " UTC")
+                conflict_heatmap_section = f"""
+<div class="boundary-section" style="margin-top:1.5rem;">
+<h2>Conflict family heatmap <span class="badge badge-low-conf" style="font-size:0.7rem;vertical-align:middle;">experimental</span></h2>
+<p class="labeler-context">Active contradiction edges by family pair, most recent snapshot
+({hm_human_ts}). Top 12 families by edge involvement; rows = family A, columns = family B.
+Cell intensity scales with edge count. Matrix accounts for <strong>{total_in_matrix:,}</strong>
+of {total_in_snapshot:,} edges in the snapshot.</p>
+{heatmap_svg}
+<p class="small" style="margin-top:0.4rem;color:var(--fg-muted);">Thresholded surface: only pairs with at least one active edge appear. Absence does not imply no disagreement (may be below threshold or unobserved pair). Same classifier-drift caveat as the contradiction surface above.</p>
+</div>
+"""
+    except Exception as exc:
+        log.warning("Conflict heatmap section failed: %s", exc)
 
     # --- Triage view with tabs ---
     tab_bar = f"""
@@ -2721,6 +3064,8 @@ events. This is a flow graph — event volume per day, not active inventory.</p>
         + concentration_section
         + hosting_locus_section
         + contradiction_inventory_section
+        + churn_reversal_section
+        + conflict_heatmap_section
         + boundary_finding
         + recent_alerts_card
         + registry_card
