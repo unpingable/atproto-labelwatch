@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import logging
 import statistics
+import threading
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -54,6 +55,24 @@ from .authority_inventory import _resolve_val_effect
 from .label_family import AUTHORITY_EFFECT_ORDER, normalize_family
 
 log = logging.getLogger(__name__)
+
+# --- Result cache ---------------------------------------------------------
+# Coarse cache: store the full computed result keyed by `days`, with a TTL.
+# Cheaper than the per-day shard pattern used for authority because lifetime
+# is fundamentally a cross-day state machine — we can't honestly assemble
+# 30d from 30 cached single-day shards (a label added on day 1 might close
+# on day 28; per-day shards lose that pairing).
+#
+# TTL is set to match the report cycle (3600s). Sequential cycles within
+# the same process serve from cache. Stale entries trigger a recompute
+# (logged). On restart the cache is empty and the first request pays full
+# cold cost (~270s on prod 30d).
+#
+# Build label_state incrementally is the v2+ path if this cache + cycle
+# interval ever stop being enough.
+_LIFETIME_RESULT_CACHE: Dict[int, Tuple[Dict[str, Any], datetime]] = {}
+_LIFETIME_CACHE_LOCK = threading.Lock()
+_LIFETIME_CACHE_TTL_S = 3600
 
 
 def _parse_ts(s: Optional[str]) -> Optional[datetime]:
@@ -77,6 +96,11 @@ def _parse_ts(s: Optional[str]) -> Optional[datetime]:
 def label_lifetime_by_effect(conn, days: int = 30) -> Dict[str, Any]:
     """Add-cohort lifetime by authority_effect over the last `days` days.
 
+    Cached: identical days arg served from process memory until TTL expiry
+    (see _LIFETIME_CACHE_TTL_S). Cache hits log at INFO with age; misses
+    log compute duration. Cold cost is high (~270s on prod 30d); the cache
+    keeps subsequent in-process cycles cheap.
+
     See module docstring for the v1 contract. Returns:
 
     {
@@ -99,10 +123,44 @@ def label_lifetime_by_effect(conn, days: int = 30) -> Dict[str, Any]:
       "totals": {
         "added_cohort": int, "removed_closed": int, "still_open": int,
       },
-      "sql_query_seconds": float,
-      "compute_seconds": float,
+      "sql_query_seconds":   float,
+      "compute_seconds":     float,
+      "served_from_cache":   bool,
+      "cache_age_seconds":   float | None,
     }
     """
+    now = datetime.now(timezone.utc)
+    with _LIFETIME_CACHE_LOCK:
+        cached = _LIFETIME_RESULT_CACHE.get(days)
+    if cached is not None:
+        result, computed_at = cached
+        age = (now - computed_at).total_seconds()
+        if age < _LIFETIME_CACHE_TTL_S:
+            log.info(
+                "label_lifetime_by_effect(days=%d): cache HIT (age=%.0fs, ttl=%ds)",
+                days, age, _LIFETIME_CACHE_TTL_S,
+            )
+            # Annotate with serve-from-cache + age so callers can render
+            # freshness in the section footer without re-storing the dict.
+            return {**result, "served_from_cache": True, "cache_age_seconds": round(age, 1)}
+        log.info(
+            "label_lifetime_by_effect(days=%d): cache STALE (age=%.0fs, ttl=%ds), recomputing",
+            days, age, _LIFETIME_CACHE_TTL_S,
+        )
+
+    log.info("label_lifetime_by_effect(days=%d): cache MISS, computing", days)
+    result = _compute_label_lifetime_by_effect(conn, days)
+    log.info(
+        "label_lifetime_by_effect(days=%d): computed in sql=%.2fs compute=%.2fs",
+        days, result.get("sql_query_seconds", 0.0), result.get("compute_seconds", 0.0),
+    )
+    with _LIFETIME_CACHE_LOCK:
+        _LIFETIME_RESULT_CACHE[days] = (result, datetime.now(timezone.utc))
+    return {**result, "served_from_cache": False, "cache_age_seconds": 0.0}
+
+
+def _compute_label_lifetime_by_effect(conn, days: int) -> Dict[str, Any]:
+    """Compute the lifetime result without caching. See label_lifetime_by_effect."""
     now = datetime.now(timezone.utc)
     end = now.replace(microsecond=0)
     start = end - timedelta(days=days)
