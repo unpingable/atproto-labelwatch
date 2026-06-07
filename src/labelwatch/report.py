@@ -1043,20 +1043,24 @@ def _heatmap_svg(
         f'<svg class="heatmap-chart" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}" role="img" aria-label="{escape(aria_label)}">'
     ]
-    # row labels (right-aligned)
+    # row labels (right-aligned) — full name in <title> for hover
     for i, rlbl in enumerate(row_labels):
         y = top_pad + (i + 0.65) * cell_h
+        truncated = _truncate_label(str(rlbl), 14)
         parts.append(
-            f'<text x="{left_pad - 4}" y="{y:.1f}" text-anchor="end" class="heatmap-label">{escape(_truncate_label(str(rlbl), 18))}</text>'
+            f'<text x="{left_pad - 4}" y="{y:.1f}" text-anchor="end" class="heatmap-label">'
+            f'<title>{escape(str(rlbl))}</title>{escape(truncated)}</text>'
         )
-    # col labels (rotated -45°)
+    # col labels (rotated -45°) — full name in <title> for hover
     for j, clbl in enumerate(col_labels):
         x = left_pad + (j + 0.5) * cell_w
+        truncated = _truncate_label(str(clbl), 12)
         parts.append(
             f'<text x="{x:.1f}" y="{top_pad - 6}" text-anchor="start" class="heatmap-label" '
-            f'transform="rotate(-45, {x:.1f}, {top_pad - 6})">{escape(_truncate_label(str(clbl), 14))}</text>'
+            f'transform="rotate(-45, {x:.1f}, {top_pad - 6})">'
+            f'<title>{escape(str(clbl))}</title>{escape(truncated)}</text>'
         )
-    # cells
+    # cells — <title> shows "row × col: count" on hover
     for i, rlbl in enumerate(row_labels):
         for j, clbl in enumerate(col_labels):
             v = cell_values.get((rlbl, clbl), 0)
@@ -1066,7 +1070,8 @@ def _heatmap_svg(
             # cell border so empty/low cells stay legible against the page
             parts.append(
                 f'<rect x="{x:.1f}" y="{y:.1f}" width="{cell_w:.1f}" height="{cell_h:.1f}" '
-                f'fill="{color_high}" fill-opacity="{opacity:.3f}" stroke="var(--border, #ddd)" stroke-width="0.5" />'
+                f'fill="{color_high}" fill-opacity="{opacity:.3f}" stroke="var(--border, #ddd)" stroke-width="0.5">'
+                f'<title>{escape(str(rlbl))} × {escape(str(clbl))}: {v}</title></rect>'
             )
             if v >= show_values_min:
                 # legible foreground: dark for low opacity, white for high
@@ -2124,8 +2129,9 @@ document.getElementById('climate-form').addEventListener('submit', function(e) {
             boundary_cards = (
                 f'<p style="font-size:1.1rem;margin:0.5rem 0 0.25rem 0;">{headline}</p>'
                 f'<p class="small" style="opacity:0.7;margin-top:0;">'
-                f'{mod_events:,} moderation boundary events observed; '
-                f'only pairs with 2+ shared targets are surfaced here.'
+                f'{mod_events:,} surfaced moderation boundary edges (7d, moderation-domain only); '
+                f'only pairs with 2+ shared targets are surfaced here. '
+                f'Subset of the Contradiction surface above (which counts all classifier edge types).'
                 f'</p>'
             )
             # Fight pairs table (moderation conflicts only)
@@ -2526,11 +2532,13 @@ account (repeat-label pressure).</p>
 <div class="boundary-section" style="margin-top:1.5rem;">
 <h2 id="contradictions">Contradiction surface</h2>
 <p class="labeler-context" style="font-size:1.0rem;">
-<strong>{latest['total']:,} active contradictions</strong> between labelers in
-the current 24h boundary window ({latest_snap_human}). Below: that count over
-time, classified by disagreement type. Stock graph — daily snapshots of the
+<strong>{latest['total']:,} active contradiction edges</strong> in the current 24h
+boundary window ({latest_snap_human}) — full classifier taxonomy: ontology /
+metadata / badge edges in addition to moderation-domain ones. Below: that count
+over time, classified by disagreement type. Stock graph — daily snapshots of the
 rolling 24h boundary window, counts are edges present at snapshot time, not
-event totals.</p>
+event totals. The Labeler Conflicts section further down is the narrower
+threshold-filtered subset (moderation-domain pairs with &ge;2 shared targets).</p>
 <p class="use-for"><strong>Use this to see:</strong> whether the volume and mix of active contradictions between labelers is changing day to day. <strong>Not for:</strong> deciding which labeler in a disagreement is correct.</p>
 {ci_svg}
 {ci_legend}
@@ -2879,8 +2887,8 @@ cell intensity scales with edge count.</p>
     if mod_conflicts > 0:
         weather_signals.append("conflicted")
         weather_attributions.append(
-            f"{mod_conflicts} cross-labeler contradiction edge"
-            f"{'s' if mod_conflicts != 1 else ''}"
+            f"{mod_conflicts} surfaced moderation-conflict edge"
+            f"{'s' if mod_conflicts != 1 else ''} (7d)"
         )
     if churn_alerts_24h > 50:
         weather_signals.append("churny")
