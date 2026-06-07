@@ -39,6 +39,29 @@ Acceptance invariants (asserted in compute path)
   removed_closed + still_open == added_cohort      (per effect bucket)
   all closed lifetimes >= 0
   unknown authority_effect bucket is included, not silently dropped
+
+v2 follow-ups (filed; not started)
+----------------------------------
+- Pre-window active-state disambiguation: query last-event-per-key before
+  window_start so a positive at window start can be classified as
+  reassert (pre-existing) vs new add. Currently treated as new add;
+  documented bias.
+- Unknown instant-cancel decomposition: ~273k unknown cohorts close
+  within seconds of being added (median 0.0h on prod). Likely classifier
+  test-then-cancel or behavior debt. Surface as its own category instead
+  of contaminating the median.
+- Survival/censoring analysis: v1 reports open_share and excludes opens
+  from median/p90. v2 could use Kaplan–Meier or a parametric survival
+  estimator for "fraction of cohort surviving N hours" curves.
+- Incremental label_state materialization: a denormalized
+  (labeler_did, uri, val, current_state, last_change_at) table updated
+  on every ingest would make this O(table-size) instead of O(events).
+  Real schema/write-path work; only worth it if the coarse result cache
+  stops being enough.
+- Composite index investigation: idx_label_events_ts is used for the
+  range filter but ORDER BY (labeler_did, uri, val, ts) requires a
+  TEMP B-TREE sort. An index on (labeler_did, uri, val, ts) would let
+  the sort be free, at the cost of ~1 extra index for every label_event.
 """
 from __future__ import annotations
 

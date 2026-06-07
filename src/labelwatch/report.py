@@ -3059,6 +3059,118 @@ addition that would pull volume out of unknown into a proper category.</p>
     except Exception as exc:
         log.warning("Unknown decomposition section failed: %s", exc)
 
+    # --- Label duration / claim persistence (add-cohort lifetime) ---
+    # DURATION view (new fourth graph-semantics class). v1 contract: labels
+    # added in the 30d window paired with the first subsequent negation for
+    # the same (labeler_did, uri, val) key; absent negation -> right-censored
+    # at window_end. Median/p90 describe CLOSED intervals only, NOT all
+    # labels. See lifetime.py module docstring.
+    label_duration_section = ""
+    try:
+        from .lifetime import label_lifetime_by_effect, _LIFETIME_CACHE_TTL_S
+        ld = label_lifetime_by_effect(conn, days=30)
+        totals = ld["totals"]
+        added = totals["added_cohort"]
+        if added > 0:
+            closed = totals["removed_closed"]
+            open_count = totals["still_open"]
+            open_share_pct = round(100.0 * open_count / added, 1)
+
+            def _fmt_life(s):
+                if s is None:
+                    return "&mdash;"
+                if s < 60:
+                    return "&lt;1 min"
+                if s < 3600:
+                    return f"{s/60:.0f} min"
+                if s < 86400:
+                    return f"{s/3600:.1f} h"
+                return f"{s/86400:.1f} d"
+
+            duration_rows = []
+            for eff in (
+                "enforcement_instruction", "visibility_affecting", "advisory",
+                "reputational", "descriptive", "telemetry", "decorative", "unknown",
+            ):
+                s = ld["by_effect"][eff]
+                ad = s["added_cohort"]
+                cl = s["removed_closed"]
+                op = s["still_open"]
+                os_pct = round(100.0 * op / ad, 1) if ad else 0
+                med = _fmt_life(s["median_closed_lifetime_s"])
+                p90_val = _fmt_life(s["p90_closed_lifetime_s"])
+                ra = s["reassertions_ignored"]
+                duration_rows.append(
+                    f"<tr><td>{escape(eff)}</td>"
+                    f"<td>{ad:,}</td><td>{cl:,}</td><td>{op:,}</td>"
+                    f"<td>{os_pct}%</td><td>{med}</td><td>{p90_val}</td>"
+                    f"<td>{ra:,}</td></tr>"
+                )
+            duration_rows_html = "".join(duration_rows)
+
+            enf = ld["by_effect"]["enforcement_instruction"]
+            vis = ld["by_effect"]["visibility_affecting"]
+            rep = ld["by_effect"]["reputational"]
+            tel = ld["by_effect"]["telemetry"]
+            tel_close_pct = (
+                round(100.0 * tel["removed_closed"] / tel["added_cohort"], 1)
+                if tel["added_cohort"] else 0
+            )
+            tel_med = _fmt_life(tel["median_closed_lifetime_s"])
+
+            if ld.get("served_from_cache"):
+                cache_note = (
+                    f"served from cache (age {ld['cache_age_seconds']:.0f}s, "
+                    f"TTL {_LIFETIME_CACHE_TTL_S}s)"
+                )
+            else:
+                cache_note = (
+                    f"computed fresh (sql {ld['sql_query_seconds']:.1f}s + "
+                    f"compute {ld['compute_seconds']:.2f}s)"
+                )
+
+            label_duration_section = f"""
+<div class="boundary-section" id="duration" style="margin-top:1.5rem;">
+<h2>Label duration &mdash; claim persistence</h2>
+<p class="labeler-context" style="font-size:1.0rem;">
+<strong>Most labels added in the last 30d remain open at window end:</strong>
+{open_count:,} of {added:,} add-cohort labels, or <strong>{open_share_pct}%</strong>.
+Below: per authority effect, how many add-cohorts opened, how many closed
+within the observation window, and the closed-interval lifetime distribution.
+Right-censored opens (labels still active at window end) are reported
+separately and excluded from median/p90.</p>
+
+<p class="use-for"><strong>Use this to:</strong> see whether labels are durable claims, temporary noise, or rapid-fire reversible posture. <strong>Not for:</strong> claiming any label is "permanent" — we only see the 30d window; pre-window opens and post-window closures are invisible.</p>
+
+<ul style="margin:0.5rem 0 0.75rem 1.2rem; line-height:1.55;">
+  <li><strong>Consequential labels rarely close in-window.</strong> Enforcement: {enf['removed_closed']} closures of {enf['added_cohort']:,} adds. Visibility-affecting: {vis['removed_closed']} closures of {vis['added_cohort']:,} adds.</li>
+  <li><strong>Reputational lifecycle is reassertion-heavy.</strong> {rep['reassertions_ignored']:,} reassertions counted against {rep['added_cohort']:,} add-cohorts — labelers re-tagging the same accounts is the dominant motion, not new claim formation.</li>
+  <li><strong>Telemetry actually moves.</strong> ~{tel_close_pct}% closed within window, with closed-interval median around {tel_med}.</li>
+  <li><strong>Unknown shows near-instant closures.</strong> Likely test-emit-then-cancel patterns or classifier-coverage debt; treat as v2 instrumentation work, not a stable lifecycle finding.</li>
+</ul>
+
+<table>
+<thead><tr>
+<th>authority effect</th>
+<th>add cohort</th>
+<th>closed in window</th>
+<th>still open at window end</th>
+<th>open share</th>
+<th>median closed lifetime</th>
+<th>p90 closed lifetime</th>
+<th>reassertions observed</th>
+</tr></thead>
+<tbody>{duration_rows_html}</tbody>
+</table>
+
+<p class="small" style="margin-top:0.5rem;">Closed-interval lifetime stats describe only labels observed to close. They do not characterize all labels — most labels in every bucket remain open at window end. Pre-window state is unknown (v2 follow-up); a label active before the window may appear as a new add at window start, slightly inflating add cohorts and deflating median lifetimes.</p>
+
+<p class="small" style="margin-top:0.4rem;color:var(--fg-muted);">30-day add-cohort. {cache_note}.</p>
+</div>
+"""
+    except Exception as exc:
+        log.warning("Label duration section failed: %s", exc)
+
     # --- Authority-effect over time (daily event volume by classification) ---
     # FLOW graph (event counts per day) — distinct from the contradiction
     # surface, which is stock. Caption is explicit so a reader doesn't infer
@@ -3204,6 +3316,7 @@ events per day, not active inventory.</p>
         + (
             '<nav class="jump-nav" aria-label="Section jump links">'
             '<a href="#authority">Authority</a>'
+            '<a href="#duration">Duration</a>'
             '<a href="#concentration">Concentration</a>'
             '<a href="#hosting">Hosting</a>'
             '<a href="#contradictions">Contradictions</a>'
@@ -3218,13 +3331,15 @@ events per day, not active inventory.</p>
             '<strong>flow</strong> graphs count events per time bucket (e.g. authority-effect daily volume); '
             '<strong>snapshot inventory</strong> graphs count entities present at observation time (e.g. contradiction surface); '
             '<strong>snapshot distribution</strong> graphs describe the shape of a single window (e.g. concentration curve, hosting locus); '
-            '<strong>thresholded surfaces</strong> show only entries above a display cutoff (e.g. conflict heatmap, churn/reversal quadrant) — absence does not imply none.'
+            '<strong>thresholded surfaces</strong> show only entries above a display cutoff (e.g. conflict heatmap, churn/reversal quadrant) — absence does not imply none; '
+            '<strong>duration</strong> views follow add-cohorts and right-censored open labels (e.g. label duration) — closed-lifetime summaries describe only labels observed to close.'
             '</div>'
         )
         + f'<div id="authority">{authority_posture_section}</div>'
         + authority_over_time_section
         + authority_link_card
         + unknown_debt_section
+        + label_duration_section
         + reference_lane
         + hosting_section
         + concentration_section
