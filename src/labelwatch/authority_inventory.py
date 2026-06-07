@@ -327,6 +327,119 @@ def daily_authority_effect_counts(conn, days: int = 30) -> list[dict]:
     ]
 
 
+def unknown_decomposition(conn, days: int = 7) -> Dict[str, Any]:
+    """Decompose the authority_effect=unknown bucket into actionable debt.
+
+    The unknown bucket is publicly framed as "classifier/coverage debt" rather
+    than a clean authority posture. This function produces the debt ledger:
+    which label values and which labelers are responsible for most of it, so
+    the AUTHORITY_EFFECT_MAP gets a concrete top-N list to work through.
+
+    Returns:
+      total_unknown_events     — sum of unknown event_count in window
+      total_events             — sum of all event_count in window (for share)
+      window_days              — input
+      top_vals                 — [{val, family, event_count, labeler_count,
+                                   target_count}, ...] top 20 unknown vals
+      top_labelers             — [{labeler_did, handle, labeler_class,
+                                   unknown_volume, total_volume,
+                                   unknown_share_of_own_output}, ...] top 20
+      by_class                 — {labeler_class: unknown_volume, ...}
+      concentration            — {top10_val_share, top5_labeler_share} (0..1)
+    """
+    now = datetime.now(timezone.utc)
+    end = now.replace(microsecond=0)
+    start = end - timedelta(days=days)
+    end_iso = end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    start_iso = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Reuse the inventory pipeline for top unknown vals (already sorted desc
+    # within the unknown group). The inventory also already handles the
+    # labeler-default fallback for unknown resolution.
+    inv = build_authority_effect_inventory(conn, start_iso, end_iso)
+    unknown_group = inv["groups"].get("unknown", {})
+    top_vals = unknown_group.get("labels", [])[:20]
+    total_unknown_events_from_inv = unknown_group.get("event_count", 0)
+    total_events_in_window = inv.get("total_event_count", 0) or 0
+
+    # Per-labeler unknown volume requires re-aggregating at the (val,
+    # labeler_did) grain and classifying each row against the global per-val
+    # labeler set (so the fallback resolution matches the inventory).
+    rows = conn.execute(
+        """
+        SELECT val, labeler_did, COUNT(*) AS event_count
+        FROM label_events
+        WHERE ts >= ? AND ts < ? AND neg = 0
+        GROUP BY val, labeler_did
+        """,
+        (start_iso, end_iso),
+    ).fetchall()
+
+    per_val_labelers: Dict[str, set[str]] = defaultdict(set)
+    for r in rows:
+        per_val_labelers[r["val"]].add(r["labeler_did"])
+
+    unknown_per_labeler: Dict[str, int] = defaultdict(int)
+    total_per_labeler: Dict[str, int] = defaultdict(int)
+    for r in rows:
+        val = r["val"]
+        did = r["labeler_did"]
+        n = int(r["event_count"] or 0)
+        total_per_labeler[did] += n
+        family = normalize_family(val)
+        effect, _ = _resolve_val_effect(family, per_val_labelers[val])
+        if effect == "unknown":
+            unknown_per_labeler[did] += n
+
+    # Resolve labeler metadata (handle + class) for the top-labelers table.
+    meta_rows = conn.execute(
+        "SELECT labeler_did, handle, labeler_class FROM labelers"
+    ).fetchall()
+    meta = {r["labeler_did"]: dict(r) for r in meta_rows}
+
+    top_labelers = sorted(
+        (
+            {
+                "labeler_did": did,
+                "handle": (meta.get(did) or {}).get("handle"),
+                "labeler_class": (meta.get(did) or {}).get("labeler_class") or "unknown",
+                "unknown_volume": vol,
+                "total_volume": total_per_labeler.get(did, 0),
+                "unknown_share_of_own_output": (
+                    round(100.0 * vol / total_per_labeler[did], 1)
+                    if total_per_labeler.get(did) else 0.0
+                ),
+            }
+            for did, vol in unknown_per_labeler.items()
+        ),
+        key=lambda x: -x["unknown_volume"],
+    )[:20]
+
+    by_class: Dict[str, int] = defaultdict(int)
+    for did, vol in unknown_per_labeler.items():
+        cls = (meta.get(did) or {}).get("labeler_class") or "unknown"
+        by_class[cls] += vol
+
+    total_unknown = sum(unknown_per_labeler.values())
+    # Concentration: top-N share of total unknown — tells the reader whether
+    # unknown is broadly distributed or a few outliers.
+    top10_val_vol = sum(int(v.get("event_count", 0)) for v in top_vals[:10])
+    top5_labeler_vol = sum(int(l["unknown_volume"]) for l in top_labelers[:5])
+    return {
+        "total_unknown_events": total_unknown,
+        "total_unknown_events_from_inv": total_unknown_events_from_inv,
+        "total_events": total_events_in_window,
+        "window_days": days,
+        "top_vals": top_vals,
+        "top_labelers": top_labelers,
+        "by_class": dict(by_class),
+        "concentration": {
+            "top10_val_share": (top10_val_vol / total_unknown) if total_unknown else 0.0,
+            "top5_labeler_share": (top5_labeler_vol / total_unknown) if total_unknown else 0.0,
+        },
+    }
+
+
 def build_per_labeler_authority_inventories(
     conn,
     start_ts: str,

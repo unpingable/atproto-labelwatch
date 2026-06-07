@@ -2983,6 +2983,82 @@ cell intensity scales with edge count.</p>
     except Exception as exc:
         log.warning("Authority-effect inventory failed: %s", exc)
 
+    # --- Unknown decomposition (classifier debt ledger) ---
+    # The unknown bucket is publicly framed as instrumentation debt; this
+    # section shows which vals and labelers drive it so the
+    # AUTHORITY_EFFECT_MAP gets a concrete top-N list to work through.
+    unknown_debt_section = ""
+    try:
+        from .authority_inventory import unknown_decomposition
+        ud = unknown_decomposition(conn, days=7)
+        ud_total = ud["total_unknown_events"]
+        if ud_total > 0:
+            ud_share_of_network = (
+                round(100.0 * ud_total / ud["total_events"], 1)
+                if ud["total_events"] else 0.0
+            )
+            top10_val_share = round(100.0 * ud["concentration"]["top10_val_share"], 1)
+            top5_lab_share = round(100.0 * ud["concentration"]["top5_labeler_share"], 1)
+
+            # Top vals table
+            val_rows_html = "".join(
+                f'<tr><td><code>{escape(v.get("value", ""))}</code></td>'
+                f'<td><code>{escape(v.get("family", ""))}</code></td>'
+                f'<td>{int(v.get("event_count", 0)):,}</td>'
+                f'<td>{int(v.get("labeler_count", 0))}</td></tr>'
+                for v in ud["top_vals"][:15]
+            )
+            val_table = (
+                '<table><thead><tr><th>label value</th><th>family</th>'
+                '<th>events (7d)</th><th>labelers emitting</th></tr></thead>'
+                f'<tbody>{val_rows_html}</tbody></table>'
+            )
+
+            # Top labelers table
+            lab_rows_html = "".join(
+                f'<tr><td>{_labeler_link(l["labeler_did"], handles, display_names)}</td>'
+                f'<td>{escape(l.get("labeler_class") or "unknown")}</td>'
+                f'<td>{int(l["unknown_volume"]):,}</td>'
+                f'<td>{l["unknown_share_of_own_output"]}%</td></tr>'
+                for l in ud["top_labelers"][:15]
+            )
+            lab_table = (
+                '<table><thead><tr><th>labeler</th><th>class</th>'
+                '<th>unknown volume (7d)</th><th>share of own 7d output</th></tr></thead>'
+                f'<tbody>{lab_rows_html}</tbody></table>'
+            )
+
+            # By-class one-liner
+            if ud["by_class"]:
+                class_phrase = "; ".join(
+                    f"{escape(cls)}: {vol:,}"
+                    for cls, vol in sorted(ud["by_class"].items(), key=lambda kv: -kv[1])
+                )
+            else:
+                class_phrase = "no breakdown available"
+
+            unknown_debt_section = f"""
+<div class="boundary-section" id="unknown-debt" style="margin-top:1.5rem;">
+<h2>Unknown &mdash; classifier debt ledger</h2>
+<p class="labeler-context" style="font-size:1.0rem;">
+<strong>{ud_total:,} events</strong> ({ud_share_of_network}% of 7d network volume) sit in the
+authority-effect <code>unknown</code> bucket. Top 10 label values account for
+<strong>{top10_val_share}%</strong> of unknown volume; top 5 labelers for
+<strong>{top5_lab_share}%</strong>. Below: which values and which labelers
+drive the bucket. Each top-volume entry is a candidate AUTHORITY_EFFECT_MAP
+addition that would pull volume out of unknown into a proper category.</p>
+<p class="use-for"><strong>Use this to:</strong> prioritize classifier coverage work. <strong>Not for:</strong> inferring intent or misbehavior — unknown means we have not classified the label, not that the labeler is doing something wrong.</p>
+<h3 style="margin-top:1rem;font-size:1.0rem;">Top unknown label values (7d)</h3>
+{val_table}
+<h3 style="margin-top:1rem;font-size:1.0rem;">Top labelers by unknown volume (7d)</h3>
+{lab_table}
+<p class="small" style="margin-top:0.5rem;">By labeler class: {class_phrase}.</p>
+<p class="small" style="margin-top:0.4rem;color:var(--fg-muted);">Unknown is classifier/coverage debt, not a clean authority posture. High-volume unknown values are candidates for review and possible AUTHORITY_EFFECT_MAP additions. As entries get classified, the bucket shrinks.</p>
+</div>
+"""
+    except Exception as exc:
+        log.warning("Unknown decomposition section failed: %s", exc)
+
     # --- Authority-effect over time (daily event volume by classification) ---
     # FLOW graph (event counts per day) — distinct from the contradiction
     # surface, which is stock. Caption is explicit so a reader doesn't infer
@@ -3148,6 +3224,7 @@ events per day, not active inventory.</p>
         + f'<div id="authority">{authority_posture_section}</div>'
         + authority_over_time_section
         + authority_link_card
+        + unknown_debt_section
         + reference_lane
         + hosting_section
         + concentration_section
