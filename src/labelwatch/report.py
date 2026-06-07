@@ -2078,15 +2078,46 @@ Bars count unique labeled accounts. Ratios show repeat-label pressure (events pe
             ) + '</div>'
             latest = ci_buckets[-1]
             latest_snap_human = escape(str(latest["snapshot_at"])[:16].replace("T", " ") + " UTC")
+            # Empty-series note: keep the full classifier vocabulary in the legend
+            # but name the absence so a reader doesn't infer "this never happens
+            # anywhere." Absence is scoped to THIS 30-day snapshot series; other
+            # conflict surfaces (e.g. the active conflicts table) may have
+            # different windows/thresholds and surface those same types.
+            empty_labels = [
+                s["label"] for s in ci_series
+                if not any(b["values"].get(s["key"], 0) for b in ci_buckets)
+            ]
+            if not empty_labels:
+                empty_note_html = ""
+            else:
+                if len(empty_labels) == 1:
+                    names = empty_labels[0]
+                    verb = "is"
+                    aux = "does"
+                elif len(empty_labels) == 2:
+                    names = f"{empty_labels[0]} and {empty_labels[1]}"
+                    verb = "are"
+                    aux = "do"
+                else:
+                    names = ", ".join(empty_labels[:-1]) + f", and {empty_labels[-1]}"
+                    verb = "are"
+                    aux = "do"
+                empty_note_html = (
+                    f'<p class="small" style="margin:0.4rem 0 0 0;">'
+                    f'Empty series are retained intentionally: {escape(names)} {verb} defined '
+                    f'but {aux} not appear in this 30-day snapshot series.'
+                    f'</p>'
+                )
             contradiction_inventory_section = f"""
 <div class="boundary-section" style="margin-top:1.5rem;">
-<h2>Contradiction inventory</h2>
+<h2>Contradiction surface</h2>
 <p class="labeler-context">Active contradiction edges by type, daily snapshot.
 Last snapshot ({latest_snap_human}): <strong>{latest['total']:,}</strong> active edges.
 Daily snapshots of the rolling 24h boundary window &mdash; counts are edges present at
 snapshot time, not event totals.</p>
 {ci_svg}
 {ci_legend}
+{empty_note_html}
 <p class="small" style="margin-top:0.4rem;color:var(--fg-muted);">Classified at render time by the current disagreement taxonomy. Classifier changes shift historical reads.</p>
 </div>
 """
