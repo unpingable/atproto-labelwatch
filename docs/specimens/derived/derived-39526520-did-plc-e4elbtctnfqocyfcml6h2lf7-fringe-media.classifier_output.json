@@ -1,0 +1,68 @@
+{
+  "schema_kind": "classifier_output",
+  "derived_from": "derived-39526520-did-plc-e4elbtctnfqocyfcml6h2lf7-fringe-media.evidence.json",
+  "ConversionGap": {
+    "name": "conversion_witness_gap_no_consumer",
+    "surface": null
+  },
+  "admissible_claims": [
+    {
+      "id": "label_exists",
+      "scope": "this specimen",
+      "claim": "A label record with label_value='fringe-media' exists on at://did:plc:flijdq6nzuscczuhvv2lt7bp/app.bsky.feed.post/3mnryat75h22q, issued by skywatch.blue at 2026-06-08T15:24:21.917258Z.",
+      "derivation_basis": [
+        "LabelObservation"
+      ]
+    },
+    {
+      "id": "no_rule_for_consumer",
+      "scope": "PolicyDocumentation.consumer (bsky.app-default-client)",
+      "claim": "Under the named consumer's published policy pipeline at the pinned artifact, no rule exists that maps this label_value to any render action.",
+      "derivation_basis": [
+        "PolicyDocumentation.policy_artifact_searched"
+      ]
+    },
+    {
+      "id": "no_constraint_derivable_for_consumer",
+      "scope": "consumer=bsky.app-default-client + EvidenceBundle",
+      "claim": "From this evidence bundle, no constraint may be derived for the named consumer from this label record.",
+      "derivation_basis": [
+        "LabelObservation",
+        "PolicyDocumentation"
+      ],
+      "qualifier": "Epistemic non-derivation, not a factual assertion of non-occurrence. Scoped to the named consumer."
+    }
+  ],
+  "inadmissible_claims": [
+    {
+      "id": "no_laundering",
+      "claim_form": "label_observed entails render_observed",
+      "why_inadmissible": "Laundering: collapses producer/consumer/enforcer distinction. label_observed alone does not derive render_observed. The no-laundering theorem forbids this derivation."
+    },
+    {
+      "id": "no_individual_render_claim",
+      "claim_form": "This post was rendered with action X for user U at time T",
+      "why_inadmissible": "Requires RenderObservation, which is absent. Cannot be derived from LabelObservation + PolicyDocumentation alone."
+    },
+    {
+      "id": "no_population_render_claim",
+      "claim_form": "All renders of this post produce the documented action",
+      "why_inadmissible": "Population claim. Policy may be configurable; viewer may override; live client may run a different policy version. Requires probe campaign with defined sampling frame, not derivation from this evidence bundle."
+    },
+    {
+      "id": "no_global_non_occurrence",
+      "claim_form": "This label produced no constraint anywhere",
+      "why_inadmissible": "Factual non-occurrence claim. The evidence bundle is silent over other consumer configurations; inferring a global negative from a scoped derivation is the laundering shape in reverse. Per the derivation frame: evidence bundles derive admissible claims, they do not assert factual non-occurrence."
+    },
+    {
+      "id": "no_meaning_judgment",
+      "claim_form": "The label is meaningless / unimportant",
+      "why_inadmissible": "Out of scope. Labelwatch observes; whether testimony is meaningful is a different judgment requiring different inputs. The calculus must remain silent on importance."
+    },
+    {
+      "id": "no_labeler_effect_claim",
+      "claim_form": "The labeler's labeling activity has no operational effect",
+      "why_inadmissible": "Adoption is a free variable. The evidence bundle documents one consumer's zero-conversion case; it does not measure the labeler's reach across all possible consumer configurations."
+    }
+  ]
+}

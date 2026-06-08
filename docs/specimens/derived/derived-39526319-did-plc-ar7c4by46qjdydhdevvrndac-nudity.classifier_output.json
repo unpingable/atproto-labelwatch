@@ -1,0 +1,53 @@
+{
+  "schema_kind": "classifier_output",
+  "derived_from": "derived-39526319-did-plc-ar7c4by46qjdydhdevvrndac-nudity.evidence.json",
+  "ConversionGap": {
+    "name": "execution_gap_policy_present",
+    "surface": "client_render"
+  },
+  "admissible_claims": [
+    {
+      "id": "label_exists",
+      "scope": "this specimen",
+      "claim": "A label record with label_value='nudity' exists on at://did:plc:d47xuv5i3zdqtnag2o4iiwaa/app.bsky.feed.post/3lqi2wmifkk2j, issued by moderation.bsky.app at 2026-06-08T15:24:15.550157Z.",
+      "derivation_basis": [
+        "LabelObservation"
+      ]
+    },
+    {
+      "id": "policy_rule_documented",
+      "scope": "PolicyDocumentation.consumer (bsky.app-default-client)",
+      "claim": "The published policy at the pinned artifact maps the label_value to action: <unspecified action>, under the documented render_context.",
+      "derivation_basis": [
+        "PolicyDocumentation.policy_artifact"
+      ]
+    },
+    {
+      "id": "conditional_render_under_policy",
+      "scope": "consumer=bsky.app-default-client + render_context",
+      "claim": "Under the named consumer with the stated render_context, the documented policy would apply the documented action to this target.",
+      "derivation_basis": [
+        "LabelObservation",
+        "PolicyDocumentation"
+      ],
+      "qualifier": "Conditional derivation over the documented rule; not over actual render execution."
+    }
+  ],
+  "inadmissible_claims": [
+    {
+      "id": "no_laundering",
+      "claim_form": "label_observed entails render_observed",
+      "why_inadmissible": "Laundering: collapses producer/consumer/enforcer distinction. label_observed alone does not derive render_observed. The no-laundering theorem forbids this derivation."
+    },
+    {
+      "id": "no_individual_render_claim",
+      "claim_form": "This post was rendered with action X for user U at time T",
+      "why_inadmissible": "Requires RenderObservation, which is absent. Cannot be derived from LabelObservation + PolicyDocumentation alone."
+    },
+    {
+      "id": "no_population_render_claim",
+      "claim_form": "All renders of this post produce the documented action",
+      "why_inadmissible": "Population claim. Policy may be configurable; viewer may override; live client may run a different policy version. Requires probe campaign with defined sampling frame, not derivation from this evidence bundle."
+    }
+  ]
+}
