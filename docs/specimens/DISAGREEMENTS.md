@@ -258,15 +258,33 @@ adoption path, end-to-end:
     fixture verify.
 
 **Counterexample to the inverse rule "third-party → no conversion":**
-the same labeler (`skywatch.blue`) and label (`fringe-media`) now
-appear in the corpus with TWO different `consumer_scope_effective`
-values depending on documented consumer adoption:
+the same `LabelObservation` (skywatch.blue, fringe-media, on the
+specific post) now appears in two evidence bundles in the corpus that
+differ in their consumer-side evidence:
 
-  - existing derived packet (no ConsumerAdoption) → `emitter_declared`
-  - specimen-003 (ConsumerAdoption=driftwatch + receipt) → `opt_in:driftwatch`
+  - derived packet — has LabelerEmitterDocumentation, no
+    ConsumerAdoption → exports as `emitter_declared`
+  - specimen-003 — has LabelerEmitterDocumentation, AND
+    ConsumerAdoption=driftwatch, AND ConsumerActionObservation with a
+    real receipt → exports as `opt_in:driftwatch`
 
-Same evidence input shape; different consumer-side context; different
-verdict. The classifier can distinguish A from B.
+The precise shape (this is the whole point):
+
+  **same testimony**            (identical LabelObservation —
+                                 same labeler, same label_value,
+                                 same target)
+  **different consumer evidence** (the second bundle adds
+                                 ConsumerAdoption +
+                                 ConsumerActionObservation)
+  **different admissible conclusion** (the second bundle's
+                                 consumer-side evidence supports a
+                                 named-consumer-local conversion
+                                 claim; the first bundle's does not)
+
+The classifier reaches different admissible conclusions because the
+evidence bundles ARE different — the second simply contains more
+consumer-side material than the first. Adoption is a verb requiring
+receipts; receipts are evidence.
 
 **Discipline preserved:** opt_in adoption NEVER promotes to
 `global_platform` (verified by `test_opt_in_does_not_promote_to_global`).
