@@ -1,6 +1,6 @@
 {
   "schema_kind": "classifier_output",
-  "derived_from": "derived-39531039-did-plc-ar7c4by46qjdydhdevvrndac-porn.evidence.json",
+  "derived_from": "derived-39549839-did-plc-ar7c4by46qjdydhdevvrndac-porn.evidence.json",
   "ConversionGap": {
     "name": "execution_gap_policy_present",
     "surface": "client_render",
@@ -10,7 +10,7 @@
     {
       "id": "label_exists",
       "scope": "this specimen",
-      "claim": "A label record with label_value='porn' exists on at://did:plc:orrkib5wod7mfsdokxff6k6m/app.bsky.feed.post/3lqjlyj2ips2k, issued by moderation.bsky.app at 2026-06-08T15:35:52.773473Z.",
+      "claim": "A label record with label_value='porn' exists on at://did:plc:4aawxyael2d2lbtrhflhia76/app.bsky.feed.post/3lqjqe4bd672i, issued by moderation.bsky.app at 2026-06-08T16:46:14.981049Z.",
       "derivation_basis": [
         "LabelObservation"
       ]

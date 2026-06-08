@@ -3,7 +3,7 @@
   "schema_version": 1,
   "lane": "authority_surface",
   "exporter": "specimen_exporter.py v1 (Bundle D skeleton)",
-  "exported_at": "2026-06-08T16:13:19Z",
+  "exported_at": "2026-06-08T16:50:36Z",
   "evidence_source": "specimen-001-moderation-bsky-app-porn.evidence.json",
   "labeler": {
     "did": "did:plc:ar7c4by46qjdydhdevvrndac",

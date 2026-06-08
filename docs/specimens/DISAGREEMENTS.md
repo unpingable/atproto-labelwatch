@@ -275,7 +275,92 @@ first-party labeler.
 2. If yes: confirm labelwatch's discovery pipeline knows to fetch it, and look at why it isn't in `discovery_events`.
 3. If no: moderation.bsky.app's labels are documented somewhere else (atproto-internal admin definitions, perhaps embedded in the bsky appview). That's a different artifact_kind candidate; possibly extends `PROTOCOL_DOCUMENTED_LABELS`.
 
-**Status:** recorded. Tracks the bigger ingestion question; not patched in Bundle C.
+**Status (updated by Bundle D.5):** **mostly worked around.**
+
+Bundle D.5 confirmed via direct appview probe
+(`app.bsky.labeler.getServices?dids=did:plc:ar7c4by46qjdydhdevvrndac&detailed=true`)
+that mod.bsky **does** publish a service record with 24 `labelValues`
+and 18 `labelValueDefinitions`. labelwatch's discovery pipeline simply
+hasn't ingested it — the underlying ingestion gap is real, but it's
+not the same thing as "the labeler doesn't declare the rule."
+
+Workaround landed in D.5: a `service_record_snapshots/<did>.json`
+fallback. The deriver now consults this directory after
+`discovery_events` returns nothing, so labelers with missing ingest
+but available appview data still resolve emitter-declared provenance.
+Snapshot for `did:plc:ar7c4by46qjdydhdevvrndac` (moderation.bsky.app)
+captured 2026-06-08.
+
+Effect: labels previously misdiagnosed as ingestion gaps now resolve:
+  - `extremist`, `intolerant` (and the others in mod.bsky's
+    labelValueDefinitions) → `emitter_declared` + EXPORTED.
+  - `needs-review` (genuinely not in mod.bsky's service record at all)
+    → still BLOCKED, but with a different blocker per D.5
+    refinement: `emitter_does_not_declare_label`, not the misleading
+    `ingestion_gap_surface_unresolved`.
+
+The underlying ingestion gap (labelwatch's discovery pipeline missing
+mod.bsky's service record) is **not patched** — only worked around
+via the snapshot path. Forward fix would belong to labelwatch's
+discover module proper.
+
+---
+
+## F-006 — `needs-review` is emitter-undeclared, not ingestion-gap-shaped
+
+**Recorded:** Bundle D.5, 2026-06-08.
+
+**Observation.** After landing the F-005 snapshot workaround, the
+deriver can now distinguish "service record absent" from "service
+record present but doesn't declare this label." Re-running on
+moderation.bsky.app's `needs-review` shows the latter: the service
+record IS in the snapshot (24 labelValues, 18 definitions), and
+`needs-review` is in NEITHER list.
+
+**Why this matters.** Three distinct shapes that previously all
+classified as `ingestion_gap_surface_unresolved`:
+  1. real ingestion gap (no service record on file at all)
+  2. service record present but the label is genuinely undeclared
+  3. service record present, label declared but with surface=unknown
+     (caught earlier by `unknown_surface_not_specimen`)
+
+Shapes 1 and 2 carry very different operational meaning. Shape 2
+means the labeler is emitting events for a label its own published
+policy doesn't define — operationally honored only by an
+implementation rule that doesn't appear in any source-backed artifact
+the deriver can consult.
+
+**Diagnosis: not a bug; a refinement.** F-006 is the schema-refinement
+finding that follows from D.5 wiring. No D-NNN disagreement; the
+classifier and exporter were doing the right thing on the available
+evidence, and now have richer evidence to distinguish two cases that
+look identical from the outside.
+
+**Patch applied (D.5):**
+  - `LabelerEmitterDocumentation.labeler_service_record_present`
+    boolean (true if a service record was found, regardless of
+    whether it declares this particular label).
+  - New exporter blocker `emitter_does_not_declare_label` for the
+    case (first-party + consumer_scope=unknown + service record
+    present + label not declared).
+  - Existing `ingestion_gap_surface_unresolved` retained for the
+    true ingestion-gap shape (no service record found anywhere).
+
+**Detection-lane outcome:**
+  - `needs-review` (mod.bsky) → BLOCKED with
+    `emitter_does_not_declare_label`. Honest blocker per source-backed
+    evidence.
+  - `extremist`, `intolerant` (mod.bsky) → EXPORTED with
+    `emitter_declared` via snapshot path.
+
+**Forward note.** A label being emitted by an official_platform
+labeler without a declared definition in the labeler's own published
+service record is itself an interesting governance observation —
+worth surfacing if more first-party labels show this pattern. v1
+records it as a blocker; future work may produce a separate "emitter-
+undeclared first-party label" report.
+
+**Status:** patched in D.5.
 
 ---
 

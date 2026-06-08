@@ -101,20 +101,40 @@ def test_unknown_surface_blocked() -> None:
 
 
 def test_first_party_unknown_consumer_scope_blocked() -> None:
-    """official_platform + consumer_scope=unknown -> ingestion gap blocker
-    (F-005 territory)."""
+    """official_platform + consumer_scope=unknown + no service record at all
+    -> ingestion gap blocker (true F-005 shape)."""
     ev = _synth(
-        "needs-review",
+        "imaginary-first-party-label",
         labeler_class="official_platform",
         policy_status="absent_for_consumer",
         policy_consumer_scope="unknown",
         emitter_status="absent",
         emitter_consumer_scope="unknown",
     )
-    out = _run("test_first_party_unknown", ev)
+    # synth() doesn't set labeler_service_record_present; default for status=absent is False
+    ev["LabelerEmitterDocumentation"]["labeler_service_record_present"] = False
+    out = _run("test_first_party_no_record", ev)
     assert out["schema_kind"] == "blocked_candidate", out
     assert out["blocker"] == "ingestion_gap_surface_unresolved", out
-    print("  PASS ingestion_gap_surface_unresolved (F-005-shaped)")
+    print("  PASS ingestion_gap_surface_unresolved (no service record at all)")
+
+
+def test_first_party_emitter_does_not_declare() -> None:
+    """D.5: first-party + service record FOUND + label NOT in it
+    -> emitter_does_not_declare_label blocker (NOT ingestion gap)."""
+    ev = _synth(
+        "needs-review",
+        labeler_class="official_platform",
+        policy_status="absent_for_consumer",
+        policy_consumer_scope="unknown",
+        emitter_status="service_record_found_label_not_declared",
+        emitter_consumer_scope="unknown",
+    )
+    ev["LabelerEmitterDocumentation"]["labeler_service_record_present"] = True
+    out = _run("test_first_party_emitter_undeclared", ev)
+    assert out["schema_kind"] == "blocked_candidate", out
+    assert out["blocker"] == "emitter_does_not_declare_label", out
+    print("  PASS emitter_does_not_declare_label (service record found, label undeclared)")
 
 
 def test_third_party_unknown_consumer_scope_blocked() -> None:
@@ -278,6 +298,7 @@ def main() -> int:
     for t in [
         test_unknown_surface_blocked,
         test_first_party_unknown_consumer_scope_blocked,
+        test_first_party_emitter_does_not_declare,
         test_third_party_unknown_consumer_scope_blocked,
         test_emitter_declared_exports_with_caveat,
         test_protocol_doc_exports,

@@ -4,26 +4,26 @@
   "lane": "authority_surface",
   "exporter": "specimen_exporter.py v1 (Bundle D skeleton)",
   "exported_at": "2026-06-08T16:50:36Z",
-  "evidence_source": "specimen-002-xblock-twitter-screenshot.evidence.json",
+  "evidence_source": "derived/derived-39549832-did-plc-ar7c4by46qjdydhdevvrndac-intolerant.evidence.json",
   "labeler": {
-    "did": "did:plc:newitj5jo3uel7o4mnf3vj2o",
-    "handle": "xblock.aendra.dev",
-    "display_name": "XBlock Screenshot Labeller",
-    "class": "third_party",
-    "is_reference": false
+    "did": "did:plc:ar7c4by46qjdydhdevvrndac",
+    "handle": "moderation.bsky.app",
+    "display_name": null,
+    "class": "official_platform",
+    "is_reference": true
   },
   "label": {
-    "value": "twitter-screenshot",
+    "value": "intolerant",
     "neg": 0,
-    "labelwatch_authority_effect": "unknown"
+    "labelwatch_authority_effect": null
   },
   "target": {
-    "uri": "at://did:plc:rzwzv7yzjbuybw7beim3clda/app.bsky.feed.post/3mcoaxxulgb2q",
+    "uri": "at://did:plc:3jzio3wo53fljligjommd6iq/app.bsky.feed.post/3lqaeehicy224",
     "kind": "post_record",
     "target_did": null
   },
   "observation": {
-    "ts": "2026-06-08T14:28:48.159566Z",
+    "ts": "2026-06-08T16:46:14.980736Z",
     "first_seen": null,
     "last_seen": null,
     "reassertion_count": null,
@@ -41,7 +41,7 @@
     "artifact_kind": "service_record",
     "consumer_scope": "emitter_declared",
     "status": "documented_via_service_record",
-    "execution_surface": null
+    "execution_surface": "client_render"
   },
   "consumer_scope_effective": "emitter_declared",
   "conversion_gap": {

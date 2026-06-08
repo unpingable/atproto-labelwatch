@@ -1,6 +1,6 @@
 {
-  "specimen_id": "derived-39531098",
-  "title": "skywatch.blue / fringe-media / at://did:plc:clj6qpimf4hkhlv3zks2t6be/app.bsky.feed.post/3mnrz3ojivr2n",
+  "specimen_id": "derived-39549897",
+  "title": "skywatch.blue / fringe-media / at://did:plc:5gy2ohzlg2iszo25tziw4ixz/app.bsky.feed.post/3mns4v565o22a",
   "summary": "Detection-lane evidence packet auto-derived from labelwatch.label_events. No operator pre-judgment of gap or admissible claims.",
   "schema_version": 1,
   "schema_kind": "evidence",
@@ -8,8 +8,8 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T16:06:14Z",
-    "source_row_id": 39531098,
+    "derived_at": "2026-06-08T16:50:34Z",
+    "source_row_id": 39549897,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
   "LabelObservation": {
@@ -17,11 +17,11 @@
     "labeler_handle": "skywatch.blue",
     "labeler_class": "official_platform",
     "is_reference_labeler": true,
-    "target_uri": "at://did:plc:clj6qpimf4hkhlv3zks2t6be/app.bsky.feed.post/3mnrz3ojivr2n",
+    "target_uri": "at://did:plc:5gy2ohzlg2iszo25tziw4ixz/app.bsky.feed.post/3mns4v565o22a",
     "target_kind": "post_record",
     "label_value": "fringe-media",
     "neg": 0,
-    "ts": "2026-06-08T15:35:57.229368Z",
+    "ts": "2026-06-08T16:46:19.555125Z",
     "ingest_witness": "labelwatch label_events stream",
     "labelwatch_authority_effect_classification": null
   },
@@ -56,6 +56,7 @@
     "status": "documented_via_service_record",
     "artifact_kind": "service_record",
     "consumer_scope": "emitter_declared",
+    "labeler_service_record_present": true,
     "scoping_note": "consumer_scope='emitter_declared' means the LABELER has published a rule for this label_value in its service record. It does NOT mean any consumer honors this rule. Service-record declaration is provenance, not global authority. Upgrading to 'opt_in_consumer_observed' requires direct evidence of consumer honor (deferred to Bundle D+).",
     "execution_surface": "client_render",
     "extracted_definition": {
@@ -79,7 +80,7 @@
       "discovered_at": "2026-05-19T23:19:15.619785Z",
       "source_table": "labelwatch.db / discovery_events"
     },
-    "retrieved_at": "2026-06-08T16:06:14Z",
+    "retrieved_at": "2026-06-08T16:50:34Z",
     "reviewed_at": "2026-06-08",
     "reviewer": "labelwatch-claude (Bundle C)"
   },

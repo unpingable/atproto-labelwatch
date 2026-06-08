@@ -1,6 +1,6 @@
 {
-  "specimen_id": "derived-39533256",
-  "title": "xblock.aendra.dev / twitter-screenshot / at://did:plc:a3mv242azt5e24weajdciiws/app.bsky.feed.post/3mcp43jjntm2o",
+  "specimen_id": "derived-39552057",
+  "title": "xblock.aendra.dev / twitter-screenshot / at://did:plc:tvl7y7k63baq2mr6isfjjibp/app.bsky.feed.post/3mcpldqcgik2m",
   "summary": "Detection-lane evidence packet auto-derived from labelwatch.label_events. No operator pre-judgment of gap or admissible claims.",
   "schema_version": 1,
   "schema_kind": "evidence",
@@ -8,8 +8,8 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T16:06:14Z",
-    "source_row_id": 39533256,
+    "derived_at": "2026-06-08T16:50:34Z",
+    "source_row_id": 39552057,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
   "LabelObservation": {
@@ -17,11 +17,11 @@
     "labeler_handle": "xblock.aendra.dev",
     "labeler_class": "third_party",
     "is_reference_labeler": false,
-    "target_uri": "at://did:plc:a3mv242azt5e24weajdciiws/app.bsky.feed.post/3mcp43jjntm2o",
+    "target_uri": "at://did:plc:tvl7y7k63baq2mr6isfjjibp/app.bsky.feed.post/3mcpldqcgik2m",
     "target_kind": "post_record",
     "label_value": "twitter-screenshot",
     "neg": 0,
-    "ts": "2026-06-08T15:36:32.154106Z",
+    "ts": "2026-06-08T16:46:56.104168Z",
     "ingest_witness": "labelwatch label_events stream",
     "labelwatch_authority_effect_classification": null
   },
@@ -56,6 +56,7 @@
     "status": "documented_via_service_record",
     "artifact_kind": "service_record",
     "consumer_scope": "emitter_declared",
+    "labeler_service_record_present": true,
     "scoping_note": "consumer_scope='emitter_declared' means the LABELER has published a rule for this label_value in its service record. It does NOT mean any consumer honors this rule. Service-record declaration is provenance, not global authority. Upgrading to 'opt_in_consumer_observed' requires direct evidence of consumer honor (deferred to Bundle D+).",
     "execution_surface": "client_render",
     "extracted_definition": {
@@ -79,7 +80,7 @@
       "discovered_at": "2026-04-13T18:57:26.672849Z",
       "source_table": "labelwatch.db / discovery_events"
     },
-    "retrieved_at": "2026-06-08T16:06:14Z",
+    "retrieved_at": "2026-06-08T16:50:34Z",
     "reviewed_at": "2026-06-08",
     "reviewer": "labelwatch-claude (Bundle C)"
   },

@@ -1,6 +1,6 @@
 {
   "schema_kind": "classifier_output",
-  "derived_from": "derived-39531024-did-plc-ar7c4by46qjdydhdevvrndac-takedown.evidence.json",
+  "derived_from": "derived-39549769-did-plc-ar7c4by46qjdydhdevvrndac-takedown.evidence.json",
   "ConversionGap": {
     "name": "execution_gap_policy_present",
     "surface": "pds_hosting",
@@ -10,7 +10,7 @@
     {
       "id": "label_exists",
       "scope": "this specimen",
-      "claim": "A label record with label_value='!takedown' exists on did:plc:3okh7rbbjtjwc43kgi66ppiw, issued by moderation.bsky.app at 2026-06-08T15:35:52.772818Z.",
+      "claim": "A label record with label_value='!takedown' exists on did:plc:hb3ilsqq3vttgomd2ixe6zb3, issued by moderation.bsky.app at 2026-06-08T16:46:14.977506Z.",
       "derivation_basis": [
         "LabelObservation"
       ]

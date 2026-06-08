@@ -1,6 +1,6 @@
 {
-  "specimen_id": "derived-39464837",
-  "title": "moderation.bsky.app / needs-review / did:plc:3dg3rdpz6wtbwjn5a5yf55jw",
+  "specimen_id": "derived-38885423",
+  "title": "moderation.bsky.app / extremist / at://did:plc:fsoq27ix4ewsmnzklzbsj6hk/app.bsky.feed.post/3lqfawz4yy22l",
   "summary": "Detection-lane evidence packet auto-derived from labelwatch.label_events. No operator pre-judgment of gap or admissible claims.",
   "schema_version": 1,
   "schema_kind": "evidence",
@@ -9,7 +9,7 @@
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
     "derived_at": "2026-06-08T16:50:34Z",
-    "source_row_id": 39464837,
+    "source_row_id": 38885423,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
   "LabelObservation": {
@@ -17,11 +17,11 @@
     "labeler_handle": "moderation.bsky.app",
     "labeler_class": "official_platform",
     "is_reference_labeler": true,
-    "target_uri": "did:plc:3dg3rdpz6wtbwjn5a5yf55jw",
-    "target_kind": "account",
-    "label_value": "needs-review",
+    "target_uri": "at://did:plc:fsoq27ix4ewsmnzklzbsj6hk/app.bsky.feed.post/3lqfawz4yy22l",
+    "target_kind": "post_record",
+    "label_value": "extremist",
     "neg": 0,
-    "ts": "2026-06-08T11:46:37.467565Z",
+    "ts": "2026-06-06T19:53:17.004895Z",
     "ingest_witness": "labelwatch label_events stream",
     "labelwatch_authority_effect_classification": null
   },
@@ -44,7 +44,7 @@
       "file_path": "packages/api/src/moderation/const/labels.ts",
       "head_or_commit": "7b8c5d60a",
       "search_result": "no_entry",
-      "search_evidence": "Global LABELS map at the pinned artifact does not contain an entry for 'needs-review'."
+      "search_evidence": "Global LABELS map at the pinned artifact does not contain an entry for 'extremist'."
     },
     "execution_surface": null,
     "execution_surface_source": "no documented policy for this label_value in the named consumer's pipeline; execution_surface is undefined for an absent policy.",
@@ -53,11 +53,36 @@
     "scoping_note": "Policy-documentation status FOR THE NAMED CONSUMER under the stated render_context. Evidence is silent over other consumer configurations (e.g., viewers who have opted into a third-party labeler service whose definitions cover this label_value)."
   },
   "LabelerEmitterDocumentation": {
-    "status": "service_record_found_label_not_declared",
-    "artifact_kind": null,
-    "consumer_scope": "unknown",
+    "status": "documented_via_service_record",
+    "artifact_kind": "service_record",
+    "consumer_scope": "emitter_declared",
     "labeler_service_record_present": true,
-    "reason": "A labeler service record for 'did:plc:ar7c4by46qjdydhdevvrndac' IS available (in discovery_events or in service_record_snapshots/), but it does not declare a labelValueDefinition for 'needs-review'. This is genuine emitter-side undeclared, NOT an ingestion gap."
+    "scoping_note": "consumer_scope='emitter_declared' means the LABELER has published a rule for this label_value in its service record. It does NOT mean any consumer honors this rule. Service-record declaration is provenance, not global authority. Upgrading to 'opt_in_consumer_observed' requires direct evidence of consumer honor (deferred to Bundle D+).",
+    "execution_surface": "client_render",
+    "extracted_definition": {
+      "adultOnly": false,
+      "blurs": "content",
+      "defaultSetting": "hide",
+      "identifier": "extremist",
+      "locales": [
+        {
+          "description": "Radical views advocating violence, hate, or discrimination against individuals or groups.",
+          "lang": "en",
+          "name": "Extremist"
+        }
+      ],
+      "severity": "alert"
+    },
+    "service_record_provenance": {
+      "labeler_did": "did:plc:ar7c4by46qjdydhdevvrndac",
+      "commit_cid": null,
+      "commit_rev": null,
+      "discovered_at": "2026-06-08T16:45:06Z",
+      "source_table": "labelwatch.db / discovery_events"
+    },
+    "retrieved_at": "2026-06-08T16:50:34Z",
+    "reviewed_at": "2026-06-08",
+    "reviewer": "labelwatch-claude (Bundle C)"
   },
   "PolicyWitness": {
     "status": "not_applicable",

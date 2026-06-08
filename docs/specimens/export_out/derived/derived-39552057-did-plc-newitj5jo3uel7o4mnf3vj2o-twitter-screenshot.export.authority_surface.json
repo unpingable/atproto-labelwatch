@@ -3,27 +3,27 @@
   "schema_version": 1,
   "lane": "authority_surface",
   "exporter": "specimen_exporter.py v1 (Bundle D skeleton)",
-  "exported_at": "2026-06-08T16:13:19Z",
-  "evidence_source": "derived/derived-39534944-did-plc-6ebfnuunfngxfw3rth3ewojw-fucked-up-replyref.evidence.json",
+  "exported_at": "2026-06-08T16:50:36Z",
+  "evidence_source": "derived/derived-39552057-did-plc-newitj5jo3uel7o4mnf3vj2o-twitter-screenshot.evidence.json",
   "labeler": {
-    "did": "did:plc:6ebfnuunfngxfw3rth3ewojw",
-    "handle": "label.haus",
+    "did": "did:plc:newitj5jo3uel7o4mnf3vj2o",
+    "handle": "xblock.aendra.dev",
     "display_name": null,
-    "class": "official_platform",
-    "is_reference": true
+    "class": "third_party",
+    "is_reference": false
   },
   "label": {
-    "value": "fucked-up-replyref",
+    "value": "twitter-screenshot",
     "neg": 0,
     "labelwatch_authority_effect": null
   },
   "target": {
-    "uri": "at://did:plc:l7cwuonthk66ykzuzursfqzh/app.bsky.feed.post/3mmjjqdvlon2j",
+    "uri": "at://did:plc:tvl7y7k63baq2mr6isfjjibp/app.bsky.feed.post/3mcpldqcgik2m",
     "kind": "post_record",
     "target_did": null
   },
   "observation": {
-    "ts": "2026-06-08T15:37:43.576916Z",
+    "ts": "2026-06-08T16:46:56.104168Z",
     "first_seen": null,
     "last_seen": null,
     "reassertion_count": null,

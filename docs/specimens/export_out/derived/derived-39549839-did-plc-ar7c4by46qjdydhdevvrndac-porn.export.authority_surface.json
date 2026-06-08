@@ -3,8 +3,8 @@
   "schema_version": 1,
   "lane": "authority_surface",
   "exporter": "specimen_exporter.py v1 (Bundle D skeleton)",
-  "exported_at": "2026-06-08T16:13:19Z",
-  "evidence_source": "derived/derived-39531039-did-plc-ar7c4by46qjdydhdevvrndac-porn.evidence.json",
+  "exported_at": "2026-06-08T16:50:36Z",
+  "evidence_source": "derived/derived-39549839-did-plc-ar7c4by46qjdydhdevvrndac-porn.evidence.json",
   "labeler": {
     "did": "did:plc:ar7c4by46qjdydhdevvrndac",
     "handle": "moderation.bsky.app",
@@ -18,12 +18,12 @@
     "labelwatch_authority_effect": null
   },
   "target": {
-    "uri": "at://did:plc:orrkib5wod7mfsdokxff6k6m/app.bsky.feed.post/3lqjlyj2ips2k",
+    "uri": "at://did:plc:4aawxyael2d2lbtrhflhia76/app.bsky.feed.post/3lqjqe4bd672i",
     "kind": "post_record",
     "target_did": null
   },
   "observation": {
-    "ts": "2026-06-08T15:35:52.773473Z",
+    "ts": "2026-06-08T16:46:14.981049Z",
     "first_seen": null,
     "last_seen": null,
     "reassertion_count": null,
@@ -40,7 +40,7 @@
   "emitter_provenance": {
     "artifact_kind": null,
     "consumer_scope": "unknown",
-    "status": "absent",
+    "status": "service_record_found_label_not_declared",
     "execution_surface": null
   },
   "consumer_scope_effective": "global_platform",

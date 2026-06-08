@@ -239,6 +239,7 @@ def derive(
         emitter_definition = _lookup_emitter_service_record(
             conn, labeler_did, label_value
         )
+        labeler_record_exists = _labeler_has_service_record(conn, labeler_did)
     finally:
         conn.close()
 
@@ -286,7 +287,7 @@ def derive(
         },
         "PolicyDocumentation": _policy_documentation(label_value, policy_documented),
         "LabelerEmitterDocumentation": _labeler_emitter_documentation(
-            labeler_did, label_value, emitter_definition,
+            labeler_did, label_value, emitter_definition, labeler_record_exists,
         ),
         "PolicyWitness": _policy_witness(policy_documented),
         "RenderObservation": _render_observation(label_value, policy_documented),
@@ -299,6 +300,7 @@ def _labeler_emitter_documentation(
     labeler_did: str,
     label_value: str,
     found: Optional[Dict[str, Any]],
+    labeler_record_exists: bool = False,
 ) -> Dict[str, Any]:
     """Distinct from PolicyDocumentation: this records what the LABELER
     has declared via its app.bsky.labeler.service record. Provenance of
@@ -308,24 +310,44 @@ def _labeler_emitter_documentation(
     global authority. consumer_scope here is always 'emitter_declared'
     when found — separately upgrading to 'opt_in_consumer_observed'
     requires direct consumer evidence which v1 does not model.
+
+    D.5 adds `labeler_record_exists` to distinguish two absence cases:
+      - service record exists but doesn't declare this label
+        (genuine emitter undeclared)
+      - no service record at all (ingestion gap)
     """
     if found is None:
+        if labeler_record_exists:
+            return {
+                "status": "service_record_found_label_not_declared",
+                "artifact_kind": None,
+                "consumer_scope": "unknown",
+                "labeler_service_record_present": True,
+                "reason": (
+                    f"A labeler service record for {labeler_did!r} IS "
+                    "available (in discovery_events or in "
+                    "service_record_snapshots/), but it does not declare "
+                    f"a labelValueDefinition for {label_value!r}. This is "
+                    "genuine emitter-side undeclared, NOT an ingestion gap."
+                ),
+            }
         return {
             "status": "absent",
             "artifact_kind": None,
             "consumer_scope": "unknown",
+            "labeler_service_record_present": False,
             "reason": (
                 f"No app.bsky.labeler.service record for {labeler_did!r} "
-                f"in discovery_events declares a labelValueDefinition for "
-                f"{label_value!r}. (Either the labeler has no service "
-                "record on file, or the service record exists but does "
-                "not define this label_value.)"
+                "was found in discovery_events OR in "
+                "service_record_snapshots/. Likely an ingestion gap "
+                "(F-005 shape) rather than confirmed absence."
             ),
         }
     return {
         "status": "documented_via_service_record",
         "artifact_kind": "service_record",
         "consumer_scope": "emitter_declared",
+        "labeler_service_record_present": True,
         "scoping_note": (
             "consumer_scope='emitter_declared' means the LABELER has "
             "published a rule for this label_value in its service "
@@ -382,13 +404,17 @@ def _lookup_emitter_service_record(
     labeler_did: str,
     label_value: str,
 ) -> Optional[Dict[str, Any]]:
-    """Find the most recent app.bsky.labeler.service record for `labeler_did`
-    and extract the labelValueDefinition for `label_value` if present.
+    """Find the labeler's labelValueDefinition for `label_value` from
+    EITHER labelwatch.db/discovery_events OR a static snapshot in
+    service_record_snapshots/. Returns None when no source has a
+    matching definition.
 
-    Returns None when the labeler has no service record on file OR has one
-    but doesn't define this particular label_value. Returns a dict with
-    the extracted definition + provenance fields when found.
+    D.5 / E-prep adds the snapshot fallback to work around F-005
+    (mod.bsky's service record is not in labelwatch's discovery
+    pipeline). Snapshots are emitter declarations, NOT global authority
+    — the consumer_scope assigned downstream is still emitter_declared.
     """
+    # 1. discovery_events (primary; live as labelwatch ingestion catches up)
     row = conn.execute(
         """
         SELECT record_json, commit_cid, commit_rev, discovered_at
@@ -401,22 +427,85 @@ def _lookup_emitter_service_record(
         """,
         (labeler_did,),
     ).fetchone()
-    if row is None:
+    if row is not None:
+        try:
+            rec = json.loads(row["record_json"])
+        except (json.JSONDecodeError, TypeError):
+            rec = None
+        if rec is not None:
+            defs = (rec.get("policies") or {}).get("labelValueDefinitions") or []
+            for d in defs:
+                if d.get("identifier") == label_value:
+                    return {
+                        "definition": d,
+                        "service_record_commit_cid": row["commit_cid"],
+                        "service_record_commit_rev": row["commit_rev"],
+                        "service_record_discovered_at": row["discovered_at"],
+                        "source": "labelwatch.db / discovery_events",
+                    }
+
+    # 2. service_record_snapshots/ fallback (F-005 workaround for labelers
+    # whose service records did not land in discovery_events).
+    snap = _load_service_record_snapshot(labeler_did)
+    if snap is not None:
+        defs = (snap.get("policies") or {}).get("labelValueDefinitions") or []
+        for d in defs:
+            if d.get("identifier") == label_value:
+                meta = snap.get("_snapshot_meta") or {}
+                return {
+                    "definition": d,
+                    "service_record_commit_cid": None,
+                    "service_record_commit_rev": None,
+                    "service_record_discovered_at": meta.get("snapshotted_at"),
+                    "source": (
+                        "service_record_snapshots/ (F-005 fallback; "
+                        f"snapshotted_at={meta.get('snapshotted_at')}; "
+                        f"source_url={meta.get('source_url')})"
+                    ),
+                }
+    return None
+
+
+def _load_service_record_snapshot(labeler_did: str) -> Optional[Dict[str, Any]]:
+    """Look in docs/specimens/service_record_snapshots/<sanitized-did>.json
+    for a pre-fetched service record. Returns the parsed JSON or None."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    fname = labeler_did.replace(":", "-") + ".json"
+    path = os.path.join(here, "service_record_snapshots", fname)
+    if not os.path.exists(path):
         return None
     try:
-        rec = json.loads(row["record_json"])
-    except (json.JSONDecodeError, TypeError):
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
         return None
-    defs = (rec.get("policies") or {}).get("labelValueDefinitions") or []
-    for d in defs:
-        if d.get("identifier") == label_value:
-            return {
-                "definition": d,
-                "service_record_commit_cid": row["commit_cid"],
-                "service_record_commit_rev": row["commit_rev"],
-                "service_record_discovered_at": row["discovered_at"],
-            }
-    return None
+
+
+def _labeler_has_service_record(
+    conn: sqlite3.Connection, labeler_did: str
+) -> bool:
+    """True if EITHER labelwatch.discovery_events OR the local snapshot
+    directory has a service record for this labeler — regardless of
+    whether the record declares any specific label_value.
+
+    Used to distinguish:
+      - 'we have no service record at all for this labeler' (ingestion gap)
+      - 'we have the service record but it doesn't declare this label'
+        (genuine emitter undeclared)
+    """
+    row = conn.execute(
+        """
+        SELECT 1 FROM discovery_events
+        WHERE labeler_did = ?
+          AND operation IN ('create','update')
+          AND json_extract(record_json, '$.policies.labelValueDefinitions') IS NOT NULL
+        LIMIT 1
+        """,
+        (labeler_did,),
+    ).fetchone()
+    if row is not None:
+        return True
+    return _load_service_record_snapshot(labeler_did) is not None
 
 
 def _surface_from_emitter_definition(definition: Dict[str, Any]) -> str:

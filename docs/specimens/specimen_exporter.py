@@ -29,11 +29,15 @@ Output contracts:
   are NOT specimens; downstream consumers (Lean, fixtures, exporters)
   MUST refuse to admit them.
 
-Refusal vocabulary (Bundle D v1):
+Refusal vocabulary (Bundle D v1 + D.5):
   no_label_observation             — gap.name = observability_gap
   unknown_surface_not_specimen     — surface=unknown OR gap.name=execution_gap_surface_unknown
-  ingestion_gap_surface_unresolved — labeler is first-party / official_platform AND consumer_scope=unknown
-                                     (likely the service-record-discovery gap of F-005)
+  ingestion_gap_surface_unresolved — first-party labeler + consumer_scope=unknown +
+                                     no service record found at all (true F-005 shape)
+  emitter_does_not_declare_label   — first-party labeler + consumer_scope=unknown +
+                                     service record exists but doesn't declare this label
+                                     (D.5: genuine emitter-side undeclared, NOT an
+                                     ingestion gap)
   provenance_unresolved            — consumer_scope=unknown for a non-first-party labeler
   requires_state_basis             — lane=freshness AND no state_basis/first_seen data in evidence
 """
@@ -154,14 +158,35 @@ def _hard_gates(
             "what_would_unblock": "Add an entry to KNOWN_LABEL_SURFACE for this label_value with surface assignment + source/rationale/reviewed_at audit metadata.",
         }
 
-    # 3. First-party labeler with consumer_scope=unknown is most likely
-    # the F-005 service-record-discovery ingestion gap, NOT a real
-    # absence of consumer policy.
+    # 3. First-party labeler with consumer_scope=unknown — refine the
+    # blocker name based on whether the labeler's service record was
+    # found at all. D.5 distinguishes ingestion-gap-shaped absence from
+    # genuine emitter-undeclared absence.
     if consumer_scope == "unknown" and labeler_class == "official_platform":
+        emitter_doc = evidence.get("LabelerEmitterDocumentation") or {}
+        record_present = emitter_doc.get("labeler_service_record_present")
+        emitter_status = emitter_doc.get("status")
+        if record_present and emitter_status == "service_record_found_label_not_declared":
+            return {
+                "blocker": "emitter_does_not_declare_label",
+                "reason": (
+                    "First-party labeler IS publishing a service record "
+                    "(found in discovery_events or service_record_snapshots), "
+                    "but the record does not declare a labelValueDefinition "
+                    "for this label_value. The label is being emitted "
+                    "operationally without an emitter-side rule — not an "
+                    "ingestion gap, a genuine emitter-side undeclared label."
+                ),
+                "what_would_unblock": (
+                    "Either the labeler adds a labelValueDefinition for "
+                    "this label_value to its service record, OR the label "
+                    "becomes documented via upstream_const/protocol_doc."
+                ),
+            }
         return {
             "blocker": "ingestion_gap_surface_unresolved",
-            "reason": "Labeler is official_platform but consumer_scope is 'unknown'. Most likely the labeler's app.bsky.labeler.service record is not in labelwatch's discovery_events (F-005 ingestion gap). The default client operationally honors first-party labels via auto-subscription, so this 'unknown' is almost certainly instrumentation failure, not real surface absence.",
-            "what_would_unblock": "Ingest the labeler's service record into labelwatch.discovery_events so LabelerEmitterDocumentation can populate. F-005 patch.",
+            "reason": "Labeler is official_platform but consumer_scope is 'unknown' AND no service record was found in discovery_events OR service_record_snapshots/. Most likely the labeler's app.bsky.labeler.service record has not been ingested (F-005 ingestion gap).",
+            "what_would_unblock": "Ingest the labeler's service record into labelwatch.discovery_events, OR add a snapshot to docs/specimens/service_record_snapshots/<did>.json. F-005 patch.",
         }
 
     # 4. Other consumer_scope=unknown cases — third-party labelers

@@ -1,6 +1,6 @@
 {
   "schema_kind": "classifier_output",
-  "derived_from": "derived-39531098-did-plc-e4elbtctnfqocyfcml6h2lf7-fringe-media.evidence.json",
+  "derived_from": "derived-38885423-did-plc-ar7c4by46qjdydhdevvrndac-extremist.evidence.json",
   "ConversionGap": {
     "name": "conversion_witness_gap_no_consumer",
     "surface": null,
@@ -10,7 +10,7 @@
     {
       "id": "label_exists",
       "scope": "this specimen",
-      "claim": "A label record with label_value='fringe-media' exists on at://did:plc:clj6qpimf4hkhlv3zks2t6be/app.bsky.feed.post/3mnrz3ojivr2n, issued by skywatch.blue at 2026-06-08T15:35:57.229368Z.",
+      "claim": "A label record with label_value='extremist' exists on at://did:plc:fsoq27ix4ewsmnzklzbsj6hk/app.bsky.feed.post/3lqfawz4yy22l, issued by moderation.bsky.app at 2026-06-06T19:53:17.004895Z.",
       "derivation_basis": [
         "LabelObservation"
       ]

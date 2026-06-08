@@ -3,7 +3,7 @@
   "schema_version": 1,
   "lane": "authority_surface",
   "exporter": "specimen_exporter.py v1 (Bundle D skeleton)",
-  "exported_at": "2026-06-08T16:13:19Z",
+  "exported_at": "2026-06-08T16:50:36Z",
   "evidence_source": "derived/derived-39464837-did-plc-ar7c4by46qjdydhdevvrndac-needs-review.evidence.json",
   "labeler": {
     "did": "did:plc:ar7c4by46qjdydhdevvrndac",
@@ -22,9 +22,9 @@
     "kind": "account",
     "target_did": null
   },
-  "blocker": "ingestion_gap_surface_unresolved",
-  "reason": "Labeler is official_platform but consumer_scope is 'unknown'. Most likely the labeler's app.bsky.labeler.service record is not in labelwatch's discovery_events (F-005 ingestion gap). The default client operationally honors first-party labels via auto-subscription, so this 'unknown' is almost certainly instrumentation failure, not real surface absence.",
-  "what_would_unblock": "Ingest the labeler's service record into labelwatch.discovery_events so LabelerEmitterDocumentation can populate. F-005 patch.",
+  "blocker": "emitter_does_not_declare_label",
+  "reason": "First-party labeler IS publishing a service record (found in discovery_events or service_record_snapshots), but the record does not declare a labelValueDefinition for this label_value. The label is being emitted operationally without an emitter-side rule \u2014 not an ingestion gap, a genuine emitter-side undeclared label.",
+  "what_would_unblock": "Either the labeler adds a labelValueDefinition for this label_value to its service record, OR the label becomes documented via upstream_const/protocol_doc.",
   "conversion_gap": {
     "name": "conversion_witness_gap_no_consumer",
     "surface": null,

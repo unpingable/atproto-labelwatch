@@ -1,6 +1,6 @@
 {
   "schema_kind": "classifier_output",
-  "derived_from": "derived-39533256-did-plc-newitj5jo3uel7o4mnf3vj2o-twitter-screenshot.evidence.json",
+  "derived_from": "derived-39553449-did-plc-6ebfnuunfngxfw3rth3ewojw-fucked-up-replyref.evidence.json",
   "ConversionGap": {
     "name": "conversion_witness_gap_no_consumer",
     "surface": null,
@@ -10,7 +10,7 @@
     {
       "id": "label_exists",
       "scope": "this specimen",
-      "claim": "A label record with label_value='twitter-screenshot' exists on at://did:plc:a3mv242azt5e24weajdciiws/app.bsky.feed.post/3mcp43jjntm2o, issued by xblock.aendra.dev at 2026-06-08T15:36:32.154106Z.",
+      "claim": "A label record with label_value='fucked-up-replyref' exists on at://did:plc:olioejggcjk6m74nnlcsmxng/app.bsky.feed.post/3mmkgiwc6pp22, issued by label.haus at 2026-06-08T16:47:46.128428Z.",
       "derivation_basis": [
         "LabelObservation"
       ]

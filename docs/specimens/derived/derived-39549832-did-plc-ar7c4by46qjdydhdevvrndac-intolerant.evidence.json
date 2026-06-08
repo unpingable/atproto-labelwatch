@@ -1,6 +1,6 @@
 {
-  "specimen_id": "derived-39534944",
-  "title": "label.haus / fucked-up-replyref / at://did:plc:l7cwuonthk66ykzuzursfqzh/app.bsky.feed.post/3mmjjqdvlon2j",
+  "specimen_id": "derived-39549832",
+  "title": "moderation.bsky.app / intolerant / at://did:plc:3jzio3wo53fljligjommd6iq/app.bsky.feed.post/3lqaeehicy224",
   "summary": "Detection-lane evidence packet auto-derived from labelwatch.label_events. No operator pre-judgment of gap or admissible claims.",
   "schema_version": 1,
   "schema_kind": "evidence",
@@ -8,20 +8,20 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T16:06:14Z",
-    "source_row_id": 39534944,
+    "derived_at": "2026-06-08T16:50:34Z",
+    "source_row_id": 39549832,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
   "LabelObservation": {
-    "labeler_did": "did:plc:6ebfnuunfngxfw3rth3ewojw",
-    "labeler_handle": "label.haus",
+    "labeler_did": "did:plc:ar7c4by46qjdydhdevvrndac",
+    "labeler_handle": "moderation.bsky.app",
     "labeler_class": "official_platform",
     "is_reference_labeler": true,
-    "target_uri": "at://did:plc:l7cwuonthk66ykzuzursfqzh/app.bsky.feed.post/3mmjjqdvlon2j",
+    "target_uri": "at://did:plc:3jzio3wo53fljligjommd6iq/app.bsky.feed.post/3lqaeehicy224",
     "target_kind": "post_record",
-    "label_value": "fucked-up-replyref",
+    "label_value": "intolerant",
     "neg": 0,
-    "ts": "2026-06-08T15:37:43.576916Z",
+    "ts": "2026-06-08T16:46:14.980736Z",
     "ingest_witness": "labelwatch label_events stream",
     "labelwatch_authority_effect_classification": null
   },
@@ -44,7 +44,7 @@
       "file_path": "packages/api/src/moderation/const/labels.ts",
       "head_or_commit": "7b8c5d60a",
       "search_result": "no_entry",
-      "search_evidence": "Global LABELS map at the pinned artifact does not contain an entry for 'fucked-up-replyref'."
+      "search_evidence": "Global LABELS map at the pinned artifact does not contain an entry for 'intolerant'."
     },
     "execution_surface": null,
     "execution_surface_source": "no documented policy for this label_value in the named consumer's pipeline; execution_surface is undefined for an absent policy.",
@@ -56,30 +56,31 @@
     "status": "documented_via_service_record",
     "artifact_kind": "service_record",
     "consumer_scope": "emitter_declared",
+    "labeler_service_record_present": true,
     "scoping_note": "consumer_scope='emitter_declared' means the LABELER has published a rule for this label_value in its service record. It does NOT mean any consumer honors this rule. Service-record declaration is provenance, not global authority. Upgrading to 'opt_in_consumer_observed' requires direct evidence of consumer honor (deferred to Bundle D+).",
     "execution_surface": "client_render",
     "extracted_definition": {
       "adultOnly": false,
-      "blurs": "none",
+      "blurs": "content",
       "defaultSetting": "warn",
-      "identifier": "fucked-up-replyref",
+      "identifier": "intolerant",
       "locales": [
         {
-          "description": "This post has a fucked up replyRef",
+          "description": "Discrimination against protected groups.",
           "lang": "en",
-          "name": "Fucked up replyRef"
+          "name": "Intolerance"
         }
       ],
-      "severity": "inform"
+      "severity": "alert"
     },
     "service_record_provenance": {
-      "labeler_did": "did:plc:6ebfnuunfngxfw3rth3ewojw",
-      "commit_cid": "bafyreihb36i2hygvid4wpckjo5mk2k5gmsyqvhyxnwm3x4unxqmipqnehi",
-      "commit_rev": "3mjocsquxg72h",
-      "discovered_at": "2026-04-17T14:26:13.474799Z",
+      "labeler_did": "did:plc:ar7c4by46qjdydhdevvrndac",
+      "commit_cid": null,
+      "commit_rev": null,
+      "discovered_at": "2026-06-08T16:45:06Z",
       "source_table": "labelwatch.db / discovery_events"
     },
-    "retrieved_at": "2026-06-08T16:06:14Z",
+    "retrieved_at": "2026-06-08T16:50:34Z",
     "reviewed_at": "2026-06-08",
     "reviewer": "labelwatch-claude (Bundle C)"
   },
