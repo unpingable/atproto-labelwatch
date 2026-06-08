@@ -86,5 +86,15 @@
   "HostingObservation": {
     "status": "not_applicable",
     "reason": "No documented policy for this label_value in the named consumer's pipeline; hosting observation is not framed for an absent policy."
+  },
+
+  "StateBasis": {
+    "source_kind": "fixture",
+    "captured_at": "2026-06-08T15:30:00Z",
+    "artifact_identity": "fixture: specimen-002-xblock-twitter-screenshot",
+    "artifact_hash": null,
+    "freshness_horizon": "unknown",
+    "derivation_source": "hand-authored fixture; xblock service-record citation last reviewed 2026-06-08",
+    "note": "Bundle E: fixture-author basis. freshness_horizon='unknown' because the cited service record may have been re-published since authorship. Exporter freshness lane classifies as unknown_basis."
   }
 }

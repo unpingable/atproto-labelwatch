@@ -29,7 +29,7 @@ Output contracts:
   are NOT specimens; downstream consumers (Lean, fixtures, exporters)
   MUST refuse to admit them.
 
-Refusal vocabulary (Bundle D v1 + D.5):
+Refusal vocabulary (Bundle D v1 + D.5 + E):
   no_label_observation             — gap.name = observability_gap
   unknown_surface_not_specimen     — surface=unknown OR gap.name=execution_gap_surface_unknown
   ingestion_gap_surface_unresolved — first-party labeler + consumer_scope=unknown +
@@ -39,7 +39,29 @@ Refusal vocabulary (Bundle D v1 + D.5):
                                      (D.5: genuine emitter-side undeclared, NOT an
                                      ingestion gap)
   provenance_unresolved            — consumer_scope=unknown for a non-first-party labeler
-  requires_state_basis             — lane=freshness AND no state_basis/first_seen data in evidence
+  missing_required_basis           — lane=freshness AND no StateBasis in evidence
+                                     (Bundle E rename: previously "requires_state_basis";
+                                     fires only when basis is genuinely absent,
+                                     not when basis is present-with-unknown-horizon)
+
+Bundle E state_basis_status vocabulary (carried on exported freshness candidates):
+  current_basis        — StateBasis.freshness_horizon is an ISO deadline still
+                         in the future as of now_iso
+  stale_basis          — StateBasis.freshness_horizon is an ISO deadline already
+                         passed as of now_iso (caveat 'stale_basis' added)
+  unknown_basis        — StateBasis.freshness_horizon is 'unknown' or unparsable
+                         (caveat 'unknown_basis' added)
+  missing              — StateBasis is absent entirely (this is what produces the
+                         missing_required_basis blocker on the freshness lane;
+                         on authority_surface, the candidate exports informationally
+                         with state_basis_status='missing' but no caveat — basis
+                         is not the freshness lane there)
+
+Bundle E invariant:
+  Freshness is not authority. It may preserve, caveat, stale, or block. It must
+  not promote. stale_basis and unknown_basis never silently export as
+  current_basis. A fresh undeclared label is still undeclared; a stale global
+  policy is still not current.
 """
 from __future__ import annotations
 
@@ -47,8 +69,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
-EXPORTER_VERSION = "specimen_exporter.py v1 (Bundle D skeleton)"
-SCHEMA_VERSION = 1
+EXPORTER_VERSION = "specimen_exporter.py v2 (Bundle E state-basis gate)"
+SCHEMA_VERSION = 2
 
 
 # --- main entry point ----------------------------------------------------
@@ -105,6 +127,9 @@ def export_candidate(
 
     # --- EXPORTABLE CANDIDATE ---
 
+    state_basis = evidence.get("StateBasis")
+    state_basis_status = _classify_state_basis_status(state_basis, now_iso)
+
     candidate = {
         **base,
         "schema_kind": "specimen_candidate",
@@ -113,9 +138,48 @@ def export_candidate(
         "emitter_provenance": _emitter_provenance_block(emitter_doc),
         "consumer_scope_effective": gap.get("consumer_scope"),
         "conversion_gap": gap,
-        "export_caveats": _caveats(policy_doc, emitter_doc, gap, lane, evidence),
+        "state_basis": state_basis,
+        "state_basis_status": state_basis_status,
+        "export_caveats": _caveats(
+            policy_doc, emitter_doc, gap, lane, evidence, state_basis_status,
+        ),
     }
     return candidate
+
+
+def _classify_state_basis_status(
+    state_basis: Optional[Dict[str, Any]],
+    now_iso: str,
+) -> str:
+    """Bundle E: classify the freshness state of the evidence's basis.
+    Returns one of: missing | unknown_basis | current_basis | stale_basis.
+
+    Vocabulary:
+      - missing       : no StateBasis at all
+      - unknown_basis : StateBasis present but freshness_horizon is 'unknown'
+                        / None / unparsable. Caller decides whether to export
+                        with caveat or block (freshness lane: export with
+                        caveat per Bundle E invariant)
+      - current_basis : freshness_horizon is an ISO timestamp still in the
+                        future as of now_iso
+      - stale_basis   : freshness_horizon is an ISO timestamp already passed
+
+    ISO timestamp comparison is lexical — relies on Z-suffixed UTC. v1
+    does not parse duration strings ("24h", "7d"); those classify as
+    unknown_basis until a future refinement.
+    """
+    if not state_basis:
+        return "missing"
+    horizon = state_basis.get("freshness_horizon")
+    if horizon == "unknown" or horizon is None:
+        return "unknown_basis"
+    if isinstance(horizon, str) and len(horizon) >= 10 and horizon[0:4].isdigit():
+        # Treat as ISO timestamp (lexical comparison works for Z-suffixed UTC)
+        if horizon >= now_iso:
+            return "current_basis"
+        return "stale_basis"
+    # Anything else (e.g., duration strings, malformed) -> honest unknown
+    return "unknown_basis"
 
 
 # --- hard refusal gates --------------------------------------------------
@@ -200,14 +264,26 @@ def _hard_gates(
             "what_would_unblock": "Either confirm the labeler publishes no service record (real absence) or ingest the record and re-derive (likely emitter_declared on re-derive).",
         }
 
-    # 5. Lane-specific freshness requirements. v1 always blocks freshness
-    # because state_basis / first_seen aren't yet populated by the
-    # deriver (Bundle E will wire that path).
+    # 5. Lane-specific freshness gate. Bundle E:
+    # freshness blocks only when StateBasis is genuinely absent. With
+    # StateBasis present (even with freshness_horizon='unknown'), the
+    # candidate exports with a state_basis_status caveat — unknown_basis,
+    # stale_basis, or current_basis. Per the invariant: freshness can
+    # preserve, caveat, stale, or block. It must not promote.
     if lane == "freshness" and not _has_state_basis(evidence):
         return {
-            "blocker": "requires_state_basis",
-            "reason": "Lane 'freshness' requires state_basis / first_seen / reassertion_count from the label_state sidecar. The deriver does not yet populate these fields; Bundle E adds the sidecar lookup.",
-            "what_would_unblock": "Bundle E: wire derive_evidence.py to label_state sidecar lookups; populate observation.first_seen, observation.state_basis, observation.reassertion_count.",
+            "blocker": "missing_required_basis",
+            "reason": (
+                "Lane 'freshness' requires evidence.StateBasis. The packet "
+                "has no StateBasis field — exporter cannot reason about "
+                "current/stale/unknown without a basis to evaluate."
+            ),
+            "what_would_unblock": (
+                "Populate evidence.StateBasis with source_kind, captured_at, "
+                "artifact_identity, freshness_horizon, derivation_source. "
+                "The deriver does this for db_row evidence; hand-authored "
+                "fixtures must declare their own basis."
+            ),
         }
 
     return None
@@ -288,6 +364,7 @@ def _caveats(
     gap: Dict[str, Any],
     lane: str,
     evidence: Dict[str, Any],
+    state_basis_status: str,
 ) -> List[str]:
     caveats: List[str] = []
     consumer_scope = gap.get("consumer_scope")
@@ -302,10 +379,24 @@ def _caveats(
     if (evidence.get("PolicyWitness") or {}).get("status") == \
             "partial_documentary_not_receipted":
         caveats.append("policy_witnessed_documentary_only")
+    # Bundle E: state-basis caveats. Apply on freshness lane so the
+    # candidate cannot be mistaken for current_basis. Authority_surface
+    # lane gets the info too (state_basis_status field is present), but
+    # we don't add it as a caveat there — basis isn't the authority lane's
+    # concern.
+    if lane == "freshness":
+        if state_basis_status == "unknown_basis":
+            caveats.append("unknown_basis")
+        elif state_basis_status == "stale_basis":
+            caveats.append("stale_basis")
     return caveats
 
 
 def _has_state_basis(evidence: Dict[str, Any]) -> bool:
-    """v1: always False because the deriver doesn't populate state fields
-    yet. Bundle E flips this to a real check."""
-    return False
+    """Bundle E: True iff the evidence packet declares a StateBasis block.
+    A missing block means the freshness lane cannot reason about
+    current/stale/unknown — that's the missing_required_basis blocker.
+    A present block with freshness_horizon='unknown' still counts as
+    present; the exporter classifies it as unknown_basis and exports
+    with caveat per Bundle E invariant."""
+    return bool(evidence.get("StateBasis"))

@@ -8,7 +8,7 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T16:50:34Z",
+    "derived_at": "2026-06-08T16:59:13Z",
     "source_row_id": 39549897,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
@@ -80,7 +80,7 @@
       "discovered_at": "2026-05-19T23:19:15.619785Z",
       "source_table": "labelwatch.db / discovery_events"
     },
-    "retrieved_at": "2026-06-08T16:50:34Z",
+    "retrieved_at": "2026-06-08T16:59:13Z",
     "reviewed_at": "2026-06-08",
     "reviewer": "labelwatch-claude (Bundle C)"
   },
@@ -99,5 +99,14 @@
   "HostingObservation": {
     "status": "not_applicable",
     "reason": "Documented policy execution_surface is unknown or absent; hosting observation not framed for this packet."
+  },
+  "StateBasis": {
+    "source_kind": "db_row",
+    "captured_at": "2026-06-08T16:59:13Z",
+    "artifact_identity": "labelwatch.label_events.id=39549897",
+    "artifact_hash": null,
+    "freshness_horizon": "unknown",
+    "derivation_source": "derive_evidence.py reading labelwatch.label_events + labelers",
+    "note": "Bundle E v1: freshness_horizon='unknown' across the board because deriver does not yet model per-source horizons (label_events is append-only and indefinite; service_record snapshots have file-mtime semantics; @atproto/api LABELS const pins a HEAD that may have moved). Exporter freshness lane treats unknown_basis as a caveated EXPORT, never as current_basis."
   }
 }

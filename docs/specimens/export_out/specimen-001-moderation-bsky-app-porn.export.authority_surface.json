@@ -1,9 +1,9 @@
 {
   "schema_kind": "specimen_candidate",
-  "schema_version": 1,
+  "schema_version": 2,
   "lane": "authority_surface",
-  "exporter": "specimen_exporter.py v1 (Bundle D skeleton)",
-  "exported_at": "2026-06-08T16:50:36Z",
+  "exporter": "specimen_exporter.py v2 (Bundle E state-basis gate)",
+  "exported_at": "2026-06-08T16:59:15Z",
   "evidence_source": "specimen-001-moderation-bsky-app-porn.evidence.json",
   "labeler": {
     "did": "did:plc:ar7c4by46qjdydhdevvrndac",
@@ -49,6 +49,16 @@
     "surface": "client_render",
     "consumer_scope": "global_platform"
   },
+  "state_basis": {
+    "source_kind": "fixture",
+    "captured_at": "2026-06-08T15:30:00Z",
+    "artifact_identity": "fixture: specimen-001-moderation-bsky-app-porn",
+    "artifact_hash": null,
+    "freshness_horizon": "unknown",
+    "derivation_source": "hand-authored fixture; pinned to @atproto/api v0.19.17 HEAD 7b8c5d60a",
+    "note": "Bundle E: fixture-author basis. freshness_horizon='unknown' because the pinned policy artifact HEAD may have moved upstream since the fixture was authored. Exporter freshness lane classifies as unknown_basis (export with caveat, never as current_basis)."
+  },
+  "state_basis_status": "unknown_basis",
   "export_caveats": [
     "render_execution_unwitnessed",
     "policy_witnessed_documentary_only"

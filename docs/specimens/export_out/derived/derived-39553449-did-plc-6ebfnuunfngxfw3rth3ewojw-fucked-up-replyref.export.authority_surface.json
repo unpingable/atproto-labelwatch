@@ -1,9 +1,9 @@
 {
   "schema_kind": "specimen_candidate",
-  "schema_version": 1,
+  "schema_version": 2,
   "lane": "authority_surface",
-  "exporter": "specimen_exporter.py v1 (Bundle D skeleton)",
-  "exported_at": "2026-06-08T16:50:36Z",
+  "exporter": "specimen_exporter.py v2 (Bundle E state-basis gate)",
+  "exported_at": "2026-06-08T16:59:15Z",
   "evidence_source": "derived/derived-39553449-did-plc-6ebfnuunfngxfw3rth3ewojw-fucked-up-replyref.evidence.json",
   "labeler": {
     "did": "did:plc:6ebfnuunfngxfw3rth3ewojw",
@@ -49,6 +49,16 @@
     "surface": null,
     "consumer_scope": "emitter_declared"
   },
+  "state_basis": {
+    "source_kind": "db_row",
+    "captured_at": "2026-06-08T16:59:13Z",
+    "artifact_identity": "labelwatch.label_events.id=39553449",
+    "artifact_hash": null,
+    "freshness_horizon": "unknown",
+    "derivation_source": "derive_evidence.py reading labelwatch.label_events + labelers",
+    "note": "Bundle E v1: freshness_horizon='unknown' across the board because deriver does not yet model per-source horizons (label_events is append-only and indefinite; service_record snapshots have file-mtime semantics; @atproto/api LABELS const pins a HEAD that may have moved). Exporter freshness lane treats unknown_basis as a caveated EXPORT, never as current_basis."
+  },
+  "state_basis_status": "unknown_basis",
   "export_caveats": [
     "non_global_provenance"
   ]

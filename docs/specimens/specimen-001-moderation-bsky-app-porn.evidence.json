@@ -114,5 +114,15 @@
   "HostingObservation": {
     "status": "not_applicable",
     "reason": "PolicyDocumentation.execution_surface is client_render; the hosting layer is not where this conversion acts. The record remains hosted unchanged regardless of the render-side blur."
+  },
+
+  "StateBasis": {
+    "source_kind": "fixture",
+    "captured_at": "2026-06-08T15:30:00Z",
+    "artifact_identity": "fixture: specimen-001-moderation-bsky-app-porn",
+    "artifact_hash": null,
+    "freshness_horizon": "unknown",
+    "derivation_source": "hand-authored fixture; pinned to @atproto/api v0.19.17 HEAD 7b8c5d60a",
+    "note": "Bundle E: fixture-author basis. freshness_horizon='unknown' because the pinned policy artifact HEAD may have moved upstream since the fixture was authored. Exporter freshness lane classifies as unknown_basis (export with caveat, never as current_basis)."
   }
 }

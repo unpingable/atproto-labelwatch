@@ -78,9 +78,16 @@ def _synth(
     return packet
 
 
-def _run(name: str, evidence: Dict[str, Any], lane: str = "authority_surface") -> Dict[str, Any]:
+def _run(
+    name: str,
+    evidence: Dict[str, Any],
+    lane: str = "authority_surface",
+    now_iso_override: str = None,
+) -> Dict[str, Any]:
     c = classify_evidence(evidence)
-    return export_candidate(evidence, c, lane=lane, evidence_source=name)
+    return export_candidate(
+        evidence, c, lane=lane, evidence_source=name, now_iso=now_iso_override,
+    )
 
 
 # --- synthetic invariants -----------------------------------------------
@@ -210,9 +217,9 @@ def test_upstream_const_exports() -> None:
     print("  PASS upstream_const exports with render_execution_unwitnessed caveat")
 
 
-def test_freshness_lane_always_blocks() -> None:
-    """Even a fully-exportable authority_surface candidate is blocked
-    on the freshness lane in v1 (no state_basis populated yet)."""
+def test_freshness_missing_basis_blocks() -> None:
+    """Freshness lane: StateBasis absent -> missing_required_basis blocker
+    (Bundle E rename from requires_state_basis)."""
     ev = _synth(
         "porn",
         labeler_class="official_platform",
@@ -221,10 +228,112 @@ def test_freshness_lane_always_blocks() -> None:
         policy_consumer_scope="global_platform",
         policy_surface="client_render",
     )
-    out = _run("test_freshness_lane", ev, lane="freshness")
+    # _synth does not populate StateBasis
+    out = _run("test_freshness_missing_basis", ev, lane="freshness")
     assert out["schema_kind"] == "blocked_candidate", out
-    assert out["blocker"] == "requires_state_basis", out
-    print("  PASS freshness lane blocks on missing state_basis")
+    assert out["blocker"] == "missing_required_basis", out
+    print("  PASS missing_required_basis (freshness lane, no StateBasis)")
+
+
+def test_freshness_unknown_basis_exports_with_caveat() -> None:
+    """Freshness lane: StateBasis present with freshness_horizon='unknown'
+    -> EXPORTS with state_basis_status=unknown_basis + caveat. Bundle E
+    invariant: unknown basis never silently exports as current."""
+    ev = _synth(
+        "porn",
+        labeler_class="official_platform",
+        policy_status="documented",
+        policy_artifact_kind="upstream_const",
+        policy_consumer_scope="global_platform",
+        policy_surface="client_render",
+    )
+    ev["StateBasis"] = {
+        "source_kind": "db_row",
+        "captured_at": "2026-06-08T00:00:00Z",
+        "artifact_identity": "test",
+        "freshness_horizon": "unknown",
+        "derivation_source": "test",
+    }
+    out = _run("test_freshness_unknown", ev, lane="freshness", )
+    assert out["schema_kind"] == "specimen_candidate", out
+    assert out["state_basis_status"] == "unknown_basis", out
+    assert "unknown_basis" in out["export_caveats"], out
+    # Confirm no current_basis claim
+    assert "current_basis" not in str(out), "unknown_basis must not claim current"
+    print("  PASS unknown_basis exports with caveat, never current")
+
+
+def test_freshness_stale_basis_exports_with_caveat() -> None:
+    """Freshness lane: StateBasis with concrete horizon already passed
+    -> EXPORTS with state_basis_status=stale_basis + caveat."""
+    ev = _synth(
+        "porn",
+        labeler_class="official_platform",
+        policy_status="documented",
+        policy_artifact_kind="upstream_const",
+        policy_consumer_scope="global_platform",
+        policy_surface="client_render",
+    )
+    ev["StateBasis"] = {
+        "source_kind": "snapshot",
+        "captured_at": "2025-01-01T00:00:00Z",
+        "artifact_identity": "test-snapshot",
+        "freshness_horizon": "2025-06-01T00:00:00Z",  # past
+        "derivation_source": "test snapshot deadline already passed",
+    }
+    out = _run("test_freshness_stale", ev, lane="freshness", now_iso_override="2026-06-08T00:00:00Z")
+    assert out["schema_kind"] == "specimen_candidate", out
+    assert out["state_basis_status"] == "stale_basis", out
+    assert "stale_basis" in out["export_caveats"], out
+    print("  PASS stale_basis exports with caveat, never current")
+
+
+def test_freshness_current_basis_exports_clean() -> None:
+    """Freshness lane: StateBasis with concrete horizon in the future
+    -> EXPORTS with state_basis_status=current_basis + no basis caveat."""
+    ev = _synth(
+        "porn",
+        labeler_class="official_platform",
+        policy_status="documented",
+        policy_artifact_kind="upstream_const",
+        policy_consumer_scope="global_platform",
+        policy_surface="client_render",
+    )
+    ev["StateBasis"] = {
+        "source_kind": "live_fetch",
+        "captured_at": "2026-06-08T00:00:00Z",
+        "artifact_identity": "test-live",
+        "freshness_horizon": "2099-01-01T00:00:00Z",  # far future
+        "derivation_source": "test live fetch with explicit horizon",
+    }
+    out = _run("test_freshness_current", ev, lane="freshness", now_iso_override="2026-06-08T00:00:00Z")
+    assert out["schema_kind"] == "specimen_candidate", out
+    assert out["state_basis_status"] == "current_basis", out
+    assert "unknown_basis" not in out["export_caveats"], out
+    assert "stale_basis" not in out["export_caveats"], out
+    print("  PASS current_basis exports clean (basis horizon honored)")
+
+
+def test_authority_surface_ignores_state_basis_absence() -> None:
+    """Bundle E invariant: authority_surface lane does NOT gate on
+    StateBasis. D.5 behavior unchanged for global_platform/emitter_declared/
+    undeclared/unresolved-surface even when StateBasis is missing."""
+    ev = _synth(
+        "porn",
+        labeler_class="official_platform",
+        policy_status="documented",
+        policy_artifact_kind="upstream_const",
+        policy_consumer_scope="global_platform",
+        policy_surface="client_render",
+    )
+    # no StateBasis
+    out = _run("test_authority_no_basis", ev, lane="authority_surface")
+    assert out["schema_kind"] == "specimen_candidate", out
+    assert out["state_basis_status"] == "missing", out
+    # No basis-related caveat on authority_surface lane:
+    assert "unknown_basis" not in out["export_caveats"], out
+    assert "stale_basis" not in out["export_caveats"], out
+    print("  PASS authority_surface ignores StateBasis (D.5 behavior preserved)")
 
 
 def test_no_label_observation_blocked() -> None:
@@ -245,25 +354,26 @@ def run_corpus(out_dir: str = "export_out") -> None:
     os.makedirs(out_path, exist_ok=True)
 
     print()
-    print(f"--- corpus run: walking docs/specimens/ ---")
+    print(f"--- corpus run: walking docs/specimens/ for BOTH lanes ---")
     print(f"{'evidence_file':<70} {'lane':<18} {'verdict':<22} {'blocker_or_scope'}")
     print("-" * 145)
 
-    # Fixtures
-    for fname in sorted(os.listdir(here)):
-        if not fname.endswith(".evidence.json"):
-            continue
-        _process_one(here, fname, out_path, "authority_surface")
-
-    # Derived packets
-    derived_dir = os.path.join(here, "derived")
-    if os.path.isdir(derived_dir):
-        for fname in sorted(os.listdir(derived_dir)):
+    for lane in ("authority_surface", "freshness"):
+        # Fixtures
+        for fname in sorted(os.listdir(here)):
             if not fname.endswith(".evidence.json"):
                 continue
-            _process_one(derived_dir, fname, out_path, "authority_surface", subdir="derived")
+            _process_one(here, fname, out_path, lane)
 
-    print()
+        # Derived packets
+        derived_dir = os.path.join(here, "derived")
+        if os.path.isdir(derived_dir):
+            for fname in sorted(os.listdir(derived_dir)):
+                if not fname.endswith(".evidence.json"):
+                    continue
+                _process_one(derived_dir, fname, out_path, lane, subdir="derived")
+        print()
+
     print(f"Output JSONs written to {out_path}/")
 
 
@@ -274,10 +384,11 @@ def _process_one(base_dir: str, fname: str, out_path: str, lane: str, subdir: st
     c = classify_evidence(ev)
     rel_src = os.path.join(subdir, fname) if subdir else fname
     out = export_candidate(ev, c, lane=lane, evidence_source=rel_src)
-    label = (ev.get("LabelObservation") or {}).get("label_value", "?")
     if out["schema_kind"] == "specimen_candidate":
         verdict = "EXPORTED"
-        tail = f"{out['consumer_scope_effective']}  caveats={out['export_caveats']}"
+        scope = out.get("consumer_scope_effective", "?")
+        basis = out.get("state_basis_status", "?")
+        tail = f"{scope}/{basis}  caveats={out['export_caveats']}"
     else:
         verdict = "blocked"
         tail = f"{out['blocker']}"
@@ -303,7 +414,11 @@ def main() -> int:
         test_emitter_declared_exports_with_caveat,
         test_protocol_doc_exports,
         test_upstream_const_exports,
-        test_freshness_lane_always_blocks,
+        test_freshness_missing_basis_blocks,
+        test_freshness_unknown_basis_exports_with_caveat,
+        test_freshness_stale_basis_exports_with_caveat,
+        test_freshness_current_basis_exports_clean,
+        test_authority_surface_ignores_state_basis_absence,
         test_no_label_observation_blocked,
     ]:
         try:

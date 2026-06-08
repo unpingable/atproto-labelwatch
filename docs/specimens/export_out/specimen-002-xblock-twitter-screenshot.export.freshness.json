@@ -1,29 +1,29 @@
 {
   "schema_kind": "specimen_candidate",
   "schema_version": 2,
-  "lane": "authority_surface",
+  "lane": "freshness",
   "exporter": "specimen_exporter.py v2 (Bundle E state-basis gate)",
   "exported_at": "2026-06-08T16:59:15Z",
-  "evidence_source": "derived/derived-39549897-did-plc-e4elbtctnfqocyfcml6h2lf7-fringe-media.evidence.json",
+  "evidence_source": "specimen-002-xblock-twitter-screenshot.evidence.json",
   "labeler": {
-    "did": "did:plc:e4elbtctnfqocyfcml6h2lf7",
-    "handle": "skywatch.blue",
-    "display_name": null,
-    "class": "official_platform",
-    "is_reference": true
+    "did": "did:plc:newitj5jo3uel7o4mnf3vj2o",
+    "handle": "xblock.aendra.dev",
+    "display_name": "XBlock Screenshot Labeller",
+    "class": "third_party",
+    "is_reference": false
   },
   "label": {
-    "value": "fringe-media",
+    "value": "twitter-screenshot",
     "neg": 0,
-    "labelwatch_authority_effect": null
+    "labelwatch_authority_effect": "unknown"
   },
   "target": {
-    "uri": "at://did:plc:5gy2ohzlg2iszo25tziw4ixz/app.bsky.feed.post/3mns4v565o22a",
+    "uri": "at://did:plc:rzwzv7yzjbuybw7beim3clda/app.bsky.feed.post/3mcoaxxulgb2q",
     "kind": "post_record",
     "target_did": null
   },
   "observation": {
-    "ts": "2026-06-08T16:46:19.555125Z",
+    "ts": "2026-06-08T14:28:48.159566Z",
     "first_seen": null,
     "last_seen": null,
     "reassertion_count": null,
@@ -41,7 +41,7 @@
     "artifact_kind": "service_record",
     "consumer_scope": "emitter_declared",
     "status": "documented_via_service_record",
-    "execution_surface": "client_render"
+    "execution_surface": null
   },
   "consumer_scope_effective": "emitter_declared",
   "conversion_gap": {
@@ -50,16 +50,17 @@
     "consumer_scope": "emitter_declared"
   },
   "state_basis": {
-    "source_kind": "db_row",
-    "captured_at": "2026-06-08T16:59:13Z",
-    "artifact_identity": "labelwatch.label_events.id=39549897",
+    "source_kind": "fixture",
+    "captured_at": "2026-06-08T15:30:00Z",
+    "artifact_identity": "fixture: specimen-002-xblock-twitter-screenshot",
     "artifact_hash": null,
     "freshness_horizon": "unknown",
-    "derivation_source": "derive_evidence.py reading labelwatch.label_events + labelers",
-    "note": "Bundle E v1: freshness_horizon='unknown' across the board because deriver does not yet model per-source horizons (label_events is append-only and indefinite; service_record snapshots have file-mtime semantics; @atproto/api LABELS const pins a HEAD that may have moved). Exporter freshness lane treats unknown_basis as a caveated EXPORT, never as current_basis."
+    "derivation_source": "hand-authored fixture; xblock service-record citation last reviewed 2026-06-08",
+    "note": "Bundle E: fixture-author basis. freshness_horizon='unknown' because the cited service record may have been re-published since authorship. Exporter freshness lane classifies as unknown_basis."
   },
   "state_basis_status": "unknown_basis",
   "export_caveats": [
-    "non_global_provenance"
+    "non_global_provenance",
+    "unknown_basis"
   ]
 }

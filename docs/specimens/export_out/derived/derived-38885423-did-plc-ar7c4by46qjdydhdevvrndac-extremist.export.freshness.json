@@ -1,10 +1,10 @@
 {
   "schema_kind": "specimen_candidate",
   "schema_version": 2,
-  "lane": "authority_surface",
+  "lane": "freshness",
   "exporter": "specimen_exporter.py v2 (Bundle E state-basis gate)",
   "exported_at": "2026-06-08T16:59:15Z",
-  "evidence_source": "derived/derived-39549839-did-plc-ar7c4by46qjdydhdevvrndac-porn.evidence.json",
+  "evidence_source": "derived/derived-38885423-did-plc-ar7c4by46qjdydhdevvrndac-extremist.evidence.json",
   "labeler": {
     "did": "did:plc:ar7c4by46qjdydhdevvrndac",
     "handle": "moderation.bsky.app",
@@ -13,17 +13,17 @@
     "is_reference": true
   },
   "label": {
-    "value": "porn",
+    "value": "extremist",
     "neg": 0,
     "labelwatch_authority_effect": null
   },
   "target": {
-    "uri": "at://did:plc:4aawxyael2d2lbtrhflhia76/app.bsky.feed.post/3lqjqe4bd672i",
+    "uri": "at://did:plc:fsoq27ix4ewsmnzklzbsj6hk/app.bsky.feed.post/3lqfawz4yy22l",
     "kind": "post_record",
     "target_did": null
   },
   "observation": {
-    "ts": "2026-06-08T16:46:14.981049Z",
+    "ts": "2026-06-06T19:53:17.004895Z",
     "first_seen": null,
     "last_seen": null,
     "reassertion_count": null,
@@ -32,27 +32,27 @@
     "state_lookup_note": "v1: single-event proxy only. Bundle E will populate from label_state sidecar; until then freshness-lane exports are gated on this absence."
   },
   "policy_provenance": {
-    "artifact_kind": "upstream_const",
-    "consumer_scope": "global_platform",
-    "status": "documented",
-    "execution_surface": "client_render"
-  },
-  "emitter_provenance": {
     "artifact_kind": null,
     "consumer_scope": "unknown",
-    "status": "service_record_found_label_not_declared",
+    "status": "absent_for_consumer",
     "execution_surface": null
   },
-  "consumer_scope_effective": "global_platform",
+  "emitter_provenance": {
+    "artifact_kind": "service_record",
+    "consumer_scope": "emitter_declared",
+    "status": "documented_via_service_record",
+    "execution_surface": "client_render"
+  },
+  "consumer_scope_effective": "emitter_declared",
   "conversion_gap": {
-    "name": "execution_gap_policy_present",
-    "surface": "client_render",
-    "consumer_scope": "global_platform"
+    "name": "conversion_witness_gap_no_consumer",
+    "surface": null,
+    "consumer_scope": "emitter_declared"
   },
   "state_basis": {
     "source_kind": "db_row",
-    "captured_at": "2026-06-08T16:59:12Z",
-    "artifact_identity": "labelwatch.label_events.id=39549839",
+    "captured_at": "2026-06-08T16:59:13Z",
+    "artifact_identity": "labelwatch.label_events.id=38885423",
     "artifact_hash": null,
     "freshness_horizon": "unknown",
     "derivation_source": "derive_evidence.py reading labelwatch.label_events + labelers",
@@ -60,7 +60,7 @@
   },
   "state_basis_status": "unknown_basis",
   "export_caveats": [
-    "render_execution_unwitnessed",
-    "policy_witnessed_documentary_only"
+    "non_global_provenance",
+    "unknown_basis"
   ]
 }

@@ -1,10 +1,10 @@
 {
   "schema_kind": "specimen_candidate",
   "schema_version": 2,
-  "lane": "authority_surface",
+  "lane": "freshness",
   "exporter": "specimen_exporter.py v2 (Bundle E state-basis gate)",
   "exported_at": "2026-06-08T16:59:15Z",
-  "evidence_source": "derived/derived-39549839-did-plc-ar7c4by46qjdydhdevvrndac-porn.evidence.json",
+  "evidence_source": "specimen-001-moderation-bsky-app-porn.evidence.json",
   "labeler": {
     "did": "did:plc:ar7c4by46qjdydhdevvrndac",
     "handle": "moderation.bsky.app",
@@ -15,15 +15,15 @@
   "label": {
     "value": "porn",
     "neg": 0,
-    "labelwatch_authority_effect": null
+    "labelwatch_authority_effect": "visibility_affecting"
   },
   "target": {
-    "uri": "at://did:plc:4aawxyael2d2lbtrhflhia76/app.bsky.feed.post/3lqjqe4bd672i",
+    "uri": "at://did:plc:ztlk6b7feflbs4uyhckz6dh5/app.bsky.feed.post/3lqjexu2mik2g",
     "kind": "post_record",
     "target_did": null
   },
   "observation": {
-    "ts": "2026-06-08T16:46:14.981049Z",
+    "ts": "2026-06-08T14:03:01.304298Z",
     "first_seen": null,
     "last_seen": null,
     "reassertion_count": null,
@@ -32,7 +32,7 @@
     "state_lookup_note": "v1: single-event proxy only. Bundle E will populate from label_state sidecar; until then freshness-lane exports are gated on this absence."
   },
   "policy_provenance": {
-    "artifact_kind": "upstream_const",
+    "artifact_kind": null,
     "consumer_scope": "global_platform",
     "status": "documented",
     "execution_surface": "client_render"
@@ -40,7 +40,7 @@
   "emitter_provenance": {
     "artifact_kind": null,
     "consumer_scope": "unknown",
-    "status": "service_record_found_label_not_declared",
+    "status": "absent",
     "execution_surface": null
   },
   "consumer_scope_effective": "global_platform",
@@ -50,17 +50,18 @@
     "consumer_scope": "global_platform"
   },
   "state_basis": {
-    "source_kind": "db_row",
-    "captured_at": "2026-06-08T16:59:12Z",
-    "artifact_identity": "labelwatch.label_events.id=39549839",
+    "source_kind": "fixture",
+    "captured_at": "2026-06-08T15:30:00Z",
+    "artifact_identity": "fixture: specimen-001-moderation-bsky-app-porn",
     "artifact_hash": null,
     "freshness_horizon": "unknown",
-    "derivation_source": "derive_evidence.py reading labelwatch.label_events + labelers",
-    "note": "Bundle E v1: freshness_horizon='unknown' across the board because deriver does not yet model per-source horizons (label_events is append-only and indefinite; service_record snapshots have file-mtime semantics; @atproto/api LABELS const pins a HEAD that may have moved). Exporter freshness lane treats unknown_basis as a caveated EXPORT, never as current_basis."
+    "derivation_source": "hand-authored fixture; pinned to @atproto/api v0.19.17 HEAD 7b8c5d60a",
+    "note": "Bundle E: fixture-author basis. freshness_horizon='unknown' because the pinned policy artifact HEAD may have moved upstream since the fixture was authored. Exporter freshness lane classifies as unknown_basis (export with caveat, never as current_basis)."
   },
   "state_basis_status": "unknown_basis",
   "export_caveats": [
     "render_execution_unwitnessed",
-    "policy_witnessed_documentary_only"
+    "policy_witnessed_documentary_only",
+    "unknown_basis"
   ]
 }

@@ -292,6 +292,23 @@ def derive(
         "PolicyWitness": _policy_witness(policy_documented),
         "RenderObservation": _render_observation(label_value, policy_documented),
         "HostingObservation": _hosting_observation(label_value, policy_documented),
+        "StateBasis": {
+            "source_kind": "db_row",
+            "captured_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "artifact_identity": f"labelwatch.label_events.id={row['id']}",
+            "artifact_hash": None,
+            "freshness_horizon": "unknown",
+            "derivation_source": "derive_evidence.py reading labelwatch.label_events + labelers",
+            "note": (
+                "Bundle E v1: freshness_horizon='unknown' across the board "
+                "because deriver does not yet model per-source horizons "
+                "(label_events is append-only and indefinite; service_record "
+                "snapshots have file-mtime semantics; @atproto/api LABELS "
+                "const pins a HEAD that may have moved). Exporter freshness "
+                "lane treats unknown_basis as a caveated EXPORT, never as "
+                "current_basis."
+            ),
+        },
     }
     return packet
 
