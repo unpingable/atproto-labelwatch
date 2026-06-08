@@ -41,25 +41,29 @@ from typing import Any, Dict, List, Optional, Tuple
 _log = logging.getLogger(__name__)
 
 
+SIDECAR_SCHEMA_VERSION = 2
 SIDECAR_SCHEMA = """
 CREATE TABLE IF NOT EXISTS label_state (
     labeler_did TEXT NOT NULL,
     uri TEXT NOT NULL,
     val TEXT NOT NULL,
-    current_state TEXT NOT NULL,           -- 'active' | 'inactive' | 'unknown'
+    current_state TEXT NOT NULL,           -- 'active' | 'inactive' | 'inactive_inferred' | 'unknown'
     current_state_since INTEGER,           -- unix seconds; when current state began
     first_seen_ts INTEGER NOT NULL,        -- unix seconds; earliest event for this key
     last_seen_ts INTEGER NOT NULL,         -- unix seconds; latest event for this key
     add_count INTEGER NOT NULL DEFAULT 0,  -- state transitions: inactive -> active
     del_count INTEGER NOT NULL DEFAULT 0,  -- state transitions: active -> inactive
-    event_count INTEGER NOT NULL DEFAULT 0,-- total events observed (incl. reasserts)
+    event_count INTEGER NOT NULL DEFAULT 0,-- total events observed (incl. reasserts/strays)
     open_run_started_ts INTEGER,           -- unix seconds; NULL when current_state != 'active'
+    state_basis TEXT,                      -- 'observed_lifecycle' | 'delete_without_observed_add' | 'no_events'
     updated_at INTEGER NOT NULL,           -- unix seconds; last write to this row
     PRIMARY KEY (labeler_did, uri, val)
 ) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_label_state_current_state
     ON label_state(current_state);
+CREATE INDEX IF NOT EXISTS idx_label_state_basis
+    ON label_state(state_basis);
 
 CREATE TABLE IF NOT EXISTS label_state_meta (
     key TEXT PRIMARY KEY,
@@ -76,22 +80,56 @@ META_BUILD_MAX_EVENTS = "build_max_events"
 META_BUILT_AT = "built_at"                  # ISO timestamp at completion
 META_FAILURE_REASON = "build_failure_reason"
 META_SOURCE_SCHEMA = "source_db_schema_version"
+META_SIDECAR_SCHEMA = "sidecar_schema_version"
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, col: str, decl: str) -> None:
+    """Idempotent ALTER TABLE ADD COLUMN. SQLite has no ADD COLUMN IF NOT EXISTS."""
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if col not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
 def init_sidecar(path: str) -> sqlite3.Connection:
-    """Open or create the sidecar DB; ensure schema. Returns a writable conn."""
+    """Open or create the sidecar DB; ensure schema. Returns a writable conn.
+
+    Logs the resolved absolute path so root-fs vs zone-storage placement
+    stops being an implicit symlink-resolution accident. The default
+    --sidecar path follows the main DB's dirname; this log makes the
+    actual landing visible without having to grep config.
+    """
     new = not os.path.exists(path)
+    resolved = os.path.realpath(path)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     # WAL on the sidecar so writer + reader can coexist without blocking.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SIDECAR_SCHEMA)
+    # Forward-compat migrations for existing sidecars (e.g. v1 -> v2 added
+    # state_basis). Empty no-op for fresh databases — the CREATE TABLE
+    # above already has the current shape.
+    _ensure_column(conn, "label_state", "state_basis", "TEXT")
     conn.commit()
     if new:
-        _log.info("Created sidecar DB at %s", path)
+        _log.info("Created sidecar DB at %s (resolved=%s)", path, resolved)
         meta_set(conn, META_BUILD_STATUS, "empty")
+        meta_set(conn, META_SIDECAR_SCHEMA, SIDECAR_SCHEMA_VERSION)
         conn.commit()
+    else:
+        prior = meta_get(conn, META_SIDECAR_SCHEMA)
+        if prior is None or int(prior) < SIDECAR_SCHEMA_VERSION:
+            _log.warning(
+                "Sidecar at %s (resolved=%s) is on schema v%s; current is v%d. "
+                "ALTER TABLE applied for new columns, but EXISTING ROWS may "
+                "have NULL state_basis until reprocessed. Recommend "
+                "rebuild: drop the sidecar and rerun the pilot.",
+                path, resolved, prior, SIDECAR_SCHEMA_VERSION,
+            )
+            meta_set(conn, META_SIDECAR_SCHEMA, SIDECAR_SCHEMA_VERSION)
+            conn.commit()
+        else:
+            _log.info("Opened sidecar DB at %s (resolved=%s, schema v%s)", path, resolved, prior)
     return conn
 
 
@@ -245,13 +283,37 @@ def _apply_chunk(
                     st["open_run_started_ts"] = None
                     st["del_count"] += 1
                 # else: stray negation, no transition
+        # Derive state_basis after processing this key's events. The
+        # 'delete_without_observed_add' bucket is the pilot's signal
+        # finding: keys with negation events but no positive transition.
+        # These were active BEFORE the observation window opened and
+        # removed during it. Promote them from raw 'unknown' to
+        # 'inactive_inferred' to preserve the inference boundary in
+        # current_state itself.
+        if st["add_count"] > 0:
+            basis = "observed_lifecycle"
+        elif st["event_count"] > 0:
+            basis = "delete_without_observed_add"
+            # Override the state machine's 'unknown' so any reader of
+            # current_state immediately sees the semantic class. Clunky
+            # name is the point: prevents future-readers from collapsing
+            # it back into a plain 'inactive'.
+            if st["current_state"] == "unknown":
+                st["current_state"] = "inactive_inferred"
+                # current_state_since: best available signal is the most
+                # recent observed event (the negation that left us here).
+                if st["current_state_since"] is None:
+                    st["current_state_since"] = st["last_seen_ts"]
+        else:
+            basis = "no_events"
+
         upserts.append(
             (
                 key[0], key[1], key[2],
                 st["current_state"], st["current_state_since"],
                 st["first_seen_ts"], st["last_seen_ts"],
                 st["add_count"], st["del_count"], st["event_count"],
-                st["open_run_started_ts"], now_int,
+                st["open_run_started_ts"], basis, now_int,
             )
         )
 
@@ -262,8 +324,8 @@ def _apply_chunk(
             current_state, current_state_since,
             first_seen_ts, last_seen_ts,
             add_count, del_count, event_count,
-            open_run_started_ts, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            open_run_started_ts, state_basis, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(labeler_did, uri, val) DO UPDATE SET
             current_state       = excluded.current_state,
             current_state_since = excluded.current_state_since,
@@ -273,6 +335,7 @@ def _apply_chunk(
             del_count           = excluded.del_count,
             event_count         = excluded.event_count,
             open_run_started_ts = excluded.open_run_started_ts,
+            state_basis         = excluded.state_basis,
             updated_at          = excluded.updated_at
         """,
         upserts,
@@ -441,14 +504,21 @@ def pilot_backfill(
 def query_state_summary(conn: sqlite3.Connection) -> Dict[str, Any]:
     """Aggregate read for downstream display. Caller MUST check is_admissible()
     before treating these counts as testimony.
+
+    Two breakdowns: by `current_state` (the runtime state) and by
+    `state_basis` (the inference class). The latter exposes the
+    'delete_without_observed_add' bucket — labels removed in-window
+    whose adds predate the observation window — which is the v1
+    motivation for left-censor flagging.
     """
-    row = conn.execute(
+    base = conn.execute(
         """
         SELECT
-            COUNT(*)                                       AS total_keys,
-            SUM(CASE WHEN current_state='active'   THEN 1 ELSE 0 END) AS active_keys,
-            SUM(CASE WHEN current_state='inactive' THEN 1 ELSE 0 END) AS inactive_keys,
-            SUM(CASE WHEN current_state='unknown'  THEN 1 ELSE 0 END) AS unknown_keys,
+            COUNT(*)                                                    AS total_keys,
+            SUM(CASE WHEN current_state='active'            THEN 1 ELSE 0 END) AS active_keys,
+            SUM(CASE WHEN current_state='inactive'          THEN 1 ELSE 0 END) AS inactive_keys,
+            SUM(CASE WHEN current_state='inactive_inferred' THEN 1 ELSE 0 END) AS inactive_inferred_keys,
+            SUM(CASE WHEN current_state='unknown'           THEN 1 ELSE 0 END) AS unknown_keys,
             SUM(add_count)         AS total_adds,
             SUM(del_count)         AS total_dels,
             SUM(event_count)       AS total_events,
@@ -457,4 +527,15 @@ def query_state_summary(conn: sqlite3.Connection) -> Dict[str, Any]:
         FROM label_state
         """
     ).fetchone()
-    return dict(row) if row else {}
+    basis = conn.execute(
+        """
+        SELECT state_basis, COUNT(*) AS keys, SUM(event_count) AS events
+        FROM label_state
+        GROUP BY state_basis
+        ORDER BY keys DESC
+        """
+    ).fetchall()
+    return {
+        **(dict(base) if base else {}),
+        "by_basis": [dict(r) for r in basis],
+    }
