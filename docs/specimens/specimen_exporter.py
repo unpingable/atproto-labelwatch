@@ -69,8 +69,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
-EXPORTER_VERSION = "specimen_exporter.py v2 (Bundle E state-basis gate)"
-SCHEMA_VERSION = 2
+EXPORTER_VERSION = "specimen_exporter.py v3 (Bundle G opt-in consumer adoption)"
+SCHEMA_VERSION = 3
 
 
 # --- main entry point ----------------------------------------------------
@@ -129,6 +129,19 @@ def export_candidate(
 
     state_basis = evidence.get("StateBasis")
     state_basis_status = _classify_state_basis_status(state_basis, now_iso)
+    consumer_adoption = evidence.get("ConsumerAdoption") or {}
+    consumer_action = evidence.get("ConsumerActionObservation") or {}
+
+    # consumer_scope_effective: when scope is opt_in_consumer_observed,
+    # render it as "opt_in:<consumer_id>" so downstream consumers cannot
+    # accidentally treat "opt_in_consumer_observed" as a global value.
+    # The named-consumer string is required signal.
+    raw_scope = gap.get("consumer_scope")
+    if raw_scope == "opt_in_consumer_observed":
+        cid = (consumer_adoption.get("consumer") or {}).get("consumer_id")
+        consumer_scope_effective = f"opt_in:{cid}" if cid else "opt_in:unnamed_consumer"
+    else:
+        consumer_scope_effective = raw_scope
 
     candidate = {
         **base,
@@ -136,7 +149,10 @@ def export_candidate(
         "observation": _observation_block(label_obs, evidence),
         "policy_provenance": _policy_provenance_block(policy_doc),
         "emitter_provenance": _emitter_provenance_block(emitter_doc),
-        "consumer_scope_effective": gap.get("consumer_scope"),
+        "consumer_adoption_provenance": _consumer_adoption_provenance_block(
+            consumer_adoption, consumer_action,
+        ),
+        "consumer_scope_effective": consumer_scope_effective,
         "conversion_gap": gap,
         "state_basis": state_basis,
         "state_basis_status": state_basis_status,
@@ -145,6 +161,25 @@ def export_candidate(
         ),
     }
     return candidate
+
+
+def _consumer_adoption_provenance_block(
+    consumer_adoption: Dict[str, Any],
+    consumer_action: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Bundle G: provenance block for ConsumerAdoption + receipt. Always
+    emitted on exported candidates so downstream sees whether an opt-in
+    consumer was named, and whether the policy actually fired."""
+    return {
+        "status": consumer_adoption.get("status") or "absent",
+        "consumer_id": (consumer_adoption.get("consumer") or {}).get("consumer_id"),
+        "policy_artifact": consumer_adoption.get("policy_artifact"),
+        "documented_expected_action": consumer_adoption.get("documented_expected_action"),
+        "consumer_scope": consumer_adoption.get("consumer_scope"),
+        "execution_surface": consumer_adoption.get("execution_surface"),
+        "action_observation_status": consumer_action.get("status") or "absent",
+        "action_receipt": consumer_action.get("receipt"),
+    }
 
 
 def _classify_state_basis_status(
@@ -370,12 +405,33 @@ def _caveats(
     consumer_scope = gap.get("consumer_scope")
     if consumer_scope == "emitter_declared":
         caveats.append("non_global_provenance")
+    # Bundle G: opt_in_consumer_observed exports get TWO caveats:
+    #   - consumer_local_scope_only — the conclusion is scoped to one
+    #     named consumer; downstream MUST NOT generalize.
+    #   - non_global_provenance INHERITED if the underlying basis was
+    #     emitter_declared (a consumer adopting a labeler's service-
+    #     record-only label doesn't promote the labeler's provenance).
+    if consumer_scope == "opt_in_consumer_observed":
+        caveats.append("consumer_local_scope_only")
+        emitter_scope = (evidence.get("LabelerEmitterDocumentation") or {}).get(
+            "consumer_scope"
+        )
+        if emitter_scope == "emitter_declared":
+            caveats.append("non_global_provenance")
     if (evidence.get("RenderObservation") or {}).get("status") == "absent" and \
             gap.get("surface") == "client_render":
         caveats.append("render_execution_unwitnessed")
     if (evidence.get("HostingObservation") or {}).get("status") == "absent" and \
             gap.get("surface") == "pds_hosting":
         caveats.append("hosting_execution_unwitnessed")
+    # Bundle G: consumer-local-state surface gets its own unwitnessed
+    # caveat when the ConsumerActionObservation is absent.
+    if gap.get("surface") == "consumer_local_state":
+        action_status = (evidence.get("ConsumerActionObservation") or {}).get(
+            "status"
+        )
+        if action_status == "absent" or action_status is None:
+            caveats.append("consumer_action_unwitnessed")
     if (evidence.get("PolicyWitness") or {}).get("status") == \
             "partial_documentary_not_receipted":
         caveats.append("policy_witnessed_documentary_only")

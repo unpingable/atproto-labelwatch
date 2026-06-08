@@ -1,9 +1,9 @@
 {
   "schema_kind": "blocked_candidate",
-  "schema_version": 2,
+  "schema_version": 3,
   "lane": "freshness",
-  "exporter": "specimen_exporter.py v2 (Bundle E state-basis gate)",
-  "exported_at": "2026-06-08T17:09:14Z",
+  "exporter": "specimen_exporter.py v3 (Bundle G opt-in consumer adoption)",
+  "exported_at": "2026-06-08T18:40:53Z",
   "evidence_source": "derived/derived-39464837-did-plc-ar7c4by46qjdydhdevvrndac-needs-review.evidence.json",
   "labeler": {
     "did": "did:plc:ar7c4by46qjdydhdevvrndac",

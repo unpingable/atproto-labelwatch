@@ -1,9 +1,9 @@
 {
   "schema_kind": "specimen_candidate",
-  "schema_version": 2,
+  "schema_version": 3,
   "lane": "authority_surface",
-  "exporter": "specimen_exporter.py v2 (Bundle E state-basis gate)",
-  "exported_at": "2026-06-08T17:09:14Z",
+  "exporter": "specimen_exporter.py v3 (Bundle G opt-in consumer adoption)",
+  "exported_at": "2026-06-08T18:40:53Z",
   "evidence_source": "specimen-002-xblock-twitter-screenshot.evidence.json",
   "labeler": {
     "did": "did:plc:newitj5jo3uel7o4mnf3vj2o",
@@ -42,6 +42,16 @@
     "consumer_scope": "emitter_declared",
     "status": "documented_via_service_record",
     "execution_surface": null
+  },
+  "consumer_adoption_provenance": {
+    "status": "absent",
+    "consumer_id": null,
+    "policy_artifact": null,
+    "documented_expected_action": null,
+    "consumer_scope": null,
+    "execution_surface": null,
+    "action_observation_status": "absent",
+    "action_receipt": null
   },
   "consumer_scope_effective": "emitter_declared",
   "conversion_gap": {

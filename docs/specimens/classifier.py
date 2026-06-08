@@ -44,12 +44,27 @@ RENDER_STATUS_OBSERVED = {"observed"}
 HOSTING_STATUS_ABSENT = {"absent"}
 HOSTING_STATUS_OBSERVED = {"observed"}
 
-# execution_surface vocabulary, sourced from PolicyDocumentation. Describes
-# WHERE the documented conversion acts — not whether the gap exists.
+# Bundle G: consumer-local action observation — receipt that a named
+# non-default consumer applied its documented policy.
+CONSUMER_ACTION_STATUS_ABSENT = {"absent"}
+CONSUMER_ACTION_STATUS_OBSERVED = {"observed"}
+
+# Bundle G: ConsumerAdoption status vocabulary.
+CONSUMER_ADOPTION_STATUS_DOCUMENTED = {"documented_via_consumer_policy"}
+CONSUMER_ADOPTION_STATUS_ABSENT = {"absent", None}
+
+# execution_surface vocabulary, sourced from PolicyDocumentation OR
+# (Bundle G) ConsumerAdoption. Describes WHERE the documented
+# conversion acts — not whether the gap exists.
 EXECUTION_SURFACE_CLIENT_RENDER = "client_render"
 EXECUTION_SURFACE_PDS_HOSTING = "pds_hosting"
 EXECUTION_SURFACE_MIXED = "mixed"
 EXECUTION_SURFACE_UNKNOWN = "unknown"
+# Bundle G: consumer-local state surface. The "conversion" is a state
+# transition inside a named non-default consumer (e.g., Driftwatch
+# writing to its advisory caveats roster + emitting a receipt). NOT a
+# client render and NOT a PDS hosting change.
+EXECUTION_SURFACE_CONSUMER_LOCAL_STATE = "consumer_local_state"
 
 
 def classify_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
@@ -57,16 +72,25 @@ def classify_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
     label = evidence.get("LabelObservation")
     policy_doc = evidence.get("PolicyDocumentation") or {}
     emitter_doc = evidence.get("LabelerEmitterDocumentation") or {}
+    consumer_adoption = evidence.get("ConsumerAdoption") or {}
+    consumer_action = evidence.get("ConsumerActionObservation") or {}
     policy_wit = evidence.get("PolicyWitness") or {}
     render = evidence.get("RenderObservation") or {}
     hosting = evidence.get("HostingObservation") or {}
 
-    gap = _classify_gap(label, policy_doc, policy_wit, render, hosting)
-    # Bundle C: consumer_scope joins gap struct as a separate dimension
-    # from gap.name. PolicyDocumentation.consumer_scope (global_platform)
-    # takes precedence over LabelerEmitterDocumentation's emitter_declared
-    # because a consumer-scope rule supersedes labeler-only declarations.
-    gap["consumer_scope"] = _classify_consumer_scope(policy_doc, emitter_doc)
+    gap = _classify_gap(
+        label, policy_doc, policy_wit, render, hosting,
+        consumer_adoption, consumer_action,
+    )
+    # consumer_scope joins gap struct as a separate dimension from gap.name.
+    # Precedence (Bundle C + G):
+    #   global_platform (upstream/protocol)
+    #     > opt_in_consumer_observed (named consumer adopted + receipts)
+    #     > emitter_declared (labeler declared, consumer adoption silent)
+    #     > unknown
+    gap["consumer_scope"] = _classify_consumer_scope(
+        policy_doc, emitter_doc, consumer_adoption,
+    )
     admissible = _derive_admissible(evidence, gap)
     inadmissible = _derive_inadmissible(evidence, gap)
     return {
@@ -79,29 +103,40 @@ def classify_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
 def _classify_consumer_scope(
     policy_doc: Dict[str, Any],
     emitter_doc: Dict[str, Any],
+    consumer_adoption: Dict[str, Any],
 ) -> str:
-    """Return one of: global_platform | emitter_declared |
-    opt_in_consumer_observed | unknown.
+    """Return one of: global_platform | opt_in_consumer_observed |
+    emitter_declared | unknown.
 
-    Bundle C precedence:
-      - If PolicyDocumentation says global_platform, return that. (A
-        consumer's explicit pipeline rule overrides any emitter
-        declaration.)
-      - Else if LabelerEmitterDocumentation says emitter_declared,
-        return that. (We know the labeler declared a rule, even though
-        the consumer's pipeline does not adopt it explicitly.)
-      - opt_in_consumer_observed is reserved for direct consumer
-        evidence (deferred to Bundle D+).
+    Precedence (Bundle C + G):
+      - PolicyDocumentation.consumer_scope=global_platform wins (upstream
+        const / protocol doc — a true platform-wide rule).
+      - Else if ConsumerAdoption.status=documented_via_consumer_policy
+        AND ConsumerActionObservation.status=observed, return
+        opt_in_consumer_observed. Adoption REQUIRES both the policy
+        AND a receipt — declaring intent without firing is documentation,
+        not adoption. (See _classify_gap; for now this scope value
+        appears even when the action is absent, with gap.name reflecting
+        the missing execution — that lets the exporter caveat rather
+        than block.)
+      - Else if ConsumerAdoption.status=documented_via_consumer_policy
+        (action absent), still return opt_in_consumer_observed — the
+        scope is "an opt-in consumer has documented a rule"; the gap
+        struct's name field captures whether the action fired.
+      - Else if LabelerEmitterDocumentation.consumer_scope=emitter_declared
+        return that.
       - Else unknown.
 
-    Invariant (Bundle C): service-record declaration is provenance, not
-    global authority. emitter_declared must NEVER be promoted to
-    global_platform by this function. Only PolicyDocumentation entries
-    backed by upstream_const or protocol_doc artifacts can yield
-    global_platform.
+    Invariants:
+      - emitter_declared MUST NEVER be promoted to global_platform.
+      - opt_in_consumer_observed MUST NEVER be promoted to global_platform.
+        A named-consumer adoption is scoped to that consumer; it is not
+        a platform claim.
     """
     if policy_doc.get("consumer_scope") == "global_platform":
         return "global_platform"
+    if consumer_adoption.get("status") in CONSUMER_ADOPTION_STATUS_DOCUMENTED:
+        return "opt_in_consumer_observed"
     if emitter_doc.get("consumer_scope") == "emitter_declared":
         return "emitter_declared"
     return "unknown"
@@ -113,6 +148,8 @@ def _classify_gap(
     policy_wit: Dict[str, Any],
     render: Dict[str, Any],
     hosting: Dict[str, Any],
+    consumer_adoption: Optional[Dict[str, Any]] = None,
+    consumer_action: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Discriminator over (A, B, C) presence + B's documentary/witnessed split
     + execution_surface from PolicyDocumentation.
@@ -141,7 +178,27 @@ def _classify_gap(
     render_status = render.get("status")
     hosting_status = hosting.get("status")
 
+    consumer_adoption = consumer_adoption or {}
+    consumer_action = consumer_action or {}
+
     if policy_status in POLICY_STATUS_ABSENT:
+        # Bundle G: before falling through to "no consumer," check whether a
+        # NAMED non-default consumer has documented adoption + observation.
+        # ConsumerAdoption gap-shape:
+        #   no adoption → conversion_witness_gap_no_consumer (existing behavior)
+        #   adoption + action observed → complete_path (consumer_local_state)
+        #   adoption + action absent → execution_gap_policy_present (consumer_local_state)
+        if consumer_adoption.get("status") in CONSUMER_ADOPTION_STATUS_DOCUMENTED:
+            adoption_surface = consumer_adoption.get(
+                "execution_surface", EXECUTION_SURFACE_CONSUMER_LOCAL_STATE,
+            )
+            action_status = consumer_action.get("status")
+            if action_status in CONSUMER_ACTION_STATUS_OBSERVED:
+                return {"name": "complete_path", "surface": adoption_surface}
+            return {
+                "name": "execution_gap_policy_present",
+                "surface": adoption_surface,
+            }
         return {"name": "conversion_witness_gap_no_consumer", "surface": None}
 
     if policy_status in POLICY_STATUS_DOCUMENTED:
@@ -381,6 +438,70 @@ def _derive_inadmissible(
                 "cache; hosting takedowns can be partially propagated. Requires "
                 "probe across the relevant consumer surface, not derivation from "
                 "this evidence bundle."
+            ),
+        })
+
+    # Bundle G: consumer-local-state inadmissible claims fire when the
+    # adopting consumer's surface is consumer_local_state and the
+    # ConsumerActionObservation is absent. There's no client render or
+    # PDS hosting effect at this surface; the only valid execution
+    # witness is a consumer-emitted receipt.
+    consumer_adoption = evidence.get("ConsumerAdoption") or {}
+    consumer_action = evidence.get("ConsumerActionObservation") or {}
+    adoption_surface = consumer_adoption.get("execution_surface")
+    consumer_action_status = consumer_action.get("status")
+    if adoption_surface == EXECUTION_SURFACE_CONSUMER_LOCAL_STATE and \
+            consumer_action_status in CONSUMER_ACTION_STATUS_ABSENT:
+        cid = (
+            (consumer_adoption.get("consumer") or {}).get("consumer_id")
+            or "the named consumer"
+        )
+        claims.append({
+            "id": "no_consumer_action_claim",
+            "claim_form": (
+                f"{cid!r} applied the documented policy to this target"
+            ),
+            "why_inadmissible": (
+                "ConsumerAdoption is documented but no ConsumerActionObservation "
+                "is present (no receipt of the policy firing). Documenting a "
+                "consumer policy is not evidence that the consumer applied it. "
+                "Adoption requires both the policy AND a receipt of its "
+                "application; without the receipt, the application is inferred, "
+                "not witnessed."
+            ),
+        })
+        claims.append({
+            "id": "no_consumer_population_claim",
+            "claim_form": (
+                f"{cid!r} applies the documented policy to all matching targets"
+            ),
+            "why_inadmissible": (
+                "Population claim. A single receipt would only prove a single "
+                "application; absent any receipt, the population claim has no "
+                "individual instance to rest on."
+            ),
+        })
+    # Always inadmissible when ConsumerAdoption is the only basis for the
+    # gap: the named-consumer adoption does NOT generalize to other
+    # consumers (default client, other opt-in consumers).
+    if consumer_adoption.get("status") in CONSUMER_ADOPTION_STATUS_DOCUMENTED:
+        cid = (
+            (consumer_adoption.get("consumer") or {}).get("consumer_id")
+            or "the named consumer"
+        )
+        claims.append({
+            "id": "no_cross_consumer_inference",
+            "claim_form": (
+                f"Any consumer other than {cid!r} applies (or could be "
+                "expected to apply) this policy"
+            ),
+            "why_inadmissible": (
+                "Consumer adoption is scoped. The evidence bundle documents "
+                "exactly one consumer's adoption; nothing in it speaks to any "
+                "other consumer's pipeline. Inferring cross-consumer behavior "
+                "would silently promote a local-scope finding to a "
+                "platform-wide one — the laundering shape Bundle G is built "
+                "to refuse."
             ),
         })
 

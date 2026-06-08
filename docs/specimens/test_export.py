@@ -314,6 +314,159 @@ def test_freshness_current_basis_exports_clean() -> None:
     print("  PASS current_basis exports clean (basis horizon honored)")
 
 
+def _synth_with_opt_in_consumer(
+    *,
+    label_value: str = "fringe-media",
+    consumer_id: str = "driftwatch",
+    emitter_declared: bool = True,
+    action_observed: bool = False,
+) -> Dict[str, Any]:
+    """Build a synthetic packet exercising ConsumerAdoption."""
+    ev = _synth(
+        label_value,
+        labeler_class="third_party",
+        policy_status="absent_for_consumer",
+        policy_consumer_scope="unknown",
+        emitter_status="documented_via_service_record" if emitter_declared else "absent",
+        emitter_artifact_kind="service_record" if emitter_declared else None,
+        emitter_consumer_scope="emitter_declared" if emitter_declared else "unknown",
+    )
+    ev["ConsumerAdoption"] = {
+        "status": "documented_via_consumer_policy",
+        "consumer": {
+            "consumer_id": consumer_id,
+            "description": f"synthetic {consumer_id} consumer for Bundle G test",
+            "is_default_client": False,
+        },
+        "policy_artifact": {
+            "repo": "synthetic",
+            "path": "test/fake_consumer_policy.py",
+            "version": "0.0.1-test",
+            "rule_summary": (
+                f"{consumer_id} consumes emitter_declared label {label_value!r} "
+                "from the labeler into a local advisory caveat roster"
+            ),
+        },
+        "documented_expected_action": {
+            "action_kind": "routing",
+            "action_summary": (
+                "Add (target, labeler, label) to advisory caveat roster; "
+                "next report run consults the roster."
+            ),
+        },
+        "consumer_scope": "opt_in_consumer_observed",
+        "execution_surface": "consumer_local_state",
+    }
+    if action_observed:
+        ev["ConsumerActionObservation"] = {
+            "status": "observed",
+            "receipt": {
+                "receipt_path": "synthetic/path/to/receipt-1.json",
+                "receipt_sha256": "deadbeef" * 8,
+                "emitted_at": "2026-06-08T18:00:00Z",
+                "policy_version": "0.0.1-test",
+                "action_taken": "advisory_caveat_roster_admission",
+            },
+        }
+    else:
+        ev["ConsumerActionObservation"] = {"status": "absent"}
+    return ev
+
+
+def test_opt_in_consumer_exports_with_local_scope_caveat() -> None:
+    """Bundle G: ConsumerAdoption + emitter_declared + action observed
+    -> EXPORTS with consumer_scope_effective=opt_in:<id>,
+    consumer_local_scope_only caveat, non_global_provenance inherited."""
+    ev = _synth_with_opt_in_consumer(
+        consumer_id="driftwatch", action_observed=True,
+    )
+    out = _run("test_opt_in_observed", ev)
+    assert out["schema_kind"] == "specimen_candidate", out
+    assert out["consumer_scope_effective"] == "opt_in:driftwatch", out
+    assert "consumer_local_scope_only" in out["export_caveats"], out
+    assert "non_global_provenance" in out["export_caveats"], (
+        "emitter_declared provenance MUST be inherited by opt_in export"
+    )
+    assert out["conversion_gap"]["name"] == "complete_path", out
+    assert out["conversion_gap"]["surface"] == "consumer_local_state", out
+    print("  PASS opt_in exports with consumer_local_scope + inherited non_global_provenance")
+
+
+def test_opt_in_action_unwitnessed_caveat() -> None:
+    """Bundle G: ConsumerAdoption present but ConsumerActionObservation
+    absent -> EXPORTS with consumer_action_unwitnessed caveat;
+    gap.name = execution_gap_policy_present (not complete_path)."""
+    ev = _synth_with_opt_in_consumer(
+        consumer_id="driftwatch", action_observed=False,
+    )
+    out = _run("test_opt_in_action_absent", ev)
+    assert out["schema_kind"] == "specimen_candidate", out
+    assert out["consumer_scope_effective"] == "opt_in:driftwatch", out
+    assert "consumer_action_unwitnessed" in out["export_caveats"], out
+    assert "consumer_local_scope_only" in out["export_caveats"], out
+    assert out["conversion_gap"]["name"] == "execution_gap_policy_present", out
+    assert out["conversion_gap"]["surface"] == "consumer_local_state", out
+    print("  PASS opt_in without action gets consumer_action_unwitnessed caveat")
+
+
+def test_opt_in_does_not_promote_to_global() -> None:
+    """Bundle G invariant: ConsumerAdoption MUST NOT promote
+    consumer_scope_effective to global_platform — adoption is scoped."""
+    ev = _synth_with_opt_in_consumer(
+        consumer_id="driftwatch", action_observed=True,
+    )
+    out = _run("test_opt_in_no_promote", ev)
+    assert out["consumer_scope_effective"] != "global_platform", (
+        f"INVARIANT VIOLATED: opt_in promoted to global_platform: {out}"
+    )
+    assert out["consumer_scope_effective"].startswith("opt_in:"), out
+    print("  PASS opt_in NEVER promotes to global_platform")
+
+
+def test_opt_in_overridden_by_upstream_const() -> None:
+    """Bundle G precedence: when PolicyDocumentation has global_platform
+    (upstream_const/protocol_doc) AND ConsumerAdoption is ALSO present,
+    global_platform wins for consumer_scope_effective. ConsumerAdoption
+    is supplemental, not a downgrade."""
+    ev = _synth(
+        "porn",
+        labeler_class="official_platform",
+        policy_status="documented",
+        policy_artifact_kind="upstream_const",
+        policy_consumer_scope="global_platform",
+        policy_surface="client_render",
+    )
+    ev["ConsumerAdoption"] = {
+        "status": "documented_via_consumer_policy",
+        "consumer": {"consumer_id": "driftwatch", "is_default_client": False},
+        "policy_artifact": {"repo": "synthetic", "version": "0.0.1"},
+        "consumer_scope": "opt_in_consumer_observed",
+        "execution_surface": "consumer_local_state",
+    }
+    ev["ConsumerActionObservation"] = {"status": "observed", "receipt": {"sha": "x"}}
+    out = _run("test_upstream_beats_opt_in", ev)
+    assert out["consumer_scope_effective"] == "global_platform", out
+    assert "consumer_local_scope_only" not in out["export_caveats"], (
+        "global_platform should NOT carry consumer_local_scope_only caveat"
+    )
+    print("  PASS upstream_const overrides ConsumerAdoption for consumer_scope_effective")
+
+
+def test_no_cross_consumer_inference_inadmissible() -> None:
+    """Bundle G inadmissible: ConsumerAdoption ALWAYS triggers the
+    no_cross_consumer_inference inadmissible claim — adoption by
+    consumer X does not entail adoption by anyone else."""
+    ev = _synth_with_opt_in_consumer(
+        consumer_id="driftwatch", action_observed=True,
+    )
+    cls = classify_evidence(ev)
+    inadm_ids = [c["id"] for c in cls["inadmissible_claims"]]
+    assert "no_cross_consumer_inference" in inadm_ids, (
+        f"opt_in adoption MUST trigger no_cross_consumer_inference; got {inadm_ids}"
+    )
+    print("  PASS no_cross_consumer_inference always fires on opt_in evidence")
+
+
 def test_source_table_is_classification_invariant() -> None:
     """Bundle F regression: snapshot path and discovery_events path must
     classify the same labelValueDefinition identically. The source of the
@@ -458,6 +611,11 @@ def main() -> int:
         test_freshness_current_basis_exports_clean,
         test_authority_surface_ignores_state_basis_absence,
         test_source_table_is_classification_invariant,
+        test_opt_in_consumer_exports_with_local_scope_caveat,
+        test_opt_in_action_unwitnessed_caveat,
+        test_opt_in_does_not_promote_to_global,
+        test_opt_in_overridden_by_upstream_const,
+        test_no_cross_consumer_inference_inadmissible,
         test_no_label_observation_blocked,
     ]:
         try:
