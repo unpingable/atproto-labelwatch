@@ -1,6 +1,6 @@
 {
-  "specimen_id": "derived-39530030",
-  "title": "label.haus / fucked-up-replyref / at://did:plc:l7cwuonthk66ykzuzursfqzh/app.bsky.feed.post/3mmjgyas6lp2w",
+  "specimen_id": "derived-39531098",
+  "title": "skywatch.blue / fringe-media / at://did:plc:clj6qpimf4hkhlv3zks2t6be/app.bsky.feed.post/3mnrz3ojivr2n",
   "summary": "Detection-lane evidence packet auto-derived from labelwatch.label_events. No operator pre-judgment of gap or admissible claims.",
   "schema_version": 1,
   "schema_kind": "evidence",
@@ -8,20 +8,20 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T15:28:32Z",
-    "source_row_id": 39530030,
+    "derived_at": "2026-06-08T15:58:08Z",
+    "source_row_id": 39531098,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
   "LabelObservation": {
-    "labeler_did": "did:plc:6ebfnuunfngxfw3rth3ewojw",
-    "labeler_handle": "label.haus",
+    "labeler_did": "did:plc:e4elbtctnfqocyfcml6h2lf7",
+    "labeler_handle": "skywatch.blue",
     "labeler_class": "official_platform",
     "is_reference_labeler": true,
-    "target_uri": "at://did:plc:l7cwuonthk66ykzuzursfqzh/app.bsky.feed.post/3mmjgyas6lp2w",
+    "target_uri": "at://did:plc:clj6qpimf4hkhlv3zks2t6be/app.bsky.feed.post/3mnrz3ojivr2n",
     "target_kind": "post_record",
-    "label_value": "fucked-up-replyref",
+    "label_value": "fringe-media",
     "neg": 0,
-    "ts": "2026-06-08T15:25:43.290120Z",
+    "ts": "2026-06-08T15:35:57.229368Z",
     "ingest_witness": "labelwatch label_events stream",
     "labelwatch_authority_effect_classification": null
   },
@@ -44,7 +44,7 @@
       "file_path": "packages/api/src/moderation/const/labels.ts",
       "head_or_commit": "7b8c5d60a",
       "search_result": "no_entry",
-      "search_evidence": "Global LABELS map at the pinned artifact does not contain an entry for 'fucked-up-replyref'."
+      "search_evidence": "Global LABELS map at the pinned artifact does not contain an entry for 'fringe-media'."
     },
     "execution_surface": null,
     "execution_surface_source": "no documented policy for this label_value in the named consumer's pipeline; execution_surface is undefined for an absent policy.",

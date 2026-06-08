@@ -1,6 +1,6 @@
 {
-  "specimen_id": "derived-39521875",
-  "title": "moderation.bsky.app / porn / at://did:plc:uxbomn2l6ixcdkbe4khgvza7/app.bsky.feed.post/3lqjjsnamx225",
+  "specimen_id": "derived-38485551",
+  "title": "moderation.bsky.app / gore / at://did:plc:gqwovmktdbmtjbdlab4344tn/app.bsky.feed.post/3lqcpwai5xv2h",
   "summary": "Detection-lane evidence packet auto-derived from labelwatch.label_events. No operator pre-judgment of gap or admissible claims.",
   "schema_version": 1,
   "schema_kind": "evidence",
@@ -8,8 +8,8 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T15:24:09Z",
-    "source_row_id": 39521875,
+    "derived_at": "2026-06-08T15:58:07Z",
+    "source_row_id": 38485551,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
   "LabelObservation": {
@@ -17,11 +17,11 @@
     "labeler_handle": "moderation.bsky.app",
     "labeler_class": "official_platform",
     "is_reference_labeler": true,
-    "target_uri": "at://did:plc:uxbomn2l6ixcdkbe4khgvza7/app.bsky.feed.post/3lqjjsnamx225",
+    "target_uri": "at://did:plc:gqwovmktdbmtjbdlab4344tn/app.bsky.feed.post/3lqcpwai5xv2h",
     "target_kind": "post_record",
-    "label_value": "porn",
+    "label_value": "gore",
     "neg": 0,
-    "ts": "2026-06-08T15:12:31.421817Z",
+    "ts": "2026-06-05T17:38:57.325732Z",
     "ingest_witness": "labelwatch label_events stream",
     "labelwatch_authority_effect_classification": null
   },
@@ -43,13 +43,20 @@
       "package_version": "0.19.17",
       "file_path": "packages/api/src/moderation/const/labels.ts",
       "head_or_commit": "7b8c5d60a",
+      "artifact_kind": "atproto_api_labels_const",
       "extracted_rule": {
-        "label_value": "porn",
-        "note": "label_value present in global LABELS map; deriver records artifact presence only \u2014 full extracted_rule body is not pulled by the deriver in v1. Hand-authored fixtures may include the full rule body when richer context matters."
+        "label_value": "gore",
+        "note": "label_value present in @atproto/api global LABELS map. Deriver records artifact presence only \u2014 full extracted_rule body is not pulled by the deriver in v1."
       }
     },
     "execution_surface": "client_render",
     "execution_surface_source": "KNOWN_LABEL_SURFACE table in derive_evidence.py (sourced from policy artifact + known atproto label semantics). Describes WHERE the documented conversion acts; does not encode whether the conversion gap exists.",
+    "execution_surface_audit": {
+      "source": "atproto @atproto/api LABELS const v0.19.17",
+      "rationale": "Default behavior rendered by client. Added during Bundle B after F-002 audit found gore was missing from prior GLOBAL_LABELS list.",
+      "reviewed_at": "2026-06-08",
+      "reviewer": "labelwatch-claude (Bundle B, F-002)"
+    },
     "documented_expected_action": {
       "action_summary": "see extracted_rule in pinned artifact; surface is 'client_render'",
       "preconditions": [

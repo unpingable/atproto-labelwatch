@@ -1,6 +1,6 @@
 {
   "schema_kind": "classifier_output",
-  "derived_from": "derived-39526520-did-plc-e4elbtctnfqocyfcml6h2lf7-fringe-media.evidence.json",
+  "derived_from": "derived-39533256-did-plc-newitj5jo3uel7o4mnf3vj2o-twitter-screenshot.evidence.json",
   "ConversionGap": {
     "name": "conversion_witness_gap_no_consumer",
     "surface": null
@@ -9,7 +9,7 @@
     {
       "id": "label_exists",
       "scope": "this specimen",
-      "claim": "A label record with label_value='fringe-media' exists on at://did:plc:flijdq6nzuscczuhvv2lt7bp/app.bsky.feed.post/3mnryat75h22q, issued by skywatch.blue at 2026-06-08T15:24:21.917258Z.",
+      "claim": "A label record with label_value='twitter-screenshot' exists on at://did:plc:a3mv242azt5e24weajdciiws/app.bsky.feed.post/3mcp43jjntm2o, issued by xblock.aendra.dev at 2026-06-08T15:36:32.154106Z.",
       "derivation_basis": [
         "LabelObservation"
       ]

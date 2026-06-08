@@ -1,6 +1,6 @@
 {
   "schema_kind": "classifier_output",
-  "derived_from": "derived-39526319-did-plc-ar7c4by46qjdydhdevvrndac-nudity.evidence.json",
+  "derived_from": "derived-39531040-did-plc-ar7c4by46qjdydhdevvrndac-sexual.evidence.json",
   "ConversionGap": {
     "name": "execution_gap_policy_present",
     "surface": "client_render"
@@ -9,7 +9,7 @@
     {
       "id": "label_exists",
       "scope": "this specimen",
-      "claim": "A label record with label_value='nudity' exists on at://did:plc:d47xuv5i3zdqtnag2o4iiwaa/app.bsky.feed.post/3lqi2wmifkk2j, issued by moderation.bsky.app at 2026-06-08T15:24:15.550157Z.",
+      "claim": "A label record with label_value='sexual' exists on at://did:plc:exzlqp7bfqk2taklj3nru6hg/app.bsky.feed.post/3lqjlyrmm7c2i, issued by moderation.bsky.app at 2026-06-08T15:35:52.773516Z.",
       "derivation_basis": [
         "LabelObservation"
       ]

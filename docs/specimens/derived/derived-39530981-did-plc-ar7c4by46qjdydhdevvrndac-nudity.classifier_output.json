@@ -1,15 +1,15 @@
 {
   "schema_kind": "classifier_output",
-  "derived_from": "derived-39521818-did-plc-ar7c4by46qjdydhdevvrndac-takedown.evidence.json",
+  "derived_from": "derived-39530981-did-plc-ar7c4by46qjdydhdevvrndac-nudity.evidence.json",
   "ConversionGap": {
     "name": "execution_gap_policy_present",
-    "surface": "pds_hosting"
+    "surface": "client_render"
   },
   "admissible_claims": [
     {
       "id": "label_exists",
       "scope": "this specimen",
-      "claim": "A label record with label_value='!takedown' exists on did:plc:tm3lxtz7mnbx7gjwwdyhrckb, issued by moderation.bsky.app at 2026-06-08T15:12:31.419138Z.",
+      "claim": "A label record with label_value='nudity' exists on at://did:plc:fwipuhieyskl3zyuthqbg5e2/app.bsky.feed.post/3lqjlur6bwk2k, issued by moderation.bsky.app at 2026-06-08T15:35:52.770557Z.",
       "derivation_basis": [
         "LabelObservation"
       ]
@@ -40,14 +40,14 @@
       "why_inadmissible": "Laundering: collapses producer/consumer/enforcer distinction. label_observed alone does not derive render_observed. The no-laundering theorem forbids this derivation."
     },
     {
-      "id": "no_individual_hosting_claim",
-      "claim_form": "This subject was removed/withheld at the PDS at time T",
-      "why_inadmissible": "Requires HostingObservation (a hosting-side probe or PDS state receipt), which is absent. The documented policy declares a hosting-layer effect, but the effect's application has not been directly observed."
+      "id": "no_individual_render_claim",
+      "claim_form": "This post was rendered with action X for user U at time T",
+      "why_inadmissible": "Requires RenderObservation, which is absent. Cannot be derived from LabelObservation + PolicyDocumentation alone."
     },
     {
-      "id": "no_population_hosting_claim",
-      "claim_form": "This subject is unavailable across all hosting consumers",
-      "why_inadmissible": "Population claim. PDS state may vary by mirror, by appview, by cache; hosting takedowns can be partially propagated. Requires probe across the relevant consumer surface, not derivation from this evidence bundle."
+      "id": "no_population_render_claim",
+      "claim_form": "All renders of this post produce the documented action",
+      "why_inadmissible": "Population claim. Policy may be configurable; viewer may override; live client may run a different policy version. Requires probe campaign with defined sampling frame, not derivation from this evidence bundle."
     }
   ]
 }

@@ -1,6 +1,6 @@
 {
-  "specimen_id": "derived-39526520",
-  "title": "skywatch.blue / fringe-media / at://did:plc:flijdq6nzuscczuhvv2lt7bp/app.bsky.feed.post/3mnryat75h22q",
+  "specimen_id": "derived-39464837",
+  "title": "moderation.bsky.app / needs-review / did:plc:3dg3rdpz6wtbwjn5a5yf55jw",
   "summary": "Detection-lane evidence packet auto-derived from labelwatch.label_events. No operator pre-judgment of gap or admissible claims.",
   "schema_version": 1,
   "schema_kind": "evidence",
@@ -8,20 +8,20 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T15:28:32Z",
-    "source_row_id": 39526520,
+    "derived_at": "2026-06-08T15:58:07Z",
+    "source_row_id": 39464837,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
   "LabelObservation": {
-    "labeler_did": "did:plc:e4elbtctnfqocyfcml6h2lf7",
-    "labeler_handle": "skywatch.blue",
+    "labeler_did": "did:plc:ar7c4by46qjdydhdevvrndac",
+    "labeler_handle": "moderation.bsky.app",
     "labeler_class": "official_platform",
     "is_reference_labeler": true,
-    "target_uri": "at://did:plc:flijdq6nzuscczuhvv2lt7bp/app.bsky.feed.post/3mnryat75h22q",
-    "target_kind": "post_record",
-    "label_value": "fringe-media",
+    "target_uri": "did:plc:3dg3rdpz6wtbwjn5a5yf55jw",
+    "target_kind": "account",
+    "label_value": "needs-review",
     "neg": 0,
-    "ts": "2026-06-08T15:24:21.917258Z",
+    "ts": "2026-06-08T11:46:37.467565Z",
     "ingest_witness": "labelwatch label_events stream",
     "labelwatch_authority_effect_classification": null
   },
@@ -44,7 +44,7 @@
       "file_path": "packages/api/src/moderation/const/labels.ts",
       "head_or_commit": "7b8c5d60a",
       "search_result": "no_entry",
-      "search_evidence": "Global LABELS map at the pinned artifact does not contain an entry for 'fringe-media'."
+      "search_evidence": "Global LABELS map at the pinned artifact does not contain an entry for 'needs-review'."
     },
     "execution_surface": null,
     "execution_surface_source": "no documented policy for this label_value in the named consumer's pipeline; execution_surface is undefined for an absent policy.",

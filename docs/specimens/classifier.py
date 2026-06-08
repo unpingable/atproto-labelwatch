@@ -108,17 +108,33 @@ def _classify_gap(
         return {"name": "conversion_witness_gap_no_consumer", "surface": None}
 
     if policy_status in POLICY_STATUS_DOCUMENTED:
-        # The "execution observation we care about" depends on the surface the
-        # policy acts on. client_render -> RenderObservation; pds_hosting ->
-        # HostingObservation; mixed -> either witnesses something; unknown ->
-        # treat as render by default but record uncertainty in the gap surface
-        # field so downstream sees it.
+        # Surface-unknown is its own gap: we have a documented policy but
+        # the deriver could not (or chose not to) say which surface the
+        # conversion acts on. The classifier MUST NOT silently default to
+        # render or hosting — that would let an upstream change quietly
+        # become a render-shaped claim about a label that's actually
+        # hosting-shaped (or vice versa). The discipline: emit
+        # execution_gap_surface_unknown so the formal layer sees the
+        # uncertainty as a typed object.
+        if surface == EXECUTION_SURFACE_UNKNOWN:
+            return {
+                "name": "execution_gap_surface_unknown",
+                "surface": EXECUTION_SURFACE_UNKNOWN,
+            }
+        # Legacy / pre-migration packets without a surface field — emit a
+        # distinct gap value so they can be found and migrated, rather
+        # than silently classifying as render-side.
+        if surface is None:
+            return {
+                "name": "execution_gap_surface_unspecified",
+                "surface": None,
+            }
+
         execution_witnessed = _execution_witnessed_on_surface(
             surface, render_status, hosting_status
         )
         if not execution_witnessed:
             return {"name": "execution_gap_policy_present", "surface": surface}
-        # execution_witnessed is True
         if policy_status in POLICY_STATUS_WITNESSED:
             return {"name": "complete_path", "surface": surface}
         return {"name": "execution_observed_without_policy_witness", "surface": surface}
@@ -127,11 +143,14 @@ def _classify_gap(
 
 
 def _execution_witnessed_on_surface(
-    surface: Optional[str],
+    surface: str,
     render_status: Optional[str],
     hosting_status: Optional[str],
 ) -> bool:
-    """Surface-aware predicate for whether an execution observation exists."""
+    """Surface-aware predicate for whether an execution observation exists.
+    Caller is responsible for handling surface in {unknown, None} BEFORE
+    calling this — this predicate is only well-defined for the three known
+    surfaces (client_render, pds_hosting, mixed)."""
     if surface == EXECUTION_SURFACE_CLIENT_RENDER:
         return render_status in RENDER_STATUS_OBSERVED
     if surface == EXECUTION_SURFACE_PDS_HOSTING:
@@ -141,10 +160,11 @@ def _execution_witnessed_on_surface(
             render_status in RENDER_STATUS_OBSERVED
             or hosting_status in HOSTING_STATUS_OBSERVED
         )
-    # unknown surface OR surface field absent: fall back to render-side check
-    # (preserves old behavior for evidence packets that haven't been migrated
-    # to the new schema yet).
-    return render_status in RENDER_STATUS_OBSERVED
+    raise ValueError(
+        f"_execution_witnessed_on_surface called with surface={surface!r}; "
+        f"only client_render / pds_hosting / mixed are valid. Caller must "
+        f"branch on unknown / None before calling."
+    )
 
 
 # --- admissible claim derivation -----------------------------------------
@@ -251,10 +271,34 @@ def _derive_inadmissible(
     render_status = (evidence.get("RenderObservation") or {}).get("status")
     hosting_status = (evidence.get("HostingObservation") or {}).get("status")
 
+    # Surface=unknown gets a specific inadmissible: no execution claim of
+    # any kind is admissible because the deriver could not (or chose not
+    # to) say which observation type would close the gap.
+    if surface == EXECUTION_SURFACE_UNKNOWN:
+        claims.append({
+            "id": "no_execution_claim_surface_unknown",
+            "claim_form": (
+                "Any claim that this label was applied (rendered, removed, "
+                "warned, blurred, etc.) on this target"
+            ),
+            "why_inadmissible": (
+                "PolicyDocumentation.execution_surface is 'unknown' — the "
+                "deriver records the label is in the global LABELS set but "
+                "has not been assigned a surface in KNOWN_LABEL_SURFACE. "
+                "Classifier must not default to render or hosting. The "
+                "label requires manual surface assignment before any "
+                "execution claim is admissible."
+            ),
+        })
+        # Skip the surface-specific render/hosting claims entirely below.
+        # Fall through to the policy-status checks for the negative-side
+        # inadmissibles (which don't apply since policy IS documented).
+        return claims
+
     # Render-side inadmissible claims fire when the policy's surface
     # involves client_render and the render observation is absent.
     render_relevant = surface in (
-        EXECUTION_SURFACE_CLIENT_RENDER, EXECUTION_SURFACE_MIXED, EXECUTION_SURFACE_UNKNOWN, None,
+        EXECUTION_SURFACE_CLIENT_RENDER, EXECUTION_SURFACE_MIXED, None,
     )
     if render_relevant and render_status in RENDER_STATUS_ABSENT:
         claims.append({

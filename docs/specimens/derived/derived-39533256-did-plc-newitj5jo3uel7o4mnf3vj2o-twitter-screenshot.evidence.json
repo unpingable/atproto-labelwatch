@@ -1,6 +1,6 @@
 {
-  "specimen_id": "derived-39529294",
-  "title": "labeler.plural.host / plural-system / did:plc:fvlj5dm52fshgf3iqphyfl2o",
+  "specimen_id": "derived-39533256",
+  "title": "xblock.aendra.dev / twitter-screenshot / at://did:plc:a3mv242azt5e24weajdciiws/app.bsky.feed.post/3mcp43jjntm2o",
   "summary": "Detection-lane evidence packet auto-derived from labelwatch.label_events. No operator pre-judgment of gap or admissible claims.",
   "schema_version": 1,
   "schema_kind": "evidence",
@@ -8,20 +8,20 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T15:28:33Z",
-    "source_row_id": 39529294,
+    "derived_at": "2026-06-08T15:58:08Z",
+    "source_row_id": 39533256,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
   "LabelObservation": {
-    "labeler_did": "did:plc:g6c6zaif2tjvdlmkkibj2avz",
-    "labeler_handle": "labeler.plural.host",
+    "labeler_did": "did:plc:newitj5jo3uel7o4mnf3vj2o",
+    "labeler_handle": "xblock.aendra.dev",
     "labeler_class": "third_party",
     "is_reference_labeler": false,
-    "target_uri": "did:plc:fvlj5dm52fshgf3iqphyfl2o",
-    "target_kind": "account",
-    "label_value": "plural-system",
+    "target_uri": "at://did:plc:a3mv242azt5e24weajdciiws/app.bsky.feed.post/3mcp43jjntm2o",
+    "target_kind": "post_record",
+    "label_value": "twitter-screenshot",
     "neg": 0,
-    "ts": "2026-06-08T15:25:32.045996Z",
+    "ts": "2026-06-08T15:36:32.154106Z",
     "ingest_witness": "labelwatch label_events stream",
     "labelwatch_authority_effect_classification": null
   },
@@ -44,7 +44,7 @@
       "file_path": "packages/api/src/moderation/const/labels.ts",
       "head_or_commit": "7b8c5d60a",
       "search_result": "no_entry",
-      "search_evidence": "Global LABELS map at the pinned artifact does not contain an entry for 'plural-system'."
+      "search_evidence": "Global LABELS map at the pinned artifact does not contain an entry for 'twitter-screenshot'."
     },
     "execution_surface": null,
     "execution_surface_source": "no documented policy for this label_value in the named consumer's pipeline; execution_surface is undefined for an absent policy.",

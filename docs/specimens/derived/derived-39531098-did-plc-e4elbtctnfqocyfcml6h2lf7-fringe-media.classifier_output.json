@@ -1,6 +1,6 @@
 {
   "schema_kind": "classifier_output",
-  "derived_from": "derived-39529294-did-plc-g6c6zaif2tjvdlmkkibj2avz-plural-system.evidence.json",
+  "derived_from": "derived-39531098-did-plc-e4elbtctnfqocyfcml6h2lf7-fringe-media.evidence.json",
   "ConversionGap": {
     "name": "conversion_witness_gap_no_consumer",
     "surface": null
@@ -9,7 +9,7 @@
     {
       "id": "label_exists",
       "scope": "this specimen",
-      "claim": "A label record with label_value='plural-system' exists on did:plc:fvlj5dm52fshgf3iqphyfl2o, issued by labeler.plural.host at 2026-06-08T15:25:32.045996Z.",
+      "claim": "A label record with label_value='fringe-media' exists on at://did:plc:clj6qpimf4hkhlv3zks2t6be/app.bsky.feed.post/3mnrz3ojivr2n, issued by skywatch.blue at 2026-06-08T15:35:57.229368Z.",
       "derivation_basis": [
         "LabelObservation"
       ]
