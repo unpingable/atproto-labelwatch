@@ -783,6 +783,35 @@ def cmd_db_optimize(args) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_state_pilot(args) -> None:
+    """Bounded pilot backfill into the sidecar label_state DB.
+
+    Does NOT run the full 39M-event backfill. Bounded by --days and
+    --max-events, with hard abort thresholds on free disk and main WAL
+    size. See state.pilot_backfill docstring for the safety contract.
+    """
+    from . import state as state_mod
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    sidecar_path = args.sidecar
+    if not sidecar_path:
+        sidecar_path = os.path.join(
+            os.path.dirname(cfg.db_path) or ".",
+            "labelwatch_state.db",
+        )
+    result = state_mod.pilot_backfill(
+        main_db_path=cfg.db_path,
+        sidecar_path=sidecar_path,
+        days=args.days,
+        chunk_size=args.chunk_size,
+        max_events=(None if args.max_events == 0 else args.max_events),
+        disk_floor_gb=args.disk_floor_gb,
+        main_wal_ceiling_gb=args.main_wal_ceiling_gb,
+    )
+    print(json.dumps(result, indent=2))
+
+
 def main(argv: Optional[list] = None) -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -879,6 +908,18 @@ def main(argv: Optional[list] = None) -> None:
 
     p_dbopt = sub.add_parser("db-optimize", help="Run ANALYZE and query planner optimization")
     p_dbopt.set_defaults(func=cmd_db_optimize)
+
+    p_state = sub.add_parser(
+        "state-pilot",
+        help="Bounded pilot backfill into the sidecar label_state DB (NOT full live backfill)",
+    )
+    p_state.add_argument("--sidecar", help="Path to sidecar DB (default: next to main DB)")
+    p_state.add_argument("--days", type=int, default=7, help="Window of label_events to backfill (default 7)")
+    p_state.add_argument("--chunk-size", type=int, default=50000, help="Events per read transaction (default 50000)")
+    p_state.add_argument("--max-events", type=int, default=1_000_000, help="Hard cap on events processed; 0 = unlimited (default 1,000,000)")
+    p_state.add_argument("--disk-floor-gb", type=float, default=14.0, help="Abort if free disk drops below this (default 14.0)")
+    p_state.add_argument("--main-wal-ceiling-gb", type=float, default=1.0, help="Abort if main DB WAL exceeds this (default 1.0)")
+    p_state.set_defaults(func=cmd_state_pilot)
 
     p_hosting = sub.add_parser("hosting-locus", help="Analyze PDS hosting distribution of labeled targets")
     p_hosting.add_argument("--days", type=int, default=7, help="Lookback window in days")
