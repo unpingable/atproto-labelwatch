@@ -3,7 +3,8 @@
   "derived_from": "derived-39531039-did-plc-ar7c4by46qjdydhdevvrndac-porn.evidence.json",
   "ConversionGap": {
     "name": "execution_gap_policy_present",
-    "surface": "client_render"
+    "surface": "client_render",
+    "consumer_scope": "global_platform"
   },
   "admissible_claims": [
     {

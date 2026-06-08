@@ -8,7 +8,7 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T15:58:07Z",
+    "derived_at": "2026-06-08T16:06:14Z",
     "source_row_id": 39531024,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
@@ -38,13 +38,14 @@
       }
     },
     "policy_artifact": {
-      "artifact_kind": "atproto_protocol_spec",
+      "artifact_kind": "protocol_doc",
       "artifact_description": "atproto protocol behavior for '!takedown'; documented by protocol/PDS implementation rather than the @atproto/api client library's LABELS const. F-003 records this distinction.",
       "extracted_rule": {
         "label_value": "!takedown",
         "note": "Behavior is upstream of any client-library rule. Hand-authored fixture may cite the relevant protocol-spec section when needed."
       }
     },
+    "consumer_scope": "global_platform",
     "execution_surface": "pds_hosting",
     "execution_surface_source": "KNOWN_LABEL_SURFACE table in derive_evidence.py (sourced from policy artifact + known atproto label semantics). Describes WHERE the documented conversion acts; does not encode whether the conversion gap exists.",
     "execution_surface_audit": {
@@ -63,6 +64,12 @@
       ]
     },
     "status": "documented"
+  },
+  "LabelerEmitterDocumentation": {
+    "status": "absent",
+    "artifact_kind": null,
+    "consumer_scope": "unknown",
+    "reason": "No app.bsky.labeler.service record for 'did:plc:ar7c4by46qjdydhdevvrndac' in discovery_events declares a labelValueDefinition for '!takedown'. (Either the labeler has no service record on file, or the service record exists but does not define this label_value.)"
   },
   "PolicyWitness": {
     "status": "partial_documentary_not_receipted",

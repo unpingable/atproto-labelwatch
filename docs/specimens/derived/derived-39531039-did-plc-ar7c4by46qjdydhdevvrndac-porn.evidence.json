@@ -8,7 +8,7 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T15:58:07Z",
+    "derived_at": "2026-06-08T16:06:14Z",
     "source_row_id": 39531039,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
@@ -43,12 +43,13 @@
       "package_version": "0.19.17",
       "file_path": "packages/api/src/moderation/const/labels.ts",
       "head_or_commit": "7b8c5d60a",
-      "artifact_kind": "atproto_api_labels_const",
+      "artifact_kind": "upstream_const",
       "extracted_rule": {
         "label_value": "porn",
         "note": "label_value present in @atproto/api global LABELS map. Deriver records artifact presence only \u2014 full extracted_rule body is not pulled by the deriver in v1."
       }
     },
+    "consumer_scope": "global_platform",
     "execution_surface": "client_render",
     "execution_surface_source": "KNOWN_LABEL_SURFACE table in derive_evidence.py (sourced from policy artifact + known atproto label semantics). Describes WHERE the documented conversion acts; does not encode whether the conversion gap exists.",
     "execution_surface_audit": {
@@ -67,6 +68,12 @@
       ]
     },
     "status": "documented"
+  },
+  "LabelerEmitterDocumentation": {
+    "status": "absent",
+    "artifact_kind": null,
+    "consumer_scope": "unknown",
+    "reason": "No app.bsky.labeler.service record for 'did:plc:ar7c4by46qjdydhdevvrndac' in discovery_events declares a labelValueDefinition for 'porn'. (Either the labeler has no service record on file, or the service record exists but does not define this label_value.)"
   },
   "PolicyWitness": {
     "status": "partial_documentary_not_receipted",

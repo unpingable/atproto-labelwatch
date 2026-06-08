@@ -56,11 +56,17 @@ def classify_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
     """Run the full derivation on one evidence bundle. Pure function."""
     label = evidence.get("LabelObservation")
     policy_doc = evidence.get("PolicyDocumentation") or {}
+    emitter_doc = evidence.get("LabelerEmitterDocumentation") or {}
     policy_wit = evidence.get("PolicyWitness") or {}
     render = evidence.get("RenderObservation") or {}
     hosting = evidence.get("HostingObservation") or {}
 
     gap = _classify_gap(label, policy_doc, policy_wit, render, hosting)
+    # Bundle C: consumer_scope joins gap struct as a separate dimension
+    # from gap.name. PolicyDocumentation.consumer_scope (global_platform)
+    # takes precedence over LabelerEmitterDocumentation's emitter_declared
+    # because a consumer-scope rule supersedes labeler-only declarations.
+    gap["consumer_scope"] = _classify_consumer_scope(policy_doc, emitter_doc)
     admissible = _derive_admissible(evidence, gap)
     inadmissible = _derive_inadmissible(evidence, gap)
     return {
@@ -68,6 +74,37 @@ def classify_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
         "admissible_claims": admissible,
         "inadmissible_claims": inadmissible,
     }
+
+
+def _classify_consumer_scope(
+    policy_doc: Dict[str, Any],
+    emitter_doc: Dict[str, Any],
+) -> str:
+    """Return one of: global_platform | emitter_declared |
+    opt_in_consumer_observed | unknown.
+
+    Bundle C precedence:
+      - If PolicyDocumentation says global_platform, return that. (A
+        consumer's explicit pipeline rule overrides any emitter
+        declaration.)
+      - Else if LabelerEmitterDocumentation says emitter_declared,
+        return that. (We know the labeler declared a rule, even though
+        the consumer's pipeline does not adopt it explicitly.)
+      - opt_in_consumer_observed is reserved for direct consumer
+        evidence (deferred to Bundle D+).
+      - Else unknown.
+
+    Invariant (Bundle C): service-record declaration is provenance, not
+    global authority. emitter_declared must NEVER be promoted to
+    global_platform by this function. Only PolicyDocumentation entries
+    backed by upstream_const or protocol_doc artifacts can yield
+    global_platform.
+    """
+    if policy_doc.get("consumer_scope") == "global_platform":
+        return "global_platform"
+    if emitter_doc.get("consumer_scope") == "emitter_declared":
+        return "emitter_declared"
+    return "unknown"
 
 
 def _classify_gap(

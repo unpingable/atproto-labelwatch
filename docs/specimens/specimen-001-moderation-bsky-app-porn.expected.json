@@ -1,13 +1,14 @@
 {
   "specimen_id": "001",
-  "schema_version": 2,
+  "schema_version": 3,
   "schema_kind": "expected",
   "evidence_companion": "specimen-001-moderation-bsky-app-porn.evidence.json",
   "seeded_from_classifier_at": "2026-06-08T15:30:00Z",
-  "note": "Re-seeded after execution_surface + HostingObservation patch (D-001). ConversionGap is now a struct {name, surface}.",
+  "note": "Re-seeded after Bundle C (consumer_scope added to gap struct + LabelerEmitterDocumentation field).",
   "expected_gap": {
     "name": "execution_gap_policy_present",
-    "surface": "client_render"
+    "surface": "client_render",
+    "consumer_scope": "global_platform"
   },
   "expected_admissible_claims": [
     {

@@ -3,7 +3,8 @@
   "derived_from": "derived-39531098-did-plc-e4elbtctnfqocyfcml6h2lf7-fringe-media.evidence.json",
   "ConversionGap": {
     "name": "conversion_witness_gap_no_consumer",
-    "surface": null
+    "surface": null,
+    "consumer_scope": "emitter_declared"
   },
   "admissible_claims": [
     {

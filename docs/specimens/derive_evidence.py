@@ -236,6 +236,9 @@ def derive(
                 f"label_value={label_value}"
             )
         labeler = _load_labeler_metadata(conn, labeler_did)
+        emitter_definition = _lookup_emitter_service_record(
+            conn, labeler_did, label_value
+        )
     finally:
         conn.close()
 
@@ -282,6 +285,9 @@ def derive(
             "labelwatch_authority_effect_classification": None,
         },
         "PolicyDocumentation": _policy_documentation(label_value, policy_documented),
+        "LabelerEmitterDocumentation": _labeler_emitter_documentation(
+            labeler_did, label_value, emitter_definition,
+        ),
         "PolicyWitness": _policy_witness(policy_documented),
         "RenderObservation": _render_observation(label_value, policy_documented),
         "HostingObservation": _hosting_observation(label_value, policy_documented),
@@ -289,23 +295,140 @@ def derive(
     return packet
 
 
+def _labeler_emitter_documentation(
+    labeler_did: str,
+    label_value: str,
+    found: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Distinct from PolicyDocumentation: this records what the LABELER
+    has declared via its app.bsky.labeler.service record. Provenance of
+    rule, NOT global consumer authority.
+
+    Bundle C invariant: service-record declaration is provenance, not
+    global authority. consumer_scope here is always 'emitter_declared'
+    when found — separately upgrading to 'opt_in_consumer_observed'
+    requires direct consumer evidence which v1 does not model.
+    """
+    if found is None:
+        return {
+            "status": "absent",
+            "artifact_kind": None,
+            "consumer_scope": "unknown",
+            "reason": (
+                f"No app.bsky.labeler.service record for {labeler_did!r} "
+                f"in discovery_events declares a labelValueDefinition for "
+                f"{label_value!r}. (Either the labeler has no service "
+                "record on file, or the service record exists but does "
+                "not define this label_value.)"
+            ),
+        }
+    return {
+        "status": "documented_via_service_record",
+        "artifact_kind": "service_record",
+        "consumer_scope": "emitter_declared",
+        "scoping_note": (
+            "consumer_scope='emitter_declared' means the LABELER has "
+            "published a rule for this label_value in its service "
+            "record. It does NOT mean any consumer honors this rule. "
+            "Service-record declaration is provenance, not global "
+            "authority. Upgrading to 'opt_in_consumer_observed' requires "
+            "direct evidence of consumer honor (deferred to Bundle D+)."
+        ),
+        "execution_surface": _surface_from_emitter_definition(
+            found["definition"]
+        ),
+        "extracted_definition": found["definition"],
+        "service_record_provenance": {
+            "labeler_did": labeler_did,
+            "commit_cid": found["service_record_commit_cid"],
+            "commit_rev": found["service_record_commit_rev"],
+            "discovered_at": found["service_record_discovered_at"],
+            "source_table": "labelwatch.db / discovery_events",
+        },
+        "retrieved_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "reviewed_at": "2026-06-08",
+        "reviewer": "labelwatch-claude (Bundle C)",
+    }
+
+
 def _policy_documented(label_value: str) -> bool:
     """True if this label has a documented policy for the default consumer
     via either the @atproto/api global LABELS const or atproto protocol
-    behavior."""
+    behavior. Bundle C distinguishes this from emitter-declared status
+    (which is provenance, not consumer authority — see Bundle C invariant)."""
     return (
         label_value in GLOBAL_LABELS or label_value in PROTOCOL_DOCUMENTED_LABELS
     )
 
 
 def _policy_artifact_kind(label_value: str) -> Optional[str]:
-    """Which artifact backs the documented policy. Used in the
-    PolicyDocumentation block so the deriver cites the right source."""
+    """Which artifact backs the documented policy. Bundle C vocabulary:
+       upstream_const | protocol_doc | service_record | empirical_observation
+
+    Service-record + empirical_observation appear in the
+    LabelerEmitterDocumentation block, not PolicyDocumentation —
+    consumer scope is what differs. Service-record declaration is
+    provenance, not global authority.
+    """
     if label_value in GLOBAL_LABELS:
-        return "atproto_api_labels_const"
+        return "upstream_const"
     if label_value in PROTOCOL_DOCUMENTED_LABELS:
-        return "atproto_protocol_spec"
+        return "protocol_doc"
     return None
+
+
+def _lookup_emitter_service_record(
+    conn: sqlite3.Connection,
+    labeler_did: str,
+    label_value: str,
+) -> Optional[Dict[str, Any]]:
+    """Find the most recent app.bsky.labeler.service record for `labeler_did`
+    and extract the labelValueDefinition for `label_value` if present.
+
+    Returns None when the labeler has no service record on file OR has one
+    but doesn't define this particular label_value. Returns a dict with
+    the extracted definition + provenance fields when found.
+    """
+    row = conn.execute(
+        """
+        SELECT record_json, commit_cid, commit_rev, discovered_at
+        FROM discovery_events
+        WHERE labeler_did = ?
+          AND operation IN ('create','update')
+          AND json_extract(record_json, '$.policies.labelValueDefinitions') IS NOT NULL
+        ORDER BY discovered_at DESC
+        LIMIT 1
+        """,
+        (labeler_did,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        rec = json.loads(row["record_json"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    defs = (rec.get("policies") or {}).get("labelValueDefinitions") or []
+    for d in defs:
+        if d.get("identifier") == label_value:
+            return {
+                "definition": d,
+                "service_record_commit_cid": row["commit_cid"],
+                "service_record_commit_rev": row["commit_rev"],
+                "service_record_discovered_at": row["discovered_at"],
+            }
+    return None
+
+
+def _surface_from_emitter_definition(definition: Dict[str, Any]) -> str:
+    """Derive execution_surface from a service-record labelValueDefinition.
+
+    Service-record definitions describe CONSUMER-SIDE render behavior
+    (blurs, severity, defaultSetting). The surface is therefore always
+    client_render at this layer. PDS-level effects are not declared via
+    service records — they are protocol/admin actions (see
+    PROTOCOL_DOCUMENTED_LABELS).
+    """
+    return "client_render"
 
 
 def _surface_for(label_value: str, documented: bool) -> Optional[str]:
@@ -430,10 +553,10 @@ def _policy_documentation(label_value: str, documented: bool) -> Dict[str, Any]:
                 "reviewer": None,
             }
         artifact_kind = _policy_artifact_kind(label_value)
-        if artifact_kind == "atproto_api_labels_const":
+        if artifact_kind == "upstream_const":
             policy_artifact = {
                 **artifact_base,
-                "artifact_kind": "atproto_api_labels_const",
+                "artifact_kind": "upstream_const",
                 "extracted_rule": {
                     "label_value": label_value,
                     "note": (
@@ -444,9 +567,9 @@ def _policy_documentation(label_value: str, documented: bool) -> Dict[str, Any]:
                     ),
                 },
             }
-        else:  # atproto_protocol_spec
+        else:  # protocol_doc
             policy_artifact = {
-                "artifact_kind": "atproto_protocol_spec",
+                "artifact_kind": "protocol_doc",
                 "artifact_description": (
                     f"atproto protocol behavior for {label_value!r}; "
                     "documented by protocol/PDS implementation rather than "
@@ -465,6 +588,7 @@ def _policy_documentation(label_value: str, documented: bool) -> Dict[str, Any]:
         return {
             "consumer": consumer,
             "policy_artifact": policy_artifact,
+            "consumer_scope": "global_platform",
             "execution_surface": surface,
             "execution_surface_source": (
                 "KNOWN_LABEL_SURFACE table in derive_evidence.py (sourced "
@@ -504,6 +628,7 @@ def _policy_documentation(label_value: str, documented: bool) -> Dict[str, Any]:
             "absent policy."
         ),
         "status": "absent_for_consumer",
+        "consumer_scope": "unknown",
         "scoping_note": (
             "Policy-documentation status FOR THE NAMED CONSUMER under "
             "the stated render_context. Evidence is silent over other "

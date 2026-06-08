@@ -1,13 +1,14 @@
 {
   "specimen_id": "002",
-  "schema_version": 2,
+  "schema_version": 3,
   "schema_kind": "expected",
   "evidence_companion": "specimen-002-xblock-twitter-screenshot.evidence.json",
   "seeded_from_classifier_at": "2026-06-08T15:30:00Z",
-  "note": "Re-seeded after execution_surface + HostingObservation patch (D-001). ConversionGap is now a struct {name, surface}.",
+  "note": "Re-seeded after Bundle C (consumer_scope added to gap struct + LabelerEmitterDocumentation field).",
   "expected_gap": {
     "name": "conversion_witness_gap_no_consumer",
-    "surface": null
+    "surface": null,
+    "consumer_scope": "emitter_declared"
   },
   "expected_admissible_claims": [
     {

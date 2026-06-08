@@ -3,7 +3,8 @@
   "derived_from": "derived-39531024-did-plc-ar7c4by46qjdydhdevvrndac-takedown.evidence.json",
   "ConversionGap": {
     "name": "execution_gap_policy_present",
-    "surface": "pds_hosting"
+    "surface": "pds_hosting",
+    "consumer_scope": "global_platform"
   },
   "admissible_claims": [
     {

@@ -1,6 +1,6 @@
 {
-  "specimen_id": "derived-39464837",
-  "title": "moderation.bsky.app / needs-review / did:plc:3dg3rdpz6wtbwjn5a5yf55jw",
+  "specimen_id": "derived-39534944",
+  "title": "label.haus / fucked-up-replyref / at://did:plc:l7cwuonthk66ykzuzursfqzh/app.bsky.feed.post/3mmjjqdvlon2j",
   "summary": "Detection-lane evidence packet auto-derived from labelwatch.label_events. No operator pre-judgment of gap or admissible claims.",
   "schema_version": 1,
   "schema_kind": "evidence",
@@ -9,19 +9,19 @@
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
     "derived_at": "2026-06-08T16:06:14Z",
-    "source_row_id": 39464837,
+    "source_row_id": 39534944,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
   "LabelObservation": {
-    "labeler_did": "did:plc:ar7c4by46qjdydhdevvrndac",
-    "labeler_handle": "moderation.bsky.app",
+    "labeler_did": "did:plc:6ebfnuunfngxfw3rth3ewojw",
+    "labeler_handle": "label.haus",
     "labeler_class": "official_platform",
     "is_reference_labeler": true,
-    "target_uri": "did:plc:3dg3rdpz6wtbwjn5a5yf55jw",
-    "target_kind": "account",
-    "label_value": "needs-review",
+    "target_uri": "at://did:plc:l7cwuonthk66ykzuzursfqzh/app.bsky.feed.post/3mmjjqdvlon2j",
+    "target_kind": "post_record",
+    "label_value": "fucked-up-replyref",
     "neg": 0,
-    "ts": "2026-06-08T11:46:37.467565Z",
+    "ts": "2026-06-08T15:37:43.576916Z",
     "ingest_witness": "labelwatch label_events stream",
     "labelwatch_authority_effect_classification": null
   },
@@ -44,7 +44,7 @@
       "file_path": "packages/api/src/moderation/const/labels.ts",
       "head_or_commit": "7b8c5d60a",
       "search_result": "no_entry",
-      "search_evidence": "Global LABELS map at the pinned artifact does not contain an entry for 'needs-review'."
+      "search_evidence": "Global LABELS map at the pinned artifact does not contain an entry for 'fucked-up-replyref'."
     },
     "execution_surface": null,
     "execution_surface_source": "no documented policy for this label_value in the named consumer's pipeline; execution_surface is undefined for an absent policy.",
@@ -53,10 +53,35 @@
     "scoping_note": "Policy-documentation status FOR THE NAMED CONSUMER under the stated render_context. Evidence is silent over other consumer configurations (e.g., viewers who have opted into a third-party labeler service whose definitions cover this label_value)."
   },
   "LabelerEmitterDocumentation": {
-    "status": "absent",
-    "artifact_kind": null,
-    "consumer_scope": "unknown",
-    "reason": "No app.bsky.labeler.service record for 'did:plc:ar7c4by46qjdydhdevvrndac' in discovery_events declares a labelValueDefinition for 'needs-review'. (Either the labeler has no service record on file, or the service record exists but does not define this label_value.)"
+    "status": "documented_via_service_record",
+    "artifact_kind": "service_record",
+    "consumer_scope": "emitter_declared",
+    "scoping_note": "consumer_scope='emitter_declared' means the LABELER has published a rule for this label_value in its service record. It does NOT mean any consumer honors this rule. Service-record declaration is provenance, not global authority. Upgrading to 'opt_in_consumer_observed' requires direct evidence of consumer honor (deferred to Bundle D+).",
+    "execution_surface": "client_render",
+    "extracted_definition": {
+      "adultOnly": false,
+      "blurs": "none",
+      "defaultSetting": "warn",
+      "identifier": "fucked-up-replyref",
+      "locales": [
+        {
+          "description": "This post has a fucked up replyRef",
+          "lang": "en",
+          "name": "Fucked up replyRef"
+        }
+      ],
+      "severity": "inform"
+    },
+    "service_record_provenance": {
+      "labeler_did": "did:plc:6ebfnuunfngxfw3rth3ewojw",
+      "commit_cid": "bafyreihb36i2hygvid4wpckjo5mk2k5gmsyqvhyxnwm3x4unxqmipqnehi",
+      "commit_rev": "3mjocsquxg72h",
+      "discovered_at": "2026-04-17T14:26:13.474799Z",
+      "source_table": "labelwatch.db / discovery_events"
+    },
+    "retrieved_at": "2026-06-08T16:06:14Z",
+    "reviewed_at": "2026-06-08",
+    "reviewer": "labelwatch-claude (Bundle C)"
   },
   "PolicyWitness": {
     "status": "not_applicable",

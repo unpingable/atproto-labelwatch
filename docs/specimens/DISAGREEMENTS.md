@@ -228,7 +228,54 @@ distinction and parks the patch.
   artifact_kind affects what's CITED in admissible claims, not what
   the gap discriminator returns.
 
-**Status:** recorded, not patched. Forms the F-004 backlog item.
+**Status (updated by Bundle C):** **partially mechanized.** Service-record provenance now flows into the evidence packet as `LabelerEmitterDocumentation`; the classifier reads it and adds `consumer_scope=emitter_declared` to the gap struct. Three Bundle B bite points migrated from `consumer_scope=unknown` to `consumer_scope=emitter_declared` (fringe-media, twitter-screenshot, fucked-up-replyref). The invariant test confirms service-record labels are NEVER silently promoted to `global_platform`. Full multi-consumer subscription modeling (opt-in evidence → `opt_in_consumer_observed`) remains deferred to Bundle D+.
+
+---
+
+## F-005 — moderation.bsky.app's service record is not in labelwatch's `discovery_events`
+
+**Recorded:** Bundle C target-3 byproduct, 2026-06-08.
+
+**Observation.** Querying `discovery_events` for moderation.bsky.app's
+labeler service record returns **zero rows**. Same for the
+`labelValueDefinitions` projection. The other queried labelers
+(skywatch.blue, label.haus, xblock.aendra.dev) all have service
+records on file with labelValueDefinitions; moderation.bsky.app
+does not.
+
+**Why this is a finding (not a disagreement).** moderation.bsky.app
+emits 27k+ events of `needs-review` in 7d, plus `extremist`, `corpse`,
+`misinformation`, `scam`, `rumor`, etc. — labels that are NOT in
+`@atproto/api`'s upstream LABELS const but operationally ARE honored
+by the default client (since it auto-subscribes to mod.bsky). Their
+documented behavior presumably lives in mod.bsky's own
+`app.bsky.labeler.service` record's `labelValueDefinitions`. But
+labelwatch hasn't ingested that record (or mod.bsky doesn't publish
+one in the standard place).
+
+**Implication.** When the deriver runs on a `(mod.bsky, needs-review)`
+packet, the classifier honestly reports:
+- `PolicyDocumentation.status = absent_for_consumer` (no upstream LABELS entry, no protocol_doc entry)
+- `LabelerEmitterDocumentation.status = absent` (no service record observed)
+- `ConversionGap = {name: conversion_witness_gap_no_consumer, surface: None, consumer_scope: unknown}`
+
+That's honest given current evidence. But it's also operationally
+misleading: the default client likely DOES render `needs-review`
+according to some rule (because mod.bsky is default-subscribed and
+either has a service record we haven't ingested, or has builtin
+behavior for these labels we haven't documented).
+
+**Diagnosis: ingestion_gap, not schema_gap.** The schema (Bundle C
+shape) can represent emitter-declared provenance correctly; the data
+to populate it is missing for the most operationally important
+first-party labeler.
+
+**Patch path (deferred).**
+1. Check whether moderation.bsky.app publishes an `app.bsky.labeler.service` record at all (DID:plc resolution → service endpoint → record listing).
+2. If yes: confirm labelwatch's discovery pipeline knows to fetch it, and look at why it isn't in `discovery_events`.
+3. If no: moderation.bsky.app's labels are documented somewhere else (atproto-internal admin definitions, perhaps embedded in the bsky appview). That's a different artifact_kind candidate; possibly extends `PROTOCOL_DOCUMENTED_LABELS`.
+
+**Status:** recorded. Tracks the bigger ingestion question; not patched in Bundle C.
 
 ---
 

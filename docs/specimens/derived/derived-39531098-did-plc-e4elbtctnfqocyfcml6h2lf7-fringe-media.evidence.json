@@ -8,7 +8,7 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T15:58:08Z",
+    "derived_at": "2026-06-08T16:06:14Z",
     "source_row_id": 39531098,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
@@ -49,7 +49,39 @@
     "execution_surface": null,
     "execution_surface_source": "no documented policy for this label_value in the named consumer's pipeline; execution_surface is undefined for an absent policy.",
     "status": "absent_for_consumer",
+    "consumer_scope": "unknown",
     "scoping_note": "Policy-documentation status FOR THE NAMED CONSUMER under the stated render_context. Evidence is silent over other consumer configurations (e.g., viewers who have opted into a third-party labeler service whose definitions cover this label_value)."
+  },
+  "LabelerEmitterDocumentation": {
+    "status": "documented_via_service_record",
+    "artifact_kind": "service_record",
+    "consumer_scope": "emitter_declared",
+    "scoping_note": "consumer_scope='emitter_declared' means the LABELER has published a rule for this label_value in its service record. It does NOT mean any consumer honors this rule. Service-record declaration is provenance, not global authority. Upgrading to 'opt_in_consumer_observed' requires direct evidence of consumer honor (deferred to Bundle D+).",
+    "execution_surface": "client_render",
+    "extracted_definition": {
+      "adultOnly": false,
+      "blurs": "media",
+      "defaultSetting": "ignore",
+      "identifier": "fringe-media",
+      "locales": [
+        {
+          "description": "Applied to posts which contain a link to sites known to be sources of disinformation and misinformation. These sites often serve to launder fringe ideas, conspiracy theories, and extreme political positions into the mainstream. Accounts which frequently or primarily post links to these sources will be labeled as Amplifiers.",
+          "lang": "en",
+          "name": "Fringe Media & Disinfo"
+        }
+      ],
+      "severity": "alert"
+    },
+    "service_record_provenance": {
+      "labeler_did": "did:plc:e4elbtctnfqocyfcml6h2lf7",
+      "commit_cid": "bafyreidfdiot56nwao3vs3k4sfg2mj3ttlauaqdjxawoypct4dv7jqqf2i",
+      "commit_rev": "3mmajo7rqoj24",
+      "discovered_at": "2026-05-19T23:19:15.619785Z",
+      "source_table": "labelwatch.db / discovery_events"
+    },
+    "retrieved_at": "2026-06-08T16:06:14Z",
+    "reviewed_at": "2026-06-08",
+    "reviewer": "labelwatch-claude (Bundle C)"
   },
   "PolicyWitness": {
     "status": "not_applicable",

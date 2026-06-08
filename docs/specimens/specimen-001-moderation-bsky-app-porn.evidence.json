@@ -82,7 +82,15 @@
     },
     "execution_surface": "client_render",
     "execution_surface_source": "policy artifact behaviors block (blurs:'media', behaviors.content.contentMedia:'blur'); render-time effect, record remains hosted unchanged",
+    "consumer_scope": "global_platform",
     "status": "documented"
+  },
+
+  "LabelerEmitterDocumentation": {
+    "status": "absent",
+    "artifact_kind": null,
+    "consumer_scope": "unknown",
+    "reason": "moderation.bsky.app has no app.bsky.labeler.service record ingested into labelwatch's discovery_events table (F-005 ingestion gap). Even if present, porn is already documented at the upstream_const level, so emitter declaration would be additive provenance rather than the primary citation."
   },
 
   "PolicyWitness": {

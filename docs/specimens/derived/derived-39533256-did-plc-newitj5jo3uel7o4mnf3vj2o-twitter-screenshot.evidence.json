@@ -8,7 +8,7 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T15:58:08Z",
+    "derived_at": "2026-06-08T16:06:14Z",
     "source_row_id": 39533256,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
@@ -49,7 +49,39 @@
     "execution_surface": null,
     "execution_surface_source": "no documented policy for this label_value in the named consumer's pipeline; execution_surface is undefined for an absent policy.",
     "status": "absent_for_consumer",
+    "consumer_scope": "unknown",
     "scoping_note": "Policy-documentation status FOR THE NAMED CONSUMER under the stated render_context. Evidence is silent over other consumer configurations (e.g., viewers who have opted into a third-party labeler service whose definitions cover this label_value)."
+  },
+  "LabelerEmitterDocumentation": {
+    "status": "documented_via_service_record",
+    "artifact_kind": "service_record",
+    "consumer_scope": "emitter_declared",
+    "scoping_note": "consumer_scope='emitter_declared' means the LABELER has published a rule for this label_value in its service record. It does NOT mean any consumer honors this rule. Service-record declaration is provenance, not global authority. Upgrading to 'opt_in_consumer_observed' requires direct evidence of consumer honor (deferred to Bundle D+).",
+    "execution_surface": "client_render",
+    "extracted_definition": {
+      "adultsOnly": false,
+      "blurs": "media",
+      "defaultSetting": "warn",
+      "identifier": "twitter-screenshot",
+      "locales": [
+        {
+          "description": "An image detected as a screenshot taken from Twitter, contents may or may not be offensive",
+          "lang": "en",
+          "name": "Possible Twitter screenshot"
+        }
+      ],
+      "severity": "inform"
+    },
+    "service_record_provenance": {
+      "labeler_did": "did:plc:newitj5jo3uel7o4mnf3vj2o",
+      "commit_cid": "bafyreig74n3bgmbzgrvctv2urca2schjraq4qwqslxt4b52us7e32apvke",
+      "commit_rev": "3mjfk5ymlo425",
+      "discovered_at": "2026-04-13T18:57:26.672849Z",
+      "source_table": "labelwatch.db / discovery_events"
+    },
+    "retrieved_at": "2026-06-08T16:06:14Z",
+    "reviewed_at": "2026-06-08",
+    "reviewer": "labelwatch-claude (Bundle C)"
   },
   "PolicyWitness": {
     "status": "not_applicable",

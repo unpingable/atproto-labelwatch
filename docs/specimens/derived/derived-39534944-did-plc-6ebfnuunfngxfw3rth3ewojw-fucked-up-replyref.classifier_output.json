@@ -1,16 +1,16 @@
 {
   "schema_kind": "classifier_output",
-  "derived_from": "derived-39464837-did-plc-ar7c4by46qjdydhdevvrndac-needs-review.evidence.json",
+  "derived_from": "derived-39534944-did-plc-6ebfnuunfngxfw3rth3ewojw-fucked-up-replyref.evidence.json",
   "ConversionGap": {
     "name": "conversion_witness_gap_no_consumer",
     "surface": null,
-    "consumer_scope": "unknown"
+    "consumer_scope": "emitter_declared"
   },
   "admissible_claims": [
     {
       "id": "label_exists",
       "scope": "this specimen",
-      "claim": "A label record with label_value='needs-review' exists on did:plc:3dg3rdpz6wtbwjn5a5yf55jw, issued by moderation.bsky.app at 2026-06-08T11:46:37.467565Z.",
+      "claim": "A label record with label_value='fucked-up-replyref' exists on at://did:plc:l7cwuonthk66ykzuzursfqzh/app.bsky.feed.post/3mmjjqdvlon2j, issued by label.haus at 2026-06-08T15:37:43.576916Z.",
       "derivation_basis": [
         "LabelObservation"
       ]

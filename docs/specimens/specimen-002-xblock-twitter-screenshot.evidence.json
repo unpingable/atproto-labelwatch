@@ -48,9 +48,25 @@
       "search_evidence": "Global LABELS map contains entries only for the atproto global label set (!hide, !warn, !no-unauthenticated, !takedown, porn, sexual, nudity, graphic-media, intolerant, self-harm, sensitive, threat, spam, rude, sexual-figurative, impersonation, illicit, security, misleading, unsafe-link, inauthentic). No entry for 'twitter-screenshot'."
     },
     "status": "absent_for_consumer",
+    "consumer_scope": "unknown",
     "execution_surface": null,
     "execution_surface_source": "no documented policy for this label_value in the named consumer's pipeline; execution_surface is undefined for an absent policy",
     "scoping_note": "This is the policy-documentation status FOR THE NAMED CONSUMER under the stated render_context. The evidence is silent over other consumer configurations (e.g., a viewer who has explicitly subscribed to xblock as a labeler service). A separate specimen (002b) would be required to characterize the opt-in case."
+  },
+
+  "LabelerEmitterDocumentation": {
+    "status": "documented_via_service_record",
+    "artifact_kind": "service_record",
+    "consumer_scope": "emitter_declared",
+    "scoping_note": "xblock.aendra.dev publishes an app.bsky.labeler.service record that declares labelValueDefinitions for twitter-screenshot. consumer_scope='emitter_declared' means the LABELER has declared a rule; it does NOT mean the bsky.app-default-client consumer honors it. Default consumer does not subscribe to xblock unless the viewer opts in. F-004 records this distinction.",
+    "extracted_definition": {
+      "identifier": "twitter-screenshot",
+      "note": "Fixture-side citation. Detection-lane packets pull the full definition body from labelwatch's discovery_events. Both paths yield artifact_kind=service_record / consumer_scope=emitter_declared."
+    },
+    "service_record_provenance": {
+      "labeler_did": "did:plc:newitj5jo3uel7o4mnf3vj2o",
+      "source_table": "labelwatch.db / discovery_events"
+    }
   },
 
   "PolicyWitness": {
