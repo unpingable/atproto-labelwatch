@@ -1,0 +1,55 @@
+{
+  "schema_kind": "specimen_candidate",
+  "schema_version": 1,
+  "lane": "authority_surface",
+  "exporter": "specimen_exporter.py v1 (Bundle D skeleton)",
+  "exported_at": "2026-06-08T16:13:19Z",
+  "evidence_source": "derived/derived-39534944-did-plc-6ebfnuunfngxfw3rth3ewojw-fucked-up-replyref.evidence.json",
+  "labeler": {
+    "did": "did:plc:6ebfnuunfngxfw3rth3ewojw",
+    "handle": "label.haus",
+    "display_name": null,
+    "class": "official_platform",
+    "is_reference": true
+  },
+  "label": {
+    "value": "fucked-up-replyref",
+    "neg": 0,
+    "labelwatch_authority_effect": null
+  },
+  "target": {
+    "uri": "at://did:plc:l7cwuonthk66ykzuzursfqzh/app.bsky.feed.post/3mmjjqdvlon2j",
+    "kind": "post_record",
+    "target_did": null
+  },
+  "observation": {
+    "ts": "2026-06-08T15:37:43.576916Z",
+    "first_seen": null,
+    "last_seen": null,
+    "reassertion_count": null,
+    "state_basis": null,
+    "current_state": null,
+    "state_lookup_note": "v1: single-event proxy only. Bundle E will populate from label_state sidecar; until then freshness-lane exports are gated on this absence."
+  },
+  "policy_provenance": {
+    "artifact_kind": null,
+    "consumer_scope": "unknown",
+    "status": "absent_for_consumer",
+    "execution_surface": null
+  },
+  "emitter_provenance": {
+    "artifact_kind": "service_record",
+    "consumer_scope": "emitter_declared",
+    "status": "documented_via_service_record",
+    "execution_surface": "client_render"
+  },
+  "consumer_scope_effective": "emitter_declared",
+  "conversion_gap": {
+    "name": "conversion_witness_gap_no_consumer",
+    "surface": null,
+    "consumer_scope": "emitter_declared"
+  },
+  "export_caveats": [
+    "non_global_provenance"
+  ]
+}

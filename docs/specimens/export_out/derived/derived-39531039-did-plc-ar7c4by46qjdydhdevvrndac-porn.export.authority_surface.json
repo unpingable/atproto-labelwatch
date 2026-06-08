@@ -1,0 +1,56 @@
+{
+  "schema_kind": "specimen_candidate",
+  "schema_version": 1,
+  "lane": "authority_surface",
+  "exporter": "specimen_exporter.py v1 (Bundle D skeleton)",
+  "exported_at": "2026-06-08T16:13:19Z",
+  "evidence_source": "derived/derived-39531039-did-plc-ar7c4by46qjdydhdevvrndac-porn.evidence.json",
+  "labeler": {
+    "did": "did:plc:ar7c4by46qjdydhdevvrndac",
+    "handle": "moderation.bsky.app",
+    "display_name": null,
+    "class": "official_platform",
+    "is_reference": true
+  },
+  "label": {
+    "value": "porn",
+    "neg": 0,
+    "labelwatch_authority_effect": null
+  },
+  "target": {
+    "uri": "at://did:plc:orrkib5wod7mfsdokxff6k6m/app.bsky.feed.post/3lqjlyj2ips2k",
+    "kind": "post_record",
+    "target_did": null
+  },
+  "observation": {
+    "ts": "2026-06-08T15:35:52.773473Z",
+    "first_seen": null,
+    "last_seen": null,
+    "reassertion_count": null,
+    "state_basis": null,
+    "current_state": null,
+    "state_lookup_note": "v1: single-event proxy only. Bundle E will populate from label_state sidecar; until then freshness-lane exports are gated on this absence."
+  },
+  "policy_provenance": {
+    "artifact_kind": "upstream_const",
+    "consumer_scope": "global_platform",
+    "status": "documented",
+    "execution_surface": "client_render"
+  },
+  "emitter_provenance": {
+    "artifact_kind": null,
+    "consumer_scope": "unknown",
+    "status": "absent",
+    "execution_surface": null
+  },
+  "consumer_scope_effective": "global_platform",
+  "conversion_gap": {
+    "name": "execution_gap_policy_present",
+    "surface": "client_render",
+    "consumer_scope": "global_platform"
+  },
+  "export_caveats": [
+    "render_execution_unwitnessed",
+    "policy_witnessed_documentary_only"
+  ]
+}

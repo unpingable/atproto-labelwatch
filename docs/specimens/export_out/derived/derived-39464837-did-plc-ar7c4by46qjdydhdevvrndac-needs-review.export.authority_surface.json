@@ -1,0 +1,33 @@
+{
+  "schema_kind": "blocked_candidate",
+  "schema_version": 1,
+  "lane": "authority_surface",
+  "exporter": "specimen_exporter.py v1 (Bundle D skeleton)",
+  "exported_at": "2026-06-08T16:13:19Z",
+  "evidence_source": "derived/derived-39464837-did-plc-ar7c4by46qjdydhdevvrndac-needs-review.evidence.json",
+  "labeler": {
+    "did": "did:plc:ar7c4by46qjdydhdevvrndac",
+    "handle": "moderation.bsky.app",
+    "display_name": null,
+    "class": "official_platform",
+    "is_reference": true
+  },
+  "label": {
+    "value": "needs-review",
+    "neg": 0,
+    "labelwatch_authority_effect": null
+  },
+  "target": {
+    "uri": "did:plc:3dg3rdpz6wtbwjn5a5yf55jw",
+    "kind": "account",
+    "target_did": null
+  },
+  "blocker": "ingestion_gap_surface_unresolved",
+  "reason": "Labeler is official_platform but consumer_scope is 'unknown'. Most likely the labeler's app.bsky.labeler.service record is not in labelwatch's discovery_events (F-005 ingestion gap). The default client operationally honors first-party labels via auto-subscription, so this 'unknown' is almost certainly instrumentation failure, not real surface absence.",
+  "what_would_unblock": "Ingest the labeler's service record into labelwatch.discovery_events so LabelerEmitterDocumentation can populate. F-005 patch.",
+  "conversion_gap": {
+    "name": "conversion_witness_gap_no_consumer",
+    "surface": null,
+    "consumer_scope": "unknown"
+  }
+}

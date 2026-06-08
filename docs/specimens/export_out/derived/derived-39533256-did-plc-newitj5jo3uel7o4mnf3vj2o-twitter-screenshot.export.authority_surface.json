@@ -1,0 +1,55 @@
+{
+  "schema_kind": "specimen_candidate",
+  "schema_version": 1,
+  "lane": "authority_surface",
+  "exporter": "specimen_exporter.py v1 (Bundle D skeleton)",
+  "exported_at": "2026-06-08T16:13:19Z",
+  "evidence_source": "derived/derived-39533256-did-plc-newitj5jo3uel7o4mnf3vj2o-twitter-screenshot.evidence.json",
+  "labeler": {
+    "did": "did:plc:newitj5jo3uel7o4mnf3vj2o",
+    "handle": "xblock.aendra.dev",
+    "display_name": null,
+    "class": "third_party",
+    "is_reference": false
+  },
+  "label": {
+    "value": "twitter-screenshot",
+    "neg": 0,
+    "labelwatch_authority_effect": null
+  },
+  "target": {
+    "uri": "at://did:plc:a3mv242azt5e24weajdciiws/app.bsky.feed.post/3mcp43jjntm2o",
+    "kind": "post_record",
+    "target_did": null
+  },
+  "observation": {
+    "ts": "2026-06-08T15:36:32.154106Z",
+    "first_seen": null,
+    "last_seen": null,
+    "reassertion_count": null,
+    "state_basis": null,
+    "current_state": null,
+    "state_lookup_note": "v1: single-event proxy only. Bundle E will populate from label_state sidecar; until then freshness-lane exports are gated on this absence."
+  },
+  "policy_provenance": {
+    "artifact_kind": null,
+    "consumer_scope": "unknown",
+    "status": "absent_for_consumer",
+    "execution_surface": null
+  },
+  "emitter_provenance": {
+    "artifact_kind": "service_record",
+    "consumer_scope": "emitter_declared",
+    "status": "documented_via_service_record",
+    "execution_surface": "client_render"
+  },
+  "consumer_scope_effective": "emitter_declared",
+  "conversion_gap": {
+    "name": "conversion_witness_gap_no_consumer",
+    "surface": null,
+    "consumer_scope": "emitter_declared"
+  },
+  "export_caveats": [
+    "non_global_provenance"
+  ]
+}
