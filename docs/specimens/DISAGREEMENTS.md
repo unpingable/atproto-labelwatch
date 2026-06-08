@@ -1,10 +1,11 @@
 # Specimen DISAGREEMENTS + FINDINGS log
 
-Two kinds of entries:
+Three kinds of entries:
 
 **D-NNN — disagreements.** The classifier's verdict on a real-data
-evidence packet differs from what the operator expected. Each disagreement
-resolves to one of:
+evidence packet differs from what the operator expected, OR an
+explicit operator self-discipline note about a classifier/analysis
+choice that should not be over-interpreted. Each entry resolves to one of:
 
 - **classifier_wrong** — code has a bug; fix in `classifier.py`
 - **schema_incomplete** — evidence vocabulary doesn't capture the
@@ -13,16 +14,34 @@ resolves to one of:
 - **operator_wrong** — the operator's pre-judgment was the laundering
   shape; classifier is honest; resolution is a write-up explaining why
   the operator's intuition was off
+- **discipline_note** — no disagreement per se; recorded to prevent a
+  later reader from treating heuristic output as normative
 
-**F-NNN — findings.** Non-disagreement observations from the detection
-lane that are worth recording even when classifier and operator agree.
-Typical shape: an operator intuition that the schema correctly refuses
-to encode, or a coverage gap surfaced by a batch run.
+**F-NNN — findings.** Non-disagreement observations worth recording —
+operator intuitions the schema correctly refuses to encode, coverage
+gaps surfaced by a batch run, or ecosystem patterns that surface in
+analysis lanes (per `docs/analysis/`) and feed back into the
+admissibility frame.
+
+**T-NNN — technical hygiene.** Items about Labelwatch's own classifiers,
+scanners, or apparatus that need a review pass. Distinct from F-NNN
+(which observe the ECOSYSTEM) and D-NNN (which resolve specific
+disagreements). T-items are tool debt: they don't change the doctrine,
+they fix our own measurement instruments.
 
 Per the methodology: "the first real success is not agreement with the
 operator. The first real success is a schema-grounded derived verdict
 that disagrees with the operator and survives audit." Empty log = the
 mechanization isn't yet paying for itself.
+
+The canonical admissibility hook from F-007's headline (worth keeping
+visible at the top of this file):
+
+> **Do not let "labeler exists" silently convert into "moderation
+> service exists."** Label emission, declared semantics, and
+> operational maturity are three different things; the ATProto
+> moderation ecosystem currently contains all three failure modes at
+> scale.
 
 ---
 
@@ -502,6 +521,239 @@ records it as a blocker; future work may produce a separate "emitter-
 undeclared first-party label" report.
 
 **Status:** patched in D.5.
+
+---
+
+## F-007 — Population-scale publish-without-declare
+
+**Recorded:** 2026-06-08, from
+[`docs/analysis/labeler-operator-maturity-001.md`](../analysis/labeler-operator-maturity-001.md).
+
+**Observation:** In the operator-maturity scan of 150 observed
+labelers, **14 high-volume labelers emitted labels over the last 30
+days while publishing zero `labelValueDefinitions`** in their service
+record.
+
+Top of the cohort (events_30d):
+
+| labeler | events / 30d | defs |
+|---|---:|---:|
+| `antiantiai.bsky.social` | 908,000 | 0 |
+| `labeler.plural.host` | 906,500 | 0 |
+| `oracle.posters.rip` | 698,575 | 0 |
+| `uspol-labeler.bsky.social` | 446,585 | 0 |
+| `bottags.bsky.social` | 121,267 | 0 |
+| (… 9 more from 12k to 73k events/30d) | | |
+
+Two of these emit at moderation.bsky.app's own volume (~908k
+events/30d each).
+
+**Why this matters:** Under the ATProto stackable-moderation
+subscription model, client-side honoring via `labelersPref` depends on
+a declared label vocabulary. A labeler with no definitions presents
+no standard consumer-side semantic surface to subscribe to, even if
+it emits high-volume labels.
+
+**Generalizes F-006.** F-006 was one specimen: `needs-review` from
+moderation.bsky.app. F-007 generalizes the same shape into an
+**ecosystem pattern**: label publication is operationally separable
+from declared consumer semantics, and the separation occurs at
+non-trivial scale across many independent operators.
+
+**Impact:** Consumers, auditors, and downstream tools cannot infer
+that high-volume emitted labels correspond to an admissible
+moderation surface. Emission volume is therefore not evidence of
+usable protocol participation. A label-events firehose view of the
+ecosystem systematically overstates the size of subscribable
+moderation infrastructure.
+
+**Refusal (the admissibility hook):**
+
+> **Do not treat an observed label stream as subscribable
+> moderation infrastructure unless the labeler also declares the
+> consumed label values in its service record.**
+>
+> **Do not let "labeler exists" silently convert into "moderation
+> service exists."** Label emission, declared semantics, and
+> operational maturity are three different things; the ATProto
+> moderation ecosystem currently contains all three failure modes
+> at scale.
+
+**Diagnostic class (per the user's framing — none of these is "bug
+in labeler"):**
+1. **Protocol affordance gap** — emitting labels is operationally
+   easier than declaring usable consumer semantics.
+2. **Client reality gap** — clients may rely on definitions; emitters
+   may not provide them.
+3. **Ecosystem measurement gap** — raw label volume overstates
+   meaningful moderation infrastructure.
+4. **Anthropology gap** — the "federated moderation ecosystem" is
+   mostly not a mature operator field.
+
+**Status:** recorded. No schema patch — the existing classifier
+already produces the right verdict for any individual packet from
+these labelers (`emitter_declares_no_rule_for_label` if a packet ever
+got that far). F-007 is a population-level framing claim, not a
+classifier bug.
+
+**Forward path:**
+- Maintain the operator-maturity scan as a periodic check; F-007
+  cohort size + composition over time is the natural metric.
+- Decide whether the per-labeler exporter should ALSO carry a
+  population-context caveat ("this labeler's emission volume is in
+  the publish-without-declare cohort"). Deferred — would couple
+  per-packet exports to ecosystem state.
+
+---
+
+## F-008 — Stale-service / abandoned declared-scope no-op subscriptions
+
+**Recorded:** 2026-06-08, from
+[`docs/analysis/labeler-operator-maturity-001.md`](../analysis/labeler-operator-maturity-001.md).
+
+**Observation:** Of the 150 observed labelers, **65 are abandoned**
+(43%) — had service record on file, zero events in last 30 days.
+Of those, **28 had substantial declared scope** (≥ 6
+`labelValueDefinitions`) before going silent:
+
+| labeler | defs |
+|---|---:|
+| `sonasky.app` | 684 |
+| `stemlabels.xyz` | 461 |
+| `pokemon.sonasky.app` | 161 |
+| `label.wol.blue` | 119 |
+| `cons.fyi` | 108 |
+| (… 23 more 6–75 defs each) | |
+
+**Why this matters:** A Bluesky user who subscribes to any of these
+labelers via `labelersPref` would receive zero label events from
+that subscription. The labeler is discoverable via the service
+record and may even appear in client UIs as available, but the
+subscription is operationally a no-op.
+
+**Distinct from F-007:** F-007 is high-volume emission with no
+declared semantics ("shout into the void"). F-008 is declared
+semantics with no current emission ("declared then walked away").
+Mirror-image failure shapes; same admissibility hook applies:
+**emission and declaration travel separately, and the user-facing
+service-readiness signal needs to know about BOTH.**
+
+Together, F-007 + F-008 cover the two big failure modes the
+operator-maturity scan surfaced at population scale:
+- ~9% of observed labelers emit substantially without declaring
+- 43% of observed labelers declare without emitting
+
+**Pathological subcase — definition churn without emission:**
+`vocalabeller.kanshen.click` published **106,000 service-record
+revisions** of a single labelValueDefinition with zero events in
+the scan window. `cons.fyi`: 1,034 revisions, 108 defs, 0 events.
+`labeler-bot-tan.suibari.com`: 866 revisions, 18 defs, 0 events.
+Operationally pathological; likely stuck redeploy loops. The
+abandoned set is not just "stopped" — some of it is "stuck."
+
+**Refusal:**
+
+> **Do not treat the presence of a service record as evidence of
+> a live moderation service.** Subscribing to a labeler with
+> declared scope and zero recent emissions is a no-op until the
+> labeler resumes. A maturity / activity check should accompany
+> any client-side discovery surface.
+
+**Status:** recorded. Same diagnostic class as F-007 (protocol
+affordance / client reality / measurement / anthropology gaps).
+The operator-maturity table is the per-labeler artifact;
+F-007 + F-008 are the population-level claims it supports.
+
+---
+
+## D-002 — Operator-maturity taxonomy is heuristic, not normative
+
+**Recorded:** 2026-06-08 as a discipline note (no actual
+operator-vs-classifier disagreement — a self-correction about how
+the maturity table should be read).
+
+**Resolution:** `discipline_note`.
+
+**The note:** The `maturity_class` column in
+`docs/analysis/labeler-operator-maturity-001.md` is a heuristic
+categorization, not measurement. The classes (`experimental` /
+`personal/reputational` / `community-service` /
+`moderation-infrastructure` / `abandoned` / `unknown` /
+`platform-root`) are operational cohorts with arbitrary thresholds
+(`events_30d ≥ 100`, `events_30d ≥ 10000`, etc.). The boundaries
+will shift on threshold tuning; specific cutoffs are defensible
+but not principled.
+
+**Do not:**
+- Cite a specific labeler's `maturity_class` as a normative judgment
+  about that labeler.
+- Use the table as input to admissibility apparatus (the goblin
+  math) — the maturity_class is descriptive, not provenance.
+- Treat "experimental" / "abandoned" / etc. as accusation-shaped.
+  They are SRE-shape, not moral-shape.
+
+**Do:**
+- Cite the table as aggregate signal about the ecosystem
+  (histograms, distributional claims, cohort framing — F-007, F-008).
+- Reproduce by running
+  `docs/analysis/tools/operator_maturity_scan.py` against fresh data
+  and noting threshold sensitivity.
+- Re-tune thresholds if they stop matching operator intuition; record
+  the tuning in this entry's revision history.
+
+**Status:** discipline note, no patch required.
+
+---
+
+## T-001 — `likely_test_dev` heuristic mis-flags `xblock.aendra.dev` + `recordcollector.edavis.dev`
+
+**Recorded:** 2026-06-08, from operator-maturity-001 Pattern 4.
+
+**Item type:** technical hygiene (Labelwatch upstream classifier
+debt). Distinct from F-NNN: this is a tool problem, not an ecosystem
+finding.
+
+**Observation:** Labelwatch's `labelers.likely_test_dev` column flags
+two real high-volume third-party labelers as test/dev:
+
+| handle | events_30d | declared defs | likely_test_dev |
+|---|---:|---:|---|
+| `xblock.aendra.dev` | 908,000 | 13 | 1 |
+| `recordcollector.edavis.dev` | 50,727 | 67 | 1 |
+
+`xblock.aendra.dev` is the labeler Bundle G's specimen-003 cites as
+a real third-party consumer-adoption case — there is nothing
+test/dev about it operationally.
+
+**Impact:** The operator-maturity-001 scan used `likely_test_dev` as
+an override that downgrades any flagged labeler to "experimental"
+regardless of activity volume or declared scope. This silently
+loses signal for at least two real labelers; the maturity table's
+cohort sizes are slightly off as a consequence.
+
+**Likely root cause (speculation, not yet confirmed):** the
+`likely_test_dev` heuristic in labelwatch is probably matching on
+handle pattern — `*.dev` TLDs, perhaps `recordcollector` or
+`xblock` substrings. Worth a review pass on the upstream
+classification code.
+
+**What needs doing:**
+1. Locate the `likely_test_dev` classification logic in labelwatch
+   (likely `discover.py` or a derive pass).
+2. Identify the false-positive pattern.
+3. Either tighten the heuristic or carve out an allowlist for
+   labelers like xblock.
+4. Re-derive labelers + re-run operator-maturity scan; verify the
+   two labelers reclassify out of `experimental`.
+
+**Not blocking:** the cohort framing in F-007/F-008 doesn't depend
+on these two labelers' specific classes. The maturity table is
+descriptive aggregate; the mis-flags are noise at the
+high-volume tail.
+
+**Status:** recorded. Not patched — touches labelwatch's live
+package code (not specimens-track scope). Pick up when the
+`labelers` table classifications get their next review pass.
 
 ---
 
