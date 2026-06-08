@@ -11,6 +11,27 @@
 > distinction. The ladder has a tendency to eat the project like a
 > Roomba with tenure.
 
+## Doctrine update from the census
+
+The consumer-conversion census produced one canonical line worth
+preserving here as the **anti-wildfire lemma**:
+
+> **Consumer conversion is not assumed from labeler publication.
+> Consumer conversion is not assumed from protocol affordance.
+> Consumer conversion requires observed client behavior, explicit
+> user preference, or a named synthetic specimen.**
+
+Bundle G is reclassified accordingly:
+
+  - **Status:** dormant guardrail
+  - **Evidence class:** future-compatible / counterfactual
+  - **Urgency:** low
+  - **Promotion trigger:** observed third-party consumer conversion,
+    runtime config-fetch evidence, or closed-client behavioral proof
+
+The machinery is correct; its threat model is currently speculative.
+Don't tear it out; don't motivate new work from it.
+
 ## Closed by the census (2026-06-08)
 
 - [`consumer-conversion-census.md`](consumer-conversion-census.md) —
@@ -19,9 +40,229 @@
   is downgraded to fire-code framing. Bundle G machinery is
   defensible but not urgent.
 
-## Open — ordered by usefulness, not by ladder seniority
+## Inside the goblin math vs outside it
 
-### 1. Receipt-reader closure
+The goblin math is excellent at preventing one specific failure:
+**accidental overclaiming.** But Labelwatch also needs to answer
+messier questions:
+
+```
+Is this ecosystem healthy?
+Is it legible?
+Is it usable?
+Is it concentrating power?
+Is it mostly abandoned experiments?
+Are users actually protected, informed, confused, or just decorated?
+```
+
+Those are not formal-boundary questions. They are product /
+research / ecosystem questions. The bundle ladder produces a great
+incident recorder; these questions ask "what is this thing FOR, and
+who would use it."
+
+Note (correction, 2026-06-08): an earlier draft of this document
+promoted **definition drift** to the top of this list, framing it
+as "the actually-active problem surface." That was wrong. Definition
+drift IS interesting and IS where F-006 lives — but it is still
+inside the goblin-math gravity well (later definition ≠ earlier
+emission meaning; doctrine with a database). The census was
+outside-ish because it asked "is the ecosystem doing the feared thing
+at all?" Definition drift pulls back toward native gravity. The
+actually-outside analyses are the audience/marketplace/maturity/
+topology/UI questions below.
+
+## A. Outside the goblin math (truly outside)
+
+These don't primarily ask "what may we conclude?" They ask "what
+is happening, who cares, and what is this thing good for?"
+
+### A1. Labeler operator-maturity analysis  **(next slice)**
+
+Treat labelers like services. Not "is the conclusion admissible?" —
+"would I trust this service enough to expose it to users?"
+
+Output: a boring table per labeler:
+
+```
+labeler_did | display_name | active_recently | declares_scope
+            | explains_labels | has_contact_or_appeal_path
+            | has_stable_service_record | label_count_30d
+            | distinct_targets_30d | user_visible_consequence_known
+            | maturity_class | notes
+```
+
+Maturity classes (heuristic, not measurement):
+
+```
+experimental         — recent, sparse, possibly one-off
+abandoned            — was active, now silent / no recent service record updates
+personal/reputational — one operator labeling for personal-style reasons
+community-service    — sustained activity, declared scope, public-facing
+moderation-infrastructure — high volume, clear scope, treated as infrastructure by clients
+platform-root        — the default-subscribed labeler (mod.bsky as of census)
+unknown              — insufficient signal
+```
+
+**Why this is outside the math:** "Would I trust this thing enough
+to expose it to users?" is not an admissibility question. It is an
+SRE / service-readiness question wearing a moderation hat. Closer to
+"is this service ready for production traffic" than "is this
+conclusion derivable from this evidence."
+
+**Boring is the point.** A boring per-labeler operational table that
+a Bluesky user could read and decide "yes I'd subscribe / no I
+wouldn't" is more useful than another schema refinement.
+
+### A2. Audience / use-case analysis
+
+Who is Labelwatch for, practically? Possible users:
+
+```
+Bluesky users choosing labelers
+client developers deciding what to expose
+labeler operators auditing themselves
+researchers studying decentralized moderation
+journalists investigating moderation ecosystems
+platform governance people watching power drift
+```
+
+Each wants a different report. Right now Labelwatch is shaped like
+an aircraft incident recorder. The question is whether anyone wants
+a consumer guide / operator audit / ecosystem observatory / research
+dataset / governance warning system instead — or in addition.
+
+### A3. Labeler marketplace / discoverability
+
+Not "are labels admissible?" — instead:
+
+```
+Which labelers are visible?
+Which are findable by ordinary users?
+Which ones appear in client UIs?
+Which ones tell users what subscribing actually does?
+```
+
+A labeler can be perfectly admissible and still be unusable.
+
+### A4. Ecosystem topology
+
+Who labels what kinds of things? Aggregate topology only — no
+per-account dossiers:
+
+```
+labeler clusters
+host/PDS concentration
+domain-family concentration
+language/community concentration
+topic concentration (where inferable without creepy enrichment)
+overlap between labelers
+islands of mutually interacting labelers
+```
+
+Tells you whether decentralized moderation is actually decentralized
+or whether it's three operators and a cron job.
+
+### A5. UI consequence analysis
+
+For each labeler, ask: what would a user actually SEE?
+
+```
+badge | warning | blur | hide | profile interstitial
+| feed suppression | nothing visible
+```
+
+The protocol labels are abstract. The user experience is concrete.
+This maps events to lived UI consequence, not admissible inference.
+
+Output:
+
+```
+labeler | label value | likely UX consequence | user-visible explanation
+        | reversibility | confusion risk
+```
+
+### A6. Legibility ("would normal people understand this?")
+
+Sample label descriptions, classify:
+
+```
+clear | ambiguous | inside joke | ideological shorthand
+| technical/protocol jargon | overbroad | actionable | non-actionable
+```
+
+A label whose description makes sense only to three Bluesky regulars
+and a raccoon in a Nix shell has limited public value.
+
+### A7. Labeler lifecycle / abandonment
+
+Not semantic drift. Simpler:
+
+```
+active | quiet | dead | burst-only | one-off experiment
+| recently revived | high-volume sustained
+```
+
+Users may subscribe to effectively abandoned labelers. That's a
+stale-service problem, not an admissibility problem.
+
+### A8. Comparative moderation ecology
+
+Compare by labeler type:
+
+```
+platform-operated | community-operated | personal/reputational
+| topic-specific | anti-abuse | joke/novelty | political/ideological
+| spam/scam-focused
+```
+
+Ask: which classes are growing / stable / declining / most
+visibility-affecting? This is Labelwatch as observatory, not
+theorem mill.
+
+## B. Inside the goblin math (doctrine with a database)
+
+Still useful; still has its place. But now correctly framed: these
+extend admissibility apparatus and consume the existing schema.
+They are NOT primarily about understanding the ecosystem.
+
+### B1. Definition drift / semantic versioning of labelers
+
+(Demoted from a brief mis-promotion to #1 of the overall list.
+Belongs in the goblin-math half.)
+
+**Question:** Do labelers change what their labels MEAN over time?
+
+- Did `labelValueDefinitions` change between observed versions of the
+  service record?
+- Were emitted label values later removed from declarations?
+- Did `defaultSetting` shift `ignore → warn/hide` or vice versa?
+- Did `blurs` / `severity` change?
+- Did a labeler emit values BEFORE declaring them in its service
+  record?
+- Did it declare values AFTER emitting them?
+
+**Why this matters:** A label fired in March under definition v1
+reads differently in June under definition v2. F-006 is one instance
+of this shape. There are probably more.
+
+**Method:** Diff `discovery_events.record_json` per labeler over
+time; compare against `label_events` timestamps. The data is already
+there.
+
+**Output shape:**
+```
+labeler | label_value | first_emitted | declared_at_emit | later_declared
+        | later_removed | semantic_changed | drift_class | caveat
+```
+
+`drift_class` taxonomy: `additive | removal | semantic_change |
+retroactive_cover | emit_without_declare | stable | unknown`.
+
+**Key refusal:** A later declaration does not discharge
+undeclared-at-emission provenance. (The retroactive-laundering
+refusal the goblin math trained for, applied one room over.)
+
+### B2. Receipt-reader closure
 
 **Question:** Which reports, dashboards, or exports currently change
 behavior when a Labelwatch caveat / refusal / receipt exists?

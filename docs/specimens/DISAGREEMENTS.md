@@ -64,6 +64,19 @@ default consumer. Same label, different consumer, different verdict.
 
 **Status:** recorded.
 
+**Status update (2026-06-08, consumer-conversion census):** The
+`docs/analysis/consumer-conversion-census.md` empirically tested
+whether any production Bluesky client converts third-party labelers
+into default visibility behavior WITHOUT explicit user adoption.
+7/7 sampled clients hardcoded ZERO third-party labelers as defaults;
+the 3 that hardcode any labeler all hardcode `mod.bsky`. F-001's
+operator-frame correction stands ("reference status doesn't imply
+default-client conversion"), but the urgency framing is demoted: the
+opt-in machinery this finding motivated is a **dormant guardrail**,
+not an active wildfire perimeter. Re-promote on observed third-party
+default conversion, runtime config-fetch evidence, or closed-client
+behavioral proof.
+
 ---
 
 ## F-002 — `GLOBAL_LABELS` hardcode was 21 entries; upstream has 8
@@ -299,6 +312,33 @@ inadmissible `no_cross_consumer_inference`).
 Driftwatch's downstream consumer code (cluster-report annotation
 reading the roster). Lean promotion (Bundle G's distinctions are
 mechanized in the classifier; no Lean theorem yet).
+
+**Status update (2026-06-08, consumer-conversion census):** Bundle G
+machinery is correct but its threat model is currently speculative.
+The `consumer-conversion-census.md` survey of 7 production clients
+found ZERO third-party labelers hardcoded as defaults. Driftwatch's
+synthetic adoption (the only "real" opt-in specimen) is something we
+wrote ourselves; no third-party Bluesky client in the sampled corpus
+is converting third-party labelers into default visibility behavior
+without explicit user adoption. Bundle G is reclassified:
+
+  - **Status:** dormant guardrail
+  - **Evidence class:** future-compatible / counterfactual
+  - **Urgency:** low
+  - **Promotion trigger:** observed third-party consumer conversion,
+    runtime config-fetch evidence, or closed-client behavioral proof
+
+The machinery stays — it correctly models what the protocol allows,
+and the synthetic Driftwatch specimen demonstrates the distinction.
+Future work motivated by "what if a client does X" must cite an
+actual observation first.
+
+The cleaner doctrinal line that emerges from the census:
+
+> **Consumer conversion is not assumed from labeler publication.
+> Consumer conversion is not assumed from protocol affordance.
+> Consumer conversion requires observed client behavior, explicit
+> user preference, or a named synthetic specimen.**
 
 ---
 
