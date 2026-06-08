@@ -1,0 +1,54 @@
+{
+  "specimen_id": "001",
+  "schema_version": 1,
+  "schema_kind": "expected",
+  "evidence_companion": "specimen-001-moderation-bsky-app-porn.evidence.json",
+  "seeded_from_classifier_at": "2026-06-08T15:30:00Z",
+  "note": "Initially seeded from classifier output. Hand-edits are intentional; the verify script compares classifier(evidence) against these fields. Any drift between this golden and live classifier output must be resolved deliberately.",
+  "expected_gap": "execution_gap_policy_present",
+  "expected_admissible_claims": [
+    {
+      "id": "label_exists",
+      "scope": "this specimen",
+      "claim": "A label record with label_value='porn' exists on at://did:plc:ztlk6b7feflbs4uyhckz6dh5/app.bsky.feed.post/3lqjexu2mik2g, issued by moderation.bsky.app at 2026-06-08T14:03:01.304298Z.",
+      "derivation_basis": [
+        "LabelObservation"
+      ]
+    },
+    {
+      "id": "policy_rule_documented",
+      "scope": "PolicyDocumentation.consumer (bsky.app-default-client)",
+      "claim": "The published policy at the pinned artifact maps the label_value to action: blur(media) behind adult-content gate placeholder; click-through required to reveal, under the documented render_context.",
+      "derivation_basis": [
+        "PolicyDocumentation.policy_artifact"
+      ]
+    },
+    {
+      "id": "conditional_render_under_policy",
+      "scope": "consumer=bsky.app-default-client + render_context",
+      "claim": "Under the named consumer with the stated render_context, the documented policy would apply the documented action to this target.",
+      "derivation_basis": [
+        "LabelObservation",
+        "PolicyDocumentation"
+      ],
+      "qualifier": "Conditional derivation over the documented rule; not over actual render execution."
+    }
+  ],
+  "expected_inadmissible_claims": [
+    {
+      "id": "no_laundering",
+      "claim_form": "label_observed entails render_observed",
+      "why_inadmissible": "Laundering: collapses producer/consumer/enforcer distinction. label_observed alone does not derive render_observed. The no-laundering theorem forbids this derivation."
+    },
+    {
+      "id": "no_individual_render_claim",
+      "claim_form": "This post was rendered with action X for user U at time T",
+      "why_inadmissible": "Requires RenderObservation, which is absent. Cannot be derived from LabelObservation + PolicyDocumentation alone."
+    },
+    {
+      "id": "no_population_render_claim",
+      "claim_form": "All renders of this post produce the documented action",
+      "why_inadmissible": "Population claim. Policy may be configurable; viewer may override; live client may run a different policy version. Requires probe campaign with defined sampling frame, not derivation from this evidence bundle."
+    }
+  ]
+}

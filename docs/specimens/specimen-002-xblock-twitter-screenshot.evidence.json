@@ -1,0 +1,67 @@
+{
+  "specimen_id": "002",
+  "title": "xblock.aendra.dev / twitter-screenshot / one post",
+  "summary": "Third-party label; no consumer policy exists for it in the default Bluesky client's pipeline.",
+  "markdown_companion": "specimen-002-xblock-twitter-screenshot.md",
+  "schema_version": 1,
+  "schema_kind": "evidence",
+  "provenance": {
+    "source": "labelwatch label_events stream (ATProto firehose via labelwatch ingestion)",
+    "captured_by": "labelwatch-claude",
+    "captured_at": "2026-06-08T15:30:00Z",
+    "session_anchor": "Bundle A / specimens track"
+  },
+
+  "LabelObservation": {
+    "labeler_did": "did:plc:newitj5jo3uel7o4mnf3vj2o",
+    "labeler_handle": "xblock.aendra.dev",
+    "labeler_display_name": "XBlock Screenshot Labeller",
+    "labeler_class": "third_party",
+    "is_reference_labeler": false,
+    "target_uri": "at://did:plc:rzwzv7yzjbuybw7beim3clda/app.bsky.feed.post/3mcoaxxulgb2q",
+    "target_kind": "post_record",
+    "label_value": "twitter-screenshot",
+    "neg": 0,
+    "ts": "2026-06-08T14:28:48.159566Z",
+    "ingest_witness": "labelwatch label_events stream",
+    "labelwatch_authority_effect_classification": "unknown"
+  },
+
+  "PolicyDocumentation": {
+    "consumer": {
+      "consumer_id": "bsky.app-default-client",
+      "description": "Bluesky official appview + client running default moderation pipeline; xblock.aendra.dev NOT subscribed as a labeler service",
+      "render_context": {
+        "client_family": "bsky.app",
+        "viewer_state": "any",
+        "xblock_labeler_service_subscribed": false,
+        "policy_pipeline_version_assumed": "client running @atproto/api at or near v0.19.17"
+      }
+    },
+    "policy_artifact_searched": {
+      "repo": "bluesky-social/atproto",
+      "package": "@atproto/api",
+      "package_version": "0.19.17",
+      "file_path": "packages/api/src/moderation/const/labels.ts",
+      "head_or_commit": "7b8c5d60a",
+      "search_result": "no_entry",
+      "search_evidence": "Global LABELS map contains entries only for the atproto global label set (!hide, !warn, !no-unauthenticated, !takedown, porn, sexual, nudity, graphic-media, intolerant, self-harm, sensitive, threat, spam, rude, sexual-figurative, impersonation, illicit, security, misleading, unsafe-link, inauthentic). No entry for 'twitter-screenshot'."
+    },
+    "status": "absent_for_consumer",
+    "scoping_note": "This is the policy-documentation status FOR THE NAMED CONSUMER under the stated render_context. The evidence is silent over other consumer configurations (e.g., a viewer who has explicitly subscribed to xblock as a labeler service). A separate specimen (002b) would be required to characterize the opt-in case."
+  },
+
+  "PolicyWitness": {
+    "status": "not_applicable",
+    "reason": "No policy is documented for this label_value in this consumer's pipeline; there is no rule whose live application could be witnessed."
+  },
+
+  "RenderObservation": {
+    "status": "absent",
+    "reason": "Same architectural absence as 001: ATProto publishes no per-render receipts. Additionally for 002, no render action is expected under the named consumer's documented policy, so the absence is both architectural and consequential.",
+    "what_would_be_required_for_observation": [
+      "consumer-side per-render receipts in a published stream (does not currently exist in atproto)",
+      "or external probes"
+    ]
+  }
+}

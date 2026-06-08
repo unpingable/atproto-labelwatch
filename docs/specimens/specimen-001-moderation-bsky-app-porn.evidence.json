@@ -1,0 +1,103 @@
+{
+  "specimen_id": "001",
+  "title": "moderation.bsky.app / porn / one post",
+  "summary": "First-party label; default-client conversion rule documented; conversion application and render effect unwitnessed.",
+  "markdown_companion": "specimen-001-moderation-bsky-app-porn.md",
+  "schema_version": 1,
+  "schema_kind": "evidence",
+  "provenance": {
+    "source": "labelwatch label_events stream (ATProto firehose via labelwatch ingestion)",
+    "captured_by": "labelwatch-claude",
+    "captured_at": "2026-06-08T15:30:00Z",
+    "session_anchor": "Bundle A / specimens track"
+  },
+
+  "LabelObservation": {
+    "labeler_did": "did:plc:ar7c4by46qjdydhdevvrndac",
+    "labeler_handle": "moderation.bsky.app",
+    "labeler_class": "official_platform",
+    "is_reference_labeler": true,
+    "target_uri": "at://did:plc:ztlk6b7feflbs4uyhckz6dh5/app.bsky.feed.post/3lqjexu2mik2g",
+    "target_kind": "post_record",
+    "label_value": "porn",
+    "neg": 0,
+    "ts": "2026-06-08T14:03:01.304298Z",
+    "ingest_witness": "labelwatch label_events stream",
+    "labelwatch_authority_effect_classification": "visibility_affecting"
+  },
+
+  "PolicyDocumentation": {
+    "consumer": {
+      "consumer_id": "bsky.app-default-client",
+      "description": "Bluesky official appview + client (web / iOS / Android) running default moderation pipeline; no third-party labeler services subscribed beyond the platform defaults",
+      "render_context": {
+        "client_family": "bsky.app",
+        "viewer_state": "logged_out_or_fresh_logged_in_default",
+        "adult_content_enabled": false,
+        "per_label_setting_override": null,
+        "policy_pipeline_version_assumed": "client running @atproto/api at or near v0.19.17"
+      }
+    },
+    "policy_artifact": {
+      "repo": "bluesky-social/atproto",
+      "package": "@atproto/api",
+      "package_version": "0.19.17",
+      "file_path": "packages/api/src/moderation/const/labels.ts",
+      "head_or_commit": "7b8c5d60a",
+      "extracted_rule": {
+        "label_value": "porn",
+        "identifier": "porn",
+        "configurable": true,
+        "default_setting": "hide",
+        "flags": ["adult"],
+        "severity": "none",
+        "blurs": "media",
+        "behaviors": {
+          "account": {
+            "avatar": "blur",
+            "banner": "blur",
+            "profileList": "blur",
+            "profileView": "blur",
+            "contentList": "blur",
+            "contentView": "blur",
+            "contentMedia": "blur"
+          },
+          "profile": {
+            "avatar": "blur",
+            "banner": "blur"
+          },
+          "content": {
+            "contentMedia": "blur"
+          }
+        }
+      }
+    },
+    "documented_expected_action": {
+      "action_for_post_render_under_render_context": "blur(media) behind adult-content gate placeholder; click-through required to reveal",
+      "preconditions": [
+        "viewer has not opted into adult content",
+        "viewer has not overridden per-label porn setting",
+        "live client is using a policy pipeline that includes this rule"
+      ]
+    },
+    "status": "documented"
+  },
+
+  "PolicyWitness": {
+    "status": "partial_documentary_not_receipted",
+    "reason": "Public source code declares the rule, but no live receipt is observed binding 'consumer bsky.app-default-client is, at the time of this render, applying policy artifact @atproto/api@0.19.17 packages/api/src/moderation/const/labels.ts'. The default client may run a different package version; per-label settings may be overridden by the viewer; the policy pipeline may be intercepted upstream.",
+    "what_would_be_required_for_full_witness": [
+      "a per-client-version reporting stream (consumer publishes its policy pipeline version)",
+      "or render-side receipts citing the policy artifact hash used at decision time"
+    ]
+  },
+
+  "RenderObservation": {
+    "status": "absent",
+    "reason": "ATProto publishes no per-render receipts in the wire protocol. Whether any specific user, at any specific moment, saw this post blurred or hidden is invisible to Labelwatch.",
+    "what_would_be_required_for_observation": [
+      "consumer-side per-render receipts in a published stream (does not currently exist in atproto)",
+      "or external probes — synthetic users loading known-labeled content and reporting observed render state. Probes give existence proofs; not population claims."
+    ]
+  }
+}
