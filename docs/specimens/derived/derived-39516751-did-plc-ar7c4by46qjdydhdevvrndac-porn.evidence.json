@@ -1,0 +1,77 @@
+{
+  "specimen_id": "derived-39516751",
+  "title": "moderation.bsky.app / porn / at://did:plc:7lbgv2kulya5k2wm7pwrdl5q/app.bsky.feed.post/3lqjiob32os27",
+  "summary": "Detection-lane evidence packet auto-derived from labelwatch.label_events. No operator pre-judgment of gap or admissible claims.",
+  "schema_version": 1,
+  "schema_kind": "evidence",
+  "lane": "detection",
+  "provenance": {
+    "source": "labelwatch.label_events (auto-derived)",
+    "deriver": "derive_evidence.py",
+    "derived_at": "2026-06-08T15:03:12Z",
+    "source_row_id": 39516751,
+    "source_db_path": "/var/lib/labelwatch/labelwatch.db"
+  },
+  "LabelObservation": {
+    "labeler_did": "did:plc:ar7c4by46qjdydhdevvrndac",
+    "labeler_handle": "moderation.bsky.app",
+    "labeler_class": "official_platform",
+    "is_reference_labeler": true,
+    "target_uri": "at://did:plc:7lbgv2kulya5k2wm7pwrdl5q/app.bsky.feed.post/3lqjiob32os27",
+    "target_kind": "post_record",
+    "label_value": "porn",
+    "neg": 0,
+    "ts": "2026-06-08T15:00:25.873740Z",
+    "ingest_witness": "labelwatch label_events stream",
+    "labelwatch_authority_effect_classification": null
+  },
+  "PolicyDocumentation": {
+    "consumer": {
+      "consumer_id": "bsky.app-default-client",
+      "description": "Bluesky official appview + client running default moderation pipeline; no third-party labeler services subscribed beyond the platform defaults",
+      "render_context": {
+        "client_family": "bsky.app",
+        "viewer_state": "logged_out_or_fresh_logged_in_default",
+        "adult_content_enabled": false,
+        "per_label_setting_override": null,
+        "policy_pipeline_version_assumed": "client running @atproto/api at or near v0.19.17"
+      }
+    },
+    "policy_artifact": {
+      "repo": "bluesky-social/atproto",
+      "package": "@atproto/api",
+      "package_version": "0.19.17",
+      "file_path": "packages/api/src/moderation/const/labels.ts",
+      "head_or_commit": "7b8c5d60a",
+      "extracted_rule": {
+        "label_value": "porn",
+        "note": "label_value present in global LABELS map; deriver records artifact presence only \u2014 full extracted_rule body is not pulled by the deriver in v1. Hand-authored fixtures may include the full rule body when richer context matters."
+      }
+    },
+    "documented_expected_action": {
+      "action_for_post_render_under_render_context": "see extracted_rule in pinned artifact",
+      "preconditions": [
+        "viewer has not opted into adult content",
+        "viewer has not overridden per-label setting",
+        "live client is using a policy pipeline that includes this rule"
+      ]
+    },
+    "status": "documented"
+  },
+  "PolicyWitness": {
+    "status": "partial_documentary_not_receipted",
+    "reason": "Public source code declares the rule, but no live receipt binds the consumer to that specific policy version at render time.",
+    "what_would_be_required_for_full_witness": [
+      "a per-client-version reporting stream",
+      "or render-side receipts citing the policy artifact hash used at decision time"
+    ]
+  },
+  "RenderObservation": {
+    "status": "absent",
+    "reason": "ATProto publishes no per-render receipts in the wire protocol. Whether any specific user, at any specific moment, saw this content rendered with any specific action is invisible to Labelwatch.",
+    "what_would_be_required_for_observation": [
+      "consumer-side per-render receipts in a published stream",
+      "or external probes"
+    ]
+  }
+}
