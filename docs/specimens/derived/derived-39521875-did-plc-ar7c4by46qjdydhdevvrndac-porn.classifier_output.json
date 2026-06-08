@@ -1,12 +1,15 @@
 {
   "schema_kind": "classifier_output",
-  "derived_from": "derived-39516736-did-plc-ar7c4by46qjdydhdevvrndac-takedown.evidence.json",
-  "ConversionGap": "execution_gap_policy_present",
+  "derived_from": "derived-39521875-did-plc-ar7c4by46qjdydhdevvrndac-porn.evidence.json",
+  "ConversionGap": {
+    "name": "execution_gap_policy_present",
+    "surface": "client_render"
+  },
   "admissible_claims": [
     {
       "id": "label_exists",
       "scope": "this specimen",
-      "claim": "A label record with label_value='!takedown' exists on did:plc:cthunuhvp2n3fgw7s7jdwp2n, issued by moderation.bsky.app at 2026-06-08T15:00:25.873011Z.",
+      "claim": "A label record with label_value='porn' exists on at://did:plc:uxbomn2l6ixcdkbe4khgvza7/app.bsky.feed.post/3lqjjsnamx225, issued by moderation.bsky.app at 2026-06-08T15:12:31.421817Z.",
       "derivation_basis": [
         "LabelObservation"
       ]
@@ -14,7 +17,7 @@
     {
       "id": "policy_rule_documented",
       "scope": "PolicyDocumentation.consumer (bsky.app-default-client)",
-      "claim": "The published policy at the pinned artifact maps the label_value to action: see extracted_rule in pinned artifact, under the documented render_context.",
+      "claim": "The published policy at the pinned artifact maps the label_value to action: <unspecified action>, under the documented render_context.",
       "derivation_basis": [
         "PolicyDocumentation.policy_artifact"
       ]

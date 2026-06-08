@@ -41,6 +41,15 @@ POLICY_STATUS_DOCUMENTED = {"documented"}
 POLICY_STATUS_WITNESSED = {"witnessed_live"}
 RENDER_STATUS_ABSENT = {"absent"}
 RENDER_STATUS_OBSERVED = {"observed"}
+HOSTING_STATUS_ABSENT = {"absent"}
+HOSTING_STATUS_OBSERVED = {"observed"}
+
+# execution_surface vocabulary, sourced from PolicyDocumentation. Describes
+# WHERE the documented conversion acts — not whether the gap exists.
+EXECUTION_SURFACE_CLIENT_RENDER = "client_render"
+EXECUTION_SURFACE_PDS_HOSTING = "pds_hosting"
+EXECUTION_SURFACE_MIXED = "mixed"
+EXECUTION_SURFACE_UNKNOWN = "unknown"
 
 
 def classify_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
@@ -49,8 +58,9 @@ def classify_evidence(evidence: Dict[str, Any]) -> Dict[str, Any]:
     policy_doc = evidence.get("PolicyDocumentation") or {}
     policy_wit = evidence.get("PolicyWitness") or {}
     render = evidence.get("RenderObservation") or {}
+    hosting = evidence.get("HostingObservation") or {}
 
-    gap = _classify_gap(label, policy_doc, policy_wit, render)
+    gap = _classify_gap(label, policy_doc, policy_wit, render, hosting)
     admissible = _derive_admissible(evidence, gap)
     inadmissible = _derive_inadmissible(evidence, gap)
     return {
@@ -65,37 +75,76 @@ def _classify_gap(
     policy_doc: Dict[str, Any],
     policy_wit: Dict[str, Any],
     render: Dict[str, Any],
-) -> str:
-    """Discriminator over (A, B, C) presence + B's documentary/witnessed split.
+    hosting: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Discriminator over (A, B, C) presence + B's documentary/witnessed split
+    + execution_surface from PolicyDocumentation.
 
-    Returns one of:
+    Returns a struct {name: str, surface: Optional[str]}. Possible names:
       observability_gap                  -- no label witnessed (A absent)
       conversion_witness_gap_no_consumer -- A present; B absent for consumer
-      execution_gap_policy_present       -- A + B(documented); C absent
-      complete_path                      -- A + B(witnessed live) + C(observed)
+      execution_gap_policy_present       -- A + B(documented); execution
+                                            observation absent on the surface
+                                            the policy acts on
+      complete_path                      -- A + B(witnessed live) +
+                                            execution observed on the policy
+                                            surface
+      execution_observed_without_policy_witness
       unclassified                       -- evidence shape doesn't match any
                                             of the above (treat as bug / new case)
+
+    `surface` is populated from PolicyDocumentation.execution_surface when
+    PolicyDocumentation is present; absent (None) otherwise.
     """
     if not label:
-        return "observability_gap"
+        return {"name": "observability_gap", "surface": None}
 
     policy_status = policy_doc.get("status")
+    surface = policy_doc.get("execution_surface")
     render_status = render.get("status")
+    hosting_status = hosting.get("status")
 
     if policy_status in POLICY_STATUS_ABSENT:
-        return "conversion_witness_gap_no_consumer"
+        return {"name": "conversion_witness_gap_no_consumer", "surface": None}
 
-    if policy_status in POLICY_STATUS_DOCUMENTED and render_status in RENDER_STATUS_ABSENT:
-        return "execution_gap_policy_present"
-
-    if render_status in RENDER_STATUS_OBSERVED:
-        # complete_path requires B witnessed too, otherwise we'd be saying
-        # "rendered" without a verifiable policy chain.
+    if policy_status in POLICY_STATUS_DOCUMENTED:
+        # The "execution observation we care about" depends on the surface the
+        # policy acts on. client_render -> RenderObservation; pds_hosting ->
+        # HostingObservation; mixed -> either witnesses something; unknown ->
+        # treat as render by default but record uncertainty in the gap surface
+        # field so downstream sees it.
+        execution_witnessed = _execution_witnessed_on_surface(
+            surface, render_status, hosting_status
+        )
+        if not execution_witnessed:
+            return {"name": "execution_gap_policy_present", "surface": surface}
+        # execution_witnessed is True
         if policy_status in POLICY_STATUS_WITNESSED:
-            return "complete_path"
-        return "execution_observed_without_policy_witness"
+            return {"name": "complete_path", "surface": surface}
+        return {"name": "execution_observed_without_policy_witness", "surface": surface}
 
-    return "unclassified"
+    return {"name": "unclassified", "surface": None}
+
+
+def _execution_witnessed_on_surface(
+    surface: Optional[str],
+    render_status: Optional[str],
+    hosting_status: Optional[str],
+) -> bool:
+    """Surface-aware predicate for whether an execution observation exists."""
+    if surface == EXECUTION_SURFACE_CLIENT_RENDER:
+        return render_status in RENDER_STATUS_OBSERVED
+    if surface == EXECUTION_SURFACE_PDS_HOSTING:
+        return hosting_status in HOSTING_STATUS_OBSERVED
+    if surface == EXECUTION_SURFACE_MIXED:
+        return (
+            render_status in RENDER_STATUS_OBSERVED
+            or hosting_status in HOSTING_STATUS_OBSERVED
+        )
+    # unknown surface OR surface field absent: fall back to render-side check
+    # (preserves old behavior for evidence packets that haven't been migrated
+    # to the new schema yet).
+    return render_status in RENDER_STATUS_OBSERVED
 
 
 # --- admissible claim derivation -----------------------------------------
@@ -198,8 +247,16 @@ def _derive_inadmissible(
         ),
     })
 
+    surface = (evidence.get("PolicyDocumentation") or {}).get("execution_surface")
     render_status = (evidence.get("RenderObservation") or {}).get("status")
-    if render_status in RENDER_STATUS_ABSENT:
+    hosting_status = (evidence.get("HostingObservation") or {}).get("status")
+
+    # Render-side inadmissible claims fire when the policy's surface
+    # involves client_render and the render observation is absent.
+    render_relevant = surface in (
+        EXECUTION_SURFACE_CLIENT_RENDER, EXECUTION_SURFACE_MIXED, EXECUTION_SURFACE_UNKNOWN, None,
+    )
+    if render_relevant and render_status in RENDER_STATUS_ABSENT:
         claims.append({
             "id": "no_individual_render_claim",
             "claim_form": "This post was rendered with action X for user U at time T",
@@ -216,6 +273,33 @@ def _derive_inadmissible(
                 "live client may run a different policy version. Requires probe "
                 "campaign with defined sampling frame, not derivation from this "
                 "evidence bundle."
+            ),
+        })
+
+    # Hosting-side inadmissible claims fire when the policy's surface
+    # involves pds_hosting and the hosting observation is absent.
+    hosting_relevant = surface in (
+        EXECUTION_SURFACE_PDS_HOSTING, EXECUTION_SURFACE_MIXED,
+    )
+    if hosting_relevant and hosting_status in HOSTING_STATUS_ABSENT:
+        claims.append({
+            "id": "no_individual_hosting_claim",
+            "claim_form": "This subject was removed/withheld at the PDS at time T",
+            "why_inadmissible": (
+                "Requires HostingObservation (a hosting-side probe or PDS state "
+                "receipt), which is absent. The documented policy declares a "
+                "hosting-layer effect, but the effect's application has not been "
+                "directly observed."
+            ),
+        })
+        claims.append({
+            "id": "no_population_hosting_claim",
+            "claim_form": "This subject is unavailable across all hosting consumers",
+            "why_inadmissible": (
+                "Population claim. PDS state may vary by mirror, by appview, by "
+                "cache; hosting takedowns can be partially propagated. Requires "
+                "probe across the relevant consumer surface, not derivation from "
+                "this evidence bundle."
             ),
         })
 

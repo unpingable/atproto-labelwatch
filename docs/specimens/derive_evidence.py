@@ -63,6 +63,50 @@ GLOBAL_LABELS = {
     "security", "misleading", "unsafe-link", "inauthentic",
 }
 
+# execution_surface mapping for known global labels. Sourced from the
+# semantics of each label as documented in the artifact + protocol-level
+# behavior. SOURCED FROM POLICY ARTIFACT / KNOWN LABEL SEMANTICS — this is
+# allowed in PolicyDocumentation because it describes where the documented
+# conversion ACTS, not whether the conversion gap exists.
+#
+# Values:
+#   client_render  — effect is applied by the client at render time
+#                    (blur, warn, hide-from-default-feed, etc.); the
+#                    record remains hosted unchanged.
+#   pds_hosting    — effect is at the PDS / hosting layer (post removed,
+#                    account suspended, withheld from public reads);
+#                    happens server-side independent of client.
+#   mixed          — both surfaces involved (rare but real for some
+#                    administrative labels).
+#   unknown        — label is global but its surface is not in this table;
+#                    deriver records this honestly rather than guessing.
+KNOWN_LABEL_SURFACE = {
+    # PDS / hosting layer
+    "!takedown":           "pds_hosting",
+    "!no-unauthenticated": "pds_hosting",   # restricts who can read from PDS
+
+    # Client render layer
+    "!hide":            "client_render",
+    "!warn":            "client_render",
+    "porn":             "client_render",
+    "sexual":           "client_render",
+    "nudity":           "client_render",
+    "graphic-media":    "client_render",
+    "intolerant":       "client_render",
+    "self-harm":        "client_render",
+    "sensitive":        "client_render",
+    "threat":           "client_render",
+    "spam":             "client_render",
+    "rude":             "client_render",
+    "sexual-figurative":"client_render",
+    "impersonation":    "client_render",
+    "illicit":          "client_render",
+    "security":         "client_render",
+    "misleading":       "client_render",
+    "unsafe-link":      "client_render",
+    "inauthentic":      "client_render",
+}
+
 
 def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:40]
@@ -180,21 +224,74 @@ def derive(
         },
         "PolicyDocumentation": _policy_documentation(label_value, policy_in_global),
         "PolicyWitness": _policy_witness(policy_in_global),
-        "RenderObservation": {
-            "status": "absent",
-            "reason": (
-                "ATProto publishes no per-render receipts in the wire "
-                "protocol. Whether any specific user, at any specific "
-                "moment, saw this content rendered with any specific "
-                "action is invisible to Labelwatch."
-            ),
-            "what_would_be_required_for_observation": [
-                "consumer-side per-render receipts in a published stream",
-                "or external probes",
-            ],
-        },
+        "RenderObservation": _render_observation(label_value, policy_in_global),
+        "HostingObservation": _hosting_observation(label_value, policy_in_global),
     }
     return packet
+
+
+def _render_observation(label_value: str, in_global: bool) -> Dict[str, Any]:
+    surface = KNOWN_LABEL_SURFACE.get(label_value) if in_global else None
+    # not_applicable when the documented policy does not act on the render
+    # surface; otherwise absent because atproto has no render receipts.
+    if surface == "pds_hosting":
+        return {
+            "status": "not_applicable",
+            "reason": (
+                "Documented policy execution_surface is pds_hosting; the "
+                "render surface is not where this conversion acts."
+            ),
+        }
+    return {
+        "status": "absent",
+        "reason": (
+            "ATProto publishes no per-render receipts in the wire "
+            "protocol. Whether any specific user, at any specific "
+            "moment, saw this content rendered with any specific "
+            "action is invisible to Labelwatch."
+        ),
+        "what_would_be_required_for_observation": [
+            "consumer-side per-render receipts in a published stream",
+            "or external probes",
+        ],
+    }
+
+
+def _hosting_observation(label_value: str, in_global: bool) -> Dict[str, Any]:
+    surface = KNOWN_LABEL_SURFACE.get(label_value) if in_global else None
+    # not_applicable when documented surface is client_render; absent when
+    # surface is pds_hosting or mixed (we have no hosting-side probe yet).
+    if surface in ("pds_hosting", "mixed"):
+        return {
+            "status": "absent",
+            "reason": (
+                "Documented policy execution_surface includes pds_hosting; "
+                "the hosting state of the target (whether the PDS has "
+                "removed/withheld the record) is not directly observed by "
+                "Labelwatch in v1."
+            ),
+            "what_would_be_required_for_observation": [
+                "hosting-side probe (resolve target_uri against its PDS; "
+                "compare to pre-takedown snapshot)",
+                "or appview-published receipts of hosting actions",
+            ],
+        }
+    if surface == "client_render":
+        return {
+            "status": "not_applicable",
+            "reason": (
+                "Documented policy execution_surface is client_render; the "
+                "hosting layer is not where this conversion acts."
+            ),
+        }
+    # surface unknown or no documented policy: stay agnostic
+    return {
+        "status": "not_applicable",
+        "reason": (
+            "Documented policy execution_surface is unknown or absent; "
+            "hosting observation not framed for this packet."
+        ),
+    }
 
 
 def _policy_documentation(label_value: str, in_global: bool) -> Dict[str, Any]:
@@ -224,6 +321,7 @@ def _policy_documentation(label_value: str, in_global: bool) -> Dict[str, Any]:
         "head_or_commit": DEFAULT_POLICY_HEAD,
     }
     if in_global:
+        surface = KNOWN_LABEL_SURFACE.get(label_value, "unknown")
         return {
             "consumer": consumer,
             "policy_artifact": {
@@ -239,14 +337,23 @@ def _policy_documentation(label_value: str, in_global: bool) -> Dict[str, Any]:
                     ),
                 },
             },
+            "execution_surface": surface,
+            "execution_surface_source": (
+                "KNOWN_LABEL_SURFACE table in derive_evidence.py (sourced "
+                "from policy artifact + known atproto label semantics). "
+                "Describes WHERE the documented conversion acts; does not "
+                "encode whether the conversion gap exists."
+            ),
             "documented_expected_action": {
-                "action_for_post_render_under_render_context": (
-                    "see extracted_rule in pinned artifact"
+                "action_summary": (
+                    "see extracted_rule in pinned artifact; surface is "
+                    f"{surface!r}"
                 ),
                 "preconditions": [
-                    "viewer has not opted into adult content",
+                    "viewer has not opted into adult content (where adult flag applies)",
                     "viewer has not overridden per-label setting",
                     "live client is using a policy pipeline that includes this rule",
+                    "for pds_hosting surface: PDS honors the takedown/withhold action",
                 ],
             },
             "status": "documented",
@@ -261,6 +368,12 @@ def _policy_documentation(label_value: str, in_global: bool) -> Dict[str, Any]:
                 f"contain an entry for {label_value!r}."
             ),
         },
+        "execution_surface": None,
+        "execution_surface_source": (
+            "no documented policy for this label_value in the named "
+            "consumer's pipeline; execution_surface is undefined for an "
+            "absent policy."
+        ),
         "status": "absent_for_consumer",
         "scoping_note": (
             "Policy-documentation status FOR THE NAMED CONSUMER under "

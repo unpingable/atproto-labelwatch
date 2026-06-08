@@ -1,11 +1,14 @@
 {
   "specimen_id": "002",
-  "schema_version": 1,
+  "schema_version": 2,
   "schema_kind": "expected",
   "evidence_companion": "specimen-002-xblock-twitter-screenshot.evidence.json",
   "seeded_from_classifier_at": "2026-06-08T15:30:00Z",
-  "note": "Initially seeded from classifier output. Hand-edits are intentional; the verify script compares classifier(evidence) against these fields. Any drift between this golden and live classifier output must be resolved deliberately.",
-  "expected_gap": "conversion_witness_gap_no_consumer",
+  "note": "Re-seeded after execution_surface + HostingObservation patch (D-001). ConversionGap is now a struct {name, surface}.",
+  "expected_gap": {
+    "name": "conversion_witness_gap_no_consumer",
+    "surface": null
+  },
   "expected_admissible_claims": [
     {
       "id": "label_exists",

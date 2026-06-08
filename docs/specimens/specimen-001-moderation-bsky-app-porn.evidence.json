@@ -80,6 +80,8 @@
         "live client is using a policy pipeline that includes this rule"
       ]
     },
+    "execution_surface": "client_render",
+    "execution_surface_source": "policy artifact behaviors block (blurs:'media', behaviors.content.contentMedia:'blur'); render-time effect, record remains hosted unchanged",
     "status": "documented"
   },
 
@@ -99,5 +101,10 @@
       "consumer-side per-render receipts in a published stream (does not currently exist in atproto)",
       "or external probes — synthetic users loading known-labeled content and reporting observed render state. Probes give existence proofs; not population claims."
     ]
+  },
+
+  "HostingObservation": {
+    "status": "not_applicable",
+    "reason": "PolicyDocumentation.execution_surface is client_render; the hosting layer is not where this conversion acts. The record remains hosted unchanged regardless of the render-side blur."
   }
 }

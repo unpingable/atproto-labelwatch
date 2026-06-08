@@ -63,11 +63,49 @@ whose primary effect is client-side blur on a fully-present record.
    No fixture for `!takedown` yet; D-001's resolution would create
    one as part of the patch.
 
-**Status:** open. Recorded 2026-06-08 from first detection-lane run.
-Not patched in this commit — recording the disagreement is the work
-this commit does. Patch goes in a follow-up commit (`!takedown` is
-specimen 003 per the existing roadmap; this disagreement is its
-forcing case).
+**Audit result:** schema_incomplete (operator was right; classifier
+honestly reported what the schema allowed it to see).
+
+**Patch applied (this commit):**
+1. Added `execution_surface` field to `PolicyDocumentation`. Vocabulary:
+   `client_render | pds_hosting | mixed | unknown`. SOURCED FROM the
+   policy artifact + a known-label semantics table in the deriver;
+   describes WHERE the documented conversion acts; does NOT encode
+   whether the conversion gap exists.
+2. Added `HostingObservation` as a peer to `RenderObservation`.
+   Surface-aware: `not_applicable` when the documented surface does
+   not act on hosting; `absent` when it does but we have no
+   hosting-side probe yet; `observed` when we do.
+3. `derive_evidence.py` now populates `execution_surface` from
+   `KNOWN_LABEL_SURFACE` (small hand-maintained table) and frames
+   `RenderObservation` / `HostingObservation` to match the surface.
+4. `classifier.py` `_classify_gap` now returns a struct
+   `{name, surface}` and uses `_execution_witnessed_on_surface` to
+   pick the right observation (Render for client_render; Hosting for
+   pds_hosting; either for mixed).
+5. Inadmissible claim set is now surface-aware: render-side claims
+   fire when render_relevant + render absent; hosting-side claims
+   (`no_individual_hosting_claim`, `no_population_hosting_claim`)
+   fire when hosting_relevant + hosting absent.
+
+**Patch verified against the original packet:**
+- Re-derived `derived-NNNNN-...-takedown.evidence.json` shows
+  `PolicyDocumentation.execution_surface = "pds_hosting"`,
+  `RenderObservation.status = "not_applicable"`,
+  `HostingObservation.status = "absent"`.
+- Classifier output:
+  `ConversionGap = {name: "execution_gap_policy_present", surface: "pds_hosting"}`.
+- Inadmissible claim set now correctly includes
+  `no_individual_hosting_claim` + `no_population_hosting_claim`
+  instead of the render-side claims.
+
+**Status:** patched-in-current-commit. Resolved.
+
+**Forward note:** The patch does NOT yet ship specimen 003 as a
+hand-authored fixture. The detection-lane `!takedown` packet
+demonstrates the classifier behaves correctly under the patched
+schema; a fixture-lane specimen 003 should follow once we have a
+canonical hand-authored shape worth pinning.
 
 ---
 

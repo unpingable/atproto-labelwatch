@@ -48,6 +48,8 @@
       "search_evidence": "Global LABELS map contains entries only for the atproto global label set (!hide, !warn, !no-unauthenticated, !takedown, porn, sexual, nudity, graphic-media, intolerant, self-harm, sensitive, threat, spam, rude, sexual-figurative, impersonation, illicit, security, misleading, unsafe-link, inauthentic). No entry for 'twitter-screenshot'."
     },
     "status": "absent_for_consumer",
+    "execution_surface": null,
+    "execution_surface_source": "no documented policy for this label_value in the named consumer's pipeline; execution_surface is undefined for an absent policy",
     "scoping_note": "This is the policy-documentation status FOR THE NAMED CONSUMER under the stated render_context. The evidence is silent over other consumer configurations (e.g., a viewer who has explicitly subscribed to xblock as a labeler service). A separate specimen (002b) would be required to characterize the opt-in case."
   },
 
@@ -63,5 +65,10 @@
       "consumer-side per-render receipts in a published stream (does not currently exist in atproto)",
       "or external probes"
     ]
+  },
+
+  "HostingObservation": {
+    "status": "not_applicable",
+    "reason": "No documented policy for this label_value in the named consumer's pipeline; hosting observation is not framed for an absent policy."
   }
 }

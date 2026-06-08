@@ -1,6 +1,6 @@
 {
-  "specimen_id": "derived-39516751",
-  "title": "moderation.bsky.app / porn / at://did:plc:7lbgv2kulya5k2wm7pwrdl5q/app.bsky.feed.post/3lqjiob32os27",
+  "specimen_id": "derived-39521818",
+  "title": "moderation.bsky.app / !takedown / did:plc:tm3lxtz7mnbx7gjwwdyhrckb",
   "summary": "Detection-lane evidence packet auto-derived from labelwatch.label_events. No operator pre-judgment of gap or admissible claims.",
   "schema_version": 1,
   "schema_kind": "evidence",
@@ -8,8 +8,8 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T15:03:12Z",
-    "source_row_id": 39516751,
+    "derived_at": "2026-06-08T15:24:09Z",
+    "source_row_id": 39521818,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
   "LabelObservation": {
@@ -17,11 +17,11 @@
     "labeler_handle": "moderation.bsky.app",
     "labeler_class": "official_platform",
     "is_reference_labeler": true,
-    "target_uri": "at://did:plc:7lbgv2kulya5k2wm7pwrdl5q/app.bsky.feed.post/3lqjiob32os27",
-    "target_kind": "post_record",
-    "label_value": "porn",
+    "target_uri": "did:plc:tm3lxtz7mnbx7gjwwdyhrckb",
+    "target_kind": "account",
+    "label_value": "!takedown",
     "neg": 0,
-    "ts": "2026-06-08T15:00:25.873740Z",
+    "ts": "2026-06-08T15:12:31.419138Z",
     "ingest_witness": "labelwatch label_events stream",
     "labelwatch_authority_effect_classification": null
   },
@@ -44,16 +44,19 @@
       "file_path": "packages/api/src/moderation/const/labels.ts",
       "head_or_commit": "7b8c5d60a",
       "extracted_rule": {
-        "label_value": "porn",
+        "label_value": "!takedown",
         "note": "label_value present in global LABELS map; deriver records artifact presence only \u2014 full extracted_rule body is not pulled by the deriver in v1. Hand-authored fixtures may include the full rule body when richer context matters."
       }
     },
+    "execution_surface": "pds_hosting",
+    "execution_surface_source": "KNOWN_LABEL_SURFACE table in derive_evidence.py (sourced from policy artifact + known atproto label semantics). Describes WHERE the documented conversion acts; does not encode whether the conversion gap exists.",
     "documented_expected_action": {
-      "action_for_post_render_under_render_context": "see extracted_rule in pinned artifact",
+      "action_summary": "see extracted_rule in pinned artifact; surface is 'pds_hosting'",
       "preconditions": [
-        "viewer has not opted into adult content",
+        "viewer has not opted into adult content (where adult flag applies)",
         "viewer has not overridden per-label setting",
-        "live client is using a policy pipeline that includes this rule"
+        "live client is using a policy pipeline that includes this rule",
+        "for pds_hosting surface: PDS honors the takedown/withhold action"
       ]
     },
     "status": "documented"
@@ -67,11 +70,15 @@
     ]
   },
   "RenderObservation": {
+    "status": "not_applicable",
+    "reason": "Documented policy execution_surface is pds_hosting; the render surface is not where this conversion acts."
+  },
+  "HostingObservation": {
     "status": "absent",
-    "reason": "ATProto publishes no per-render receipts in the wire protocol. Whether any specific user, at any specific moment, saw this content rendered with any specific action is invisible to Labelwatch.",
+    "reason": "Documented policy execution_surface includes pds_hosting; the hosting state of the target (whether the PDS has removed/withheld the record) is not directly observed by Labelwatch in v1.",
     "what_would_be_required_for_observation": [
-      "consumer-side per-render receipts in a published stream",
-      "or external probes"
+      "hosting-side probe (resolve target_uri against its PDS; compare to pre-takedown snapshot)",
+      "or appview-published receipts of hosting actions"
     ]
   }
 }
