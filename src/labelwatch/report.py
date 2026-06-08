@@ -3179,6 +3179,90 @@ separately and excluded from median/p90.</p>
     except Exception as exc:
         log.warning("Label duration section failed: %s", exc)
 
+    # --- Left-censor surface (from sidecar label_state pilot) ---
+    # Renders ONLY IF the sidecar exists AND is_admissible() (build_status ==
+    # 'complete'). Half-built sidecars are not testimony — see state.py
+    # module docstring. Scope is the BOUNDED PILOT (not full 7d/30d); the
+    # render makes that explicit so the count isn't mistaken for full coverage.
+    label_state_section = ""
+    try:
+        import sqlite3 as _sqlite3
+        from .state import (
+            is_admissible, query_state_summary, meta_get,
+            META_BUILD_WINDOW_DAYS, META_BUILD_MAX_EVENTS,
+            META_BUILT_AT, META_EVENTS_PROCESSED,
+        )
+        # Derive sidecar path from the main DB's file path (PRAGMA database_list
+        # gives us the main DB file even though only `conn` is in scope).
+        dbs = conn.execute("PRAGMA database_list").fetchall()
+        main_path = dbs[0]["file"] if dbs else None
+        if main_path:
+            sidecar_path = os.path.join(
+                os.path.dirname(main_path) or ".",
+                "labelwatch_state.db",
+            )
+            if os.path.exists(sidecar_path):
+                sc = _sqlite3.connect(f"file:{sidecar_path}?mode=ro", uri=True)
+                sc.row_factory = _sqlite3.Row
+                try:
+                    admissible, reason = is_admissible(sc)
+                    if admissible:
+                        summary = query_state_summary(sc)
+                        by_basis = summary.get("by_basis", []) or []
+                        total_keys = int(summary.get("total_keys") or 0)
+                        if total_keys > 0:
+                            lc = next(
+                                (b for b in by_basis if b["state_basis"] == "delete_without_observed_add"),
+                                None,
+                            )
+                            lc_keys = int(lc["keys"]) if lc else 0
+                            lc_events = int(lc["events"] or 0) if lc else 0
+                            lc_pct = round(100.0 * lc_keys / total_keys, 1) if total_keys else 0.0
+                            window_days = meta_get(sc, META_BUILD_WINDOW_DAYS) or "?"
+                            max_events = meta_get(sc, META_BUILD_MAX_EVENTS) or "?"
+                            events_processed = meta_get(sc, META_EVENTS_PROCESSED) or "?"
+                            built_at = meta_get(sc, META_BUILT_AT) or "?"
+                            try:
+                                ep_int = int(events_processed)
+                                events_str = f"{ep_int:,}"
+                            except (TypeError, ValueError):
+                                events_str = str(events_processed)
+                            basis_rows_html = "".join(
+                                f'<tr><td><code>{escape(str(b["state_basis"]))}</code></td>'
+                                f'<td>{int(b["keys"]):,}</td>'
+                                f'<td>{int(b["events"] or 0):,}</td></tr>'
+                                for b in by_basis
+                            )
+                            label_state_section = f"""
+<div class="boundary-section" id="left-censor" style="margin-top:1.5rem;">
+<h2>Left-censored removals (pilot)</h2>
+<p class="labeler-context" style="font-size:1.0rem;">
+<strong>{lc_keys:,} label keys ({lc_pct}%)</strong> in the sidecar pilot were
+observed only as negation events in the processed window — labels removed in
+window whose adds predate the observation window. These are not "unknown"; they
+are <code>delete_without_observed_add</code>, surfaced separately so they don't
+contaminate observed-lifecycle counts.</p>
+<p class="use-for"><strong>Use this to see:</strong> labels active before the observation window opened and removed during it. <strong>Not for:</strong> drawing conclusions about full label lifetime — pilot is bounded; numbers below are not the network total.</p>
+<table>
+<thead><tr><th>state_basis</th><th>keys</th><th>events</th></tr></thead>
+<tbody>{basis_rows_html}</tbody>
+</table>
+<p class="small" style="margin-top:0.5rem;color:var(--fg-muted);">
+Sidecar pilot scope: {events_str} events from the last {window_days}d window
+(max_events={max_events}); built at {escape(built_at)}.
+Sourced from <code>labelwatch_state.db</code> (built via <code>labelwatch state-pilot</code>);
+admissibility gate passed (<code>build_status=complete</code>). Pilot is a
+deliberate bounded sample — not the full 7d/30d population. Restart the pilot
+with <code>--max-events 0</code> (service stopped) for full coverage.</p>
+</div>
+"""
+                    elif reason:
+                        log.info("Sidecar present but not admissible (%s); left-censor section skipped", reason)
+                finally:
+                    sc.close()
+    except Exception as exc:
+        log.warning("Label state (left-censor) section failed: %s", exc)
+
     # --- Authority-effect over time (daily event volume by classification) ---
     # FLOW graph (event counts per day) — distinct from the contradiction
     # surface, which is stock. Caption is explicit so a reader doesn't infer
@@ -3348,6 +3432,7 @@ events per day, not active inventory.</p>
         + authority_link_card
         + unknown_debt_section
         + label_duration_section
+        + label_state_section
         + reference_lane
         + hosting_section
         + concentration_section
