@@ -8,7 +8,7 @@ from .utils import get_git_commit
 
 _log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 # SCHEMA_TABLES: all CREATE TABLE statements. Safe to run against pre-existing
 # tables (IF NOT EXISTS is a no-op). Used by v0→v1 bootstrap where the table
@@ -351,6 +351,10 @@ CREATE INDEX IF NOT EXISTS idx_boundary_edges_target ON boundary_edges(target_ur
 CREATE INDEX IF NOT EXISTS idx_boundary_edges_computed ON boundary_edges(computed_at);
 CREATE INDEX IF NOT EXISTS idx_boundary_targets_computed ON boundary_targets(computed_at);
 CREATE INDEX IF NOT EXISTS idx_label_events_hide ON label_events(src, ts, uri) WHERE val = '!hide' AND neg = 0;
+-- Composite for state-machine reads: lifetime backfill, label_state
+-- maintenance, per-key history lookups. Cuts the TEMP B-TREE sort that
+-- the lifetime ORDER BY (labeler_did, uri, val, ts) was paying.
+CREATE INDEX IF NOT EXISTS idx_label_events_state ON label_events(labeler_did, uri, val, ts);
 """
 
 # Full schema = tables + indexes. Used for fresh DB init.
@@ -1013,6 +1017,23 @@ def migrate(conn: sqlite3.Connection, current: int, target: int) -> None:
         ])
         set_schema_version(conn, 22)
         current = 22
+    if current == 22 and target >= 23:
+        # Composite index for state-machine reads. The lifetime backfill,
+        # label_state maintenance, and per-key history lookups all want
+        # ORDER BY (labeler_did, uri, val, ts) — previously paid a
+        # TEMP B-TREE sort because no covering index existed. Index
+        # creation will read the whole label_events table and write the
+        # btree — expect 60–90s on a multi-million-row table, during
+        # which writes to label_events are blocked (ingest queues up
+        # briefly).
+        _log.info("Creating composite index idx_label_events_state (may take 60s+ on large DB)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_label_events_state "
+            "ON label_events(labeler_did, uri, val, ts)"
+        )
+        _log.info("Composite index idx_label_events_state created")
+        set_schema_version(conn, 23)
+        current = 23
     if current != target:
         raise RuntimeError(f"Unsupported schema migration {current} -> {target}")
 
