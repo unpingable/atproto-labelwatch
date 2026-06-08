@@ -39,9 +39,19 @@ visible at the top of this file):
 
 > **Do not let "labeler exists" silently convert into "moderation
 > service exists."** Label emission, declared semantics, and
-> operational maturity are three different things; the ATProto
-> moderation ecosystem currently contains all three failure modes at
-> scale.
+> operational liveness are separate properties. The observed ATProto
+> labeler ecosystem contains all three failure modes at scale.
+>
+> The core triad:
+>
+>   - **emission ≠ declaration** (F-007)
+>   - **declaration ≠ liveness** (F-008)
+>   - **liveness ≠ authority** (F-001, F-004, consumer-conversion census)
+
+"Operational liveness" is the right term for this canonical doctrine
+because it tracks the admissibility claim. "Operational maturity" is
+heuristic / SRE-shape (see D-002) — fine for analysis tables, wrong
+for doctrinal statements.
 
 ---
 
@@ -575,9 +585,14 @@ moderation infrastructure.
 >
 > **Do not let "labeler exists" silently convert into "moderation
 > service exists."** Label emission, declared semantics, and
-> operational maturity are three different things; the ATProto
-> moderation ecosystem currently contains all three failure modes
-> at scale.
+> operational liveness are separate properties. The observed ATProto
+> labeler ecosystem contains all three failure modes at scale.
+>
+> Core triad:
+>
+>   - **emission ≠ declaration** (this finding, F-007)
+>   - **declaration ≠ liveness** (F-008)
+>   - **liveness ≠ authority** (F-001, F-004, consumer-conversion census)
 
 **Diagnostic class (per the user's framing — none of these is "bug
 in labeler"):**
@@ -631,17 +646,29 @@ that subscription. The labeler is discoverable via the service
 record and may even appear in client UIs as available, but the
 subscription is operationally a no-op.
 
-**Distinct from F-007:** F-007 is high-volume emission with no
-declared semantics ("shout into the void"). F-008 is declared
-semantics with no current emission ("declared then walked away").
-Mirror-image failure shapes; same admissibility hook applies:
-**emission and declaration travel separately, and the user-facing
-service-readiness signal needs to know about BOTH.**
+**Distinct from F-007 (sharper mirror framing):**
+
+- **F-007:** label emission without declared consumer semantics.
+- **F-008:** declared consumer semantics without operational label
+  emission.
+
+Same admissibility hook applies in both directions: declaration and
+liveness travel separately, and the user-facing service-readiness
+signal needs to know about both.
 
 Together, F-007 + F-008 cover the two big failure modes the
 operator-maturity scan surfaced at population scale:
-- ~9% of observed labelers emit substantially without declaring
-- 43% of observed labelers declare without emitting
+
+- **F-007:** ~9% of observed labelers (14/150) emit substantially
+  without declaring.
+- **F-008:** 43% of observed labelers (65/150) appear abandoned; at
+  least ~19% (28/150) retain substantial declared scope despite
+  operational silence.
+
+(Earlier draft conflated "43% abandoned" with "43% declare without
+emitting" — the two numbers are different. 65 labelers are abandoned;
+28 of those 65 had substantial declared scope before going silent.
+Tightened on operator review.)
 
 **Pathological subcase — definition churn without emission:**
 `vocalabeller.kanshen.click` published **106,000 service-record
