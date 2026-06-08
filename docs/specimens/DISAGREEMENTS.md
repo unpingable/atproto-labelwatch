@@ -228,7 +228,59 @@ distinction and parks the patch.
   artifact_kind affects what's CITED in admissible claims, not what
   the gap discriminator returns.
 
-**Status (updated by Bundle C):** **partially mechanized.** Service-record provenance now flows into the evidence packet as `LabelerEmitterDocumentation`; the classifier reads it and adds `consumer_scope=emitter_declared` to the gap struct. Three Bundle B bite points migrated from `consumer_scope=unknown` to `consumer_scope=emitter_declared` (fringe-media, twitter-screenshot, fucked-up-replyref). The invariant test confirms service-record labels are NEVER silently promoted to `global_platform`. Full multi-consumer subscription modeling (opt-in evidence → `opt_in_consumer_observed`) remains deferred to Bundle D+.
+**Status (updated by Bundle G):** **end-to-end mechanized for one named consumer (Driftwatch).**
+
+Bundle C added `LabelerEmitterDocumentation` and the `emitter_declared`
+scope. Bundle G closes the F-004 loop with a real opt-in consumer
+adoption path, end-to-end:
+
+  - **Schema:** `ConsumerAdoption` + `ConsumerActionObservation` evidence
+    fields (Bundle G stage 1 — `960be9d`).
+  - **Classifier:** `opt_in_consumer_observed` is now a real branch of
+    `_classify_consumer_scope`. New gap path: complete_path on the
+    `consumer_local_state` surface when adoption + receipt are both
+    observed; `execution_gap_policy_present(consumer_local_state)` when
+    adoption is documented but no receipt.
+  - **Exporter:** `consumer_scope_effective` formats as
+    `opt_in:<consumer_id>` (e.g., `opt_in:driftwatch`) — string-shape
+    difference prevents accidental field-equality with `global_platform`
+    or `emitter_declared`. `consumer_local_scope_only` caveat plus
+    inherited `non_global_provenance`.
+  - **Driftwatch policy artifact:** real, with version, allowlist,
+    refusal vocabulary, idempotent roster, per-attempt receipts
+    (driftwatch repo commit `b4a8e3e` —
+    `scripts/consumer_policy/policy.py` + `README.md` +
+    `data/consumer_policy/state/external_advisory_caveats.json` + 3
+    receipts).
+  - **End-to-end specimen:** `specimen-003-driftwatch-opt-in-fringe-media`
+    cites a real receipt by sha (3a6bb004a53d…) referencing a real input
+    packet hash (ddaf736f…). Verified via classifier + exporter +
+    fixture verify.
+
+**Counterexample to the inverse rule "third-party → no conversion":**
+the same labeler (`skywatch.blue`) and label (`fringe-media`) now
+appear in the corpus with TWO different `consumer_scope_effective`
+values depending on documented consumer adoption:
+
+  - existing derived packet (no ConsumerAdoption) → `emitter_declared`
+  - specimen-003 (ConsumerAdoption=driftwatch + receipt) → `opt_in:driftwatch`
+
+Same evidence input shape; different consumer-side context; different
+verdict. The classifier can distinguish A from B.
+
+**Discipline preserved:** opt_in adoption NEVER promotes to
+`global_platform` (verified by `test_opt_in_does_not_promote_to_global`).
+`non_global_provenance` from the underlying emitter_declared is
+INHERITED, not erased (verified by
+`test_opt_in_consumer_exports_with_local_scope_caveat`). Adoption by
+Driftwatch does NOT entail adoption by any other consumer (always-fired
+inadmissible `no_cross_consumer_inference`).
+
+**Still parked:** Multi-consumer subscription graph (one
+`ConsumerAdoption` field today; a list would be next). Live wiring of
+Driftwatch's downstream consumer code (cluster-report annotation
+reading the roster). Lean promotion (Bundle G's distinctions are
+mechanized in the classifier; no Lean theorem yet).
 
 ---
 

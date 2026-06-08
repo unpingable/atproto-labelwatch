@@ -1,0 +1,105 @@
+{
+  "schema_kind": "specimen_candidate",
+  "schema_version": 3,
+  "lane": "authority_surface",
+  "exporter": "specimen_exporter.py v3 (Bundle G opt-in consumer adoption)",
+  "exported_at": "2026-06-08T19:00:39Z",
+  "evidence_source": "specimen-003-driftwatch-opt-in-fringe-media.evidence.json",
+  "labeler": {
+    "did": "did:plc:e4elbtctnfqocyfcml6h2lf7",
+    "handle": "skywatch.blue",
+    "display_name": null,
+    "class": "third_party",
+    "is_reference": true
+  },
+  "label": {
+    "value": "fringe-media",
+    "neg": 0,
+    "labelwatch_authority_effect": "advisory"
+  },
+  "target": {
+    "uri": "at://did:plc:5gy2ohzlg2iszo25tziw4ixz/app.bsky.feed.post/3mns4v565o22a",
+    "kind": "post_record",
+    "target_did": null
+  },
+  "observation": {
+    "ts": "2026-06-08T17:00:00Z",
+    "first_seen": null,
+    "last_seen": null,
+    "reassertion_count": null,
+    "state_basis": null,
+    "current_state": null,
+    "state_lookup_note": "v1: single-event proxy only. Bundle E will populate from label_state sidecar; until then freshness-lane exports are gated on this absence."
+  },
+  "policy_provenance": {
+    "artifact_kind": null,
+    "consumer_scope": "unknown",
+    "status": "absent_for_consumer",
+    "execution_surface": null
+  },
+  "emitter_provenance": {
+    "artifact_kind": "service_record",
+    "consumer_scope": "emitter_declared",
+    "status": "documented_via_service_record",
+    "execution_surface": null
+  },
+  "consumer_adoption_provenance": {
+    "status": "documented_via_consumer_policy",
+    "consumer_id": "driftwatch",
+    "policy_artifact": {
+      "repo": "unpingable/atproto-driftwatch",
+      "path": "scripts/consumer_policy/policy.py",
+      "version": "external_advisory_caveats-v1.0.0",
+      "head_or_commit_local": "b4a8e3e",
+      "policy_constant_ref": "ADMITTED[skywatch.blue].label_values contains 'fringe-media'",
+      "rule_summary": "Admits emitter_declared labels from a hand-curated allowlist of labeler/label pairs into Driftwatch's external_advisory_caveats roster. Each admission preserves the input's non_global_provenance caveat and is scoped to driftwatch's local state only. Roster is consulted by future cluster-report annotation; v1 produces state, does not yet wire downstream."
+    },
+    "documented_expected_action": {
+      "action_kind": "routing",
+      "action_summary": "Append (target, labeler_did, label_value, inherited_caveats) to data/consumer_policy/state/external_advisory_caveats.json; emit a receipt to data/consumer_policy/receipts/.",
+      "preconditions": [
+        "input is a Labelwatch specimen_candidate (not blocked_candidate)",
+        "input.consumer_scope_effective == 'emitter_declared'",
+        "(input.labeler.did, input.label.value) is in Driftwatch's ADMITTED allowlist"
+      ],
+      "downstream_effect_note": "v1: roster is the consultable state. Future cluster-report code reads the roster to annotate/route claims involving labeled targets. The roster exists; downstream consumer code is parked."
+    },
+    "consumer_scope": "opt_in_consumer_observed",
+    "execution_surface": "consumer_local_state",
+    "action_observation_status": "observed",
+    "action_receipt": {
+      "receipt_path": "driftwatch/data/consumer_policy/receipts/20260608_184805Z-3a6bb004a53d.json",
+      "receipt_sha256": "3a6bb004a53de7c30401daa737da577b76526478e550a6251f29cf1d13519168",
+      "emitted_at": "2026-06-08T18:48:05Z",
+      "policy_version": "external_advisory_caveats-v1.0.0",
+      "action_taken": "advisory_caveat_roster_admission",
+      "input_packet_hash": "ddaf736fbf48c7789edc99c5fd542dfe4337e49a85fd5edc98998aba9b48fb50",
+      "input_evidence_source": "derived/derived-39549897-did-plc-e4elbtctnfqocyfcml6h2lf7-fringe-media.evidence.json",
+      "inherited_caveats": [
+        "non_global_provenance"
+      ],
+      "discipline_note_from_receipt": "consumer_scope is opt_in:driftwatch; this admission does NOT promote the underlying emitter_declared finding to global_platform. non_global_provenance is inherited and must be preserved by any downstream consumer that consults this roster."
+    }
+  },
+  "consumer_scope_effective": "opt_in:driftwatch",
+  "conversion_gap": {
+    "name": "complete_path",
+    "surface": "consumer_local_state",
+    "consumer_scope": "opt_in_consumer_observed"
+  },
+  "state_basis": {
+    "source_kind": "fixture",
+    "captured_at": "2026-06-08T18:50:00Z",
+    "artifact_identity": "fixture: specimen-003-driftwatch-opt-in-fringe-media",
+    "artifact_hash": null,
+    "freshness_horizon": "unknown",
+    "derivation_source": "hand-authored fixture; cites real Driftwatch policy artifact (scripts/consumer_policy/policy.py v1.0.0 at commit b4a8e3e) and real receipt (data/consumer_policy/receipts/20260608_184805Z-3a6bb004a53d.json, sha 3a6bb004a53d...)",
+    "note": "Bundle G specimen-003. The cited Driftwatch policy artifact + receipt are real; specimen freshness still classifies as unknown_basis because no validity horizon is asserted (Driftwatch's policy could change at any time)."
+  },
+  "state_basis_status": "unknown_basis",
+  "export_caveats": [
+    "consumer_local_scope_only",
+    "non_global_provenance",
+    "policy_witnessed_documentary_only"
+  ]
+}

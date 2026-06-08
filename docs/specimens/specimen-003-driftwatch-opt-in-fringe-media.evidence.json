@@ -1,0 +1,153 @@
+{
+  "specimen_id": "003",
+  "title": "Driftwatch opt-in adoption of skywatch.blue/fringe-media — end-to-end receipt",
+  "summary": "Third-party label with emitter_declared provenance, adopted by Driftwatch as a documented opt-in consumer. Real receipt observed; consumer_scope_effective scoped to driftwatch only; non_global_provenance inherited not erased.",
+  "schema_version": 1,
+  "schema_kind": "evidence",
+
+  "provenance": {
+    "source": "labelwatch label_events stream (real event) + driftwatch consumer_policy v1.0.0 (real receipt)",
+    "captured_by": "labelwatch-claude (Bundle G stage 3)",
+    "captured_at": "2026-06-08T18:50:00Z",
+    "session_anchor": "Bundle G — opt-in consumer adoption via Driftwatch"
+  },
+
+  "LabelObservation": {
+    "labeler_did": "did:plc:e4elbtctnfqocyfcml6h2lf7",
+    "labeler_handle": "skywatch.blue",
+    "labeler_class": "third_party",
+    "is_reference_labeler": true,
+    "target_uri": "at://did:plc:5gy2ohzlg2iszo25tziw4ixz/app.bsky.feed.post/3mns4v565o22a",
+    "target_kind": "post_record",
+    "label_value": "fringe-media",
+    "neg": 0,
+    "ts": "2026-06-08T17:00:00Z",
+    "ingest_witness": "labelwatch label_events stream (event id matches derived/derived-39549897-...-fringe-media.evidence.json)",
+    "labelwatch_authority_effect_classification": "advisory"
+  },
+
+  "PolicyDocumentation": {
+    "consumer": {
+      "consumer_id": "bsky.app-default-client",
+      "description": "Bluesky official appview + client; skywatch.blue NOT subscribed as a labeler service in the default configuration",
+      "render_context": {
+        "client_family": "bsky.app",
+        "viewer_state": "any",
+        "skywatch_labeler_service_subscribed": false,
+        "policy_pipeline_version_assumed": "client running @atproto/api at or near v0.19.17"
+      }
+    },
+    "policy_artifact_searched": {
+      "repo": "bluesky-social/atproto",
+      "package": "@atproto/api",
+      "package_version": "0.19.17",
+      "file_path": "packages/api/src/moderation/const/labels.ts",
+      "head_or_commit": "7b8c5d60a",
+      "search_result": "no_entry",
+      "search_evidence": "Global LABELS map (8 entries: !hide, !warn, !no-unauthenticated, porn, sexual, nudity, graphic-media, gore) does not contain 'fringe-media'."
+    },
+    "status": "absent_for_consumer",
+    "consumer_scope": "unknown",
+    "execution_surface": null,
+    "execution_surface_source": "no documented policy for fringe-media in the default consumer's pipeline",
+    "scoping_note": "PolicyDocumentation describes ONLY the default consumer. ConsumerAdoption (below) names a separate non-default consumer (Driftwatch) whose policy DOES adopt this label."
+  },
+
+  "LabelerEmitterDocumentation": {
+    "status": "documented_via_service_record",
+    "artifact_kind": "service_record",
+    "consumer_scope": "emitter_declared",
+    "labeler_service_record_present": true,
+    "scoping_note": "skywatch.blue publishes a labelValueDefinition for fringe-media in its app.bsky.labeler.service record. emitter_declared scope: the LABELER has declared a rule. This does NOT mean any consumer honors it; cf. F-001 and F-004.",
+    "extracted_definition": {
+      "identifier": "fringe-media",
+      "note": "Fixture-side citation; the actual definition body is in the service record at labelwatch.db / discovery_events (Bundle F discover repair)."
+    },
+    "service_record_provenance": {
+      "labeler_did": "did:plc:e4elbtctnfqocyfcml6h2lf7",
+      "source_table": "labelwatch.db / discovery_events"
+    }
+  },
+
+  "ConsumerAdoption": {
+    "status": "documented_via_consumer_policy",
+    "consumer": {
+      "consumer_id": "driftwatch",
+      "description": "Driftwatch — an infotoxin observatory (atproto-driftwatch.git); standalone non-default consumer of Labelwatch exporter candidates",
+      "is_default_client": false,
+      "consumer_class": "named_opt_in_consumer"
+    },
+    "policy_artifact": {
+      "repo": "unpingable/atproto-driftwatch",
+      "path": "scripts/consumer_policy/policy.py",
+      "version": "external_advisory_caveats-v1.0.0",
+      "head_or_commit_local": "b4a8e3e",
+      "policy_constant_ref": "ADMITTED[skywatch.blue].label_values contains 'fringe-media'",
+      "rule_summary": "Admits emitter_declared labels from a hand-curated allowlist of labeler/label pairs into Driftwatch's external_advisory_caveats roster. Each admission preserves the input's non_global_provenance caveat and is scoped to driftwatch's local state only. Roster is consulted by future cluster-report annotation; v1 produces state, does not yet wire downstream."
+    },
+    "documented_expected_action": {
+      "action_kind": "routing",
+      "action_summary": "Append (target, labeler_did, label_value, inherited_caveats) to data/consumer_policy/state/external_advisory_caveats.json; emit a receipt to data/consumer_policy/receipts/.",
+      "preconditions": [
+        "input is a Labelwatch specimen_candidate (not blocked_candidate)",
+        "input.consumer_scope_effective == 'emitter_declared'",
+        "(input.labeler.did, input.label.value) is in Driftwatch's ADMITTED allowlist"
+      ],
+      "downstream_effect_note": "v1: roster is the consultable state. Future cluster-report code reads the roster to annotate/route claims involving labeled targets. The roster exists; downstream consumer code is parked."
+    },
+    "consumer_scope": "opt_in_consumer_observed",
+    "execution_surface": "consumer_local_state",
+    "execution_surface_source": "Driftwatch consumer policy declared in scripts/consumer_policy/policy.py; the conversion is a state transition inside Driftwatch (roster file + receipt), NOT a client render or PDS hosting change."
+  },
+
+  "ConsumerActionObservation": {
+    "status": "observed",
+    "consumer_id": "driftwatch",
+    "receipt": {
+      "receipt_path": "driftwatch/data/consumer_policy/receipts/20260608_184805Z-3a6bb004a53d.json",
+      "receipt_sha256": "3a6bb004a53de7c30401daa737da577b76526478e550a6251f29cf1d13519168",
+      "emitted_at": "2026-06-08T18:48:05Z",
+      "policy_version": "external_advisory_caveats-v1.0.0",
+      "action_taken": "advisory_caveat_roster_admission",
+      "input_packet_hash": "ddaf736fbf48c7789edc99c5fd542dfe4337e49a85fd5edc98998aba9b48fb50",
+      "input_evidence_source": "derived/derived-39549897-did-plc-e4elbtctnfqocyfcml6h2lf7-fringe-media.evidence.json",
+      "inherited_caveats": ["non_global_provenance"],
+      "discipline_note_from_receipt": "consumer_scope is opt_in:driftwatch; this admission does NOT promote the underlying emitter_declared finding to global_platform. non_global_provenance is inherited and must be preserved by any downstream consumer that consults this roster."
+    },
+    "roster_entry_observed": {
+      "roster_path": "driftwatch/data/consumer_policy/state/external_advisory_caveats.json",
+      "entry_present_as_of_capture": true,
+      "entry_summary": "(skywatch.blue, fringe-media, target_uri=at://did:plc:5gy2ohzlg2iszo25tziw4ixz/app.bsky.feed.post/3mns4v565o22a) with inherited_caveats=['non_global_provenance']"
+    },
+    "scoping_note": "This observation says 'Driftwatch's consumer policy fired and emitted a receipt referencing the input candidate.' It does NOT say any user saw any rendered effect; the conversion happens in Driftwatch's local state, not in any client UI."
+  },
+
+  "PolicyWitness": {
+    "status": "partial_documentary_not_receipted",
+    "reason": "Driftwatch's consumer policy is published source code (driftwatch/scripts/consumer_policy/policy.py v1.0.0) with a real receipt of its application — that's a stronger witness than @atproto/api's LABELS const has for the default consumer, but still documentary: anyone could re-run the policy code and verify the same admission. Live consumer state (the roster file) is captured at receipt time; subsequent runs of cluster-report annotation that consult the roster are not yet observed.",
+    "what_would_be_required_for_full_witness": [
+      "a downstream Driftwatch report that annotates/excludes/routes a claim BECAUSE of this roster entry, with its own receipt",
+      "or a probe that confirms a Driftwatch report rendered the claim with the inherited caveat in place"
+    ]
+  },
+
+  "RenderObservation": {
+    "status": "not_applicable",
+    "reason": "The conversion surface is consumer_local_state (Driftwatch's roster + receipt), not client_render. No bsky.app or other client is expected to render any effect from this adoption — Driftwatch does not display content."
+  },
+
+  "HostingObservation": {
+    "status": "not_applicable",
+    "reason": "The conversion surface is consumer_local_state, not pds_hosting. The target record remains hosted unchanged regardless of Driftwatch's roster admission."
+  },
+
+  "StateBasis": {
+    "source_kind": "fixture",
+    "captured_at": "2026-06-08T18:50:00Z",
+    "artifact_identity": "fixture: specimen-003-driftwatch-opt-in-fringe-media",
+    "artifact_hash": null,
+    "freshness_horizon": "unknown",
+    "derivation_source": "hand-authored fixture; cites real Driftwatch policy artifact (scripts/consumer_policy/policy.py v1.0.0 at commit b4a8e3e) and real receipt (data/consumer_policy/receipts/20260608_184805Z-3a6bb004a53d.json, sha 3a6bb004a53d...)",
+    "note": "Bundle G specimen-003. The cited Driftwatch policy artifact + receipt are real; specimen freshness still classifies as unknown_basis because no validity horizon is asserted (Driftwatch's policy could change at any time)."
+  }
+}

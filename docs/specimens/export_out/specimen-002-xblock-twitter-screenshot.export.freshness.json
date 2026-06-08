@@ -3,7 +3,7 @@
   "schema_version": 3,
   "lane": "freshness",
   "exporter": "specimen_exporter.py v3 (Bundle G opt-in consumer adoption)",
-  "exported_at": "2026-06-08T18:40:53Z",
+  "exported_at": "2026-06-08T19:00:39Z",
   "evidence_source": "specimen-002-xblock-twitter-screenshot.evidence.json",
   "labeler": {
     "did": "did:plc:newitj5jo3uel7o4mnf3vj2o",

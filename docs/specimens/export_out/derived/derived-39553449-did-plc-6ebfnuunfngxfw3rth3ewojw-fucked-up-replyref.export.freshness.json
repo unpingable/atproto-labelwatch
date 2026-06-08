@@ -3,7 +3,7 @@
   "schema_version": 3,
   "lane": "freshness",
   "exporter": "specimen_exporter.py v3 (Bundle G opt-in consumer adoption)",
-  "exported_at": "2026-06-08T18:40:53Z",
+  "exported_at": "2026-06-08T19:00:39Z",
   "evidence_source": "derived/derived-39553449-did-plc-6ebfnuunfngxfw3rth3ewojw-fucked-up-replyref.evidence.json",
   "labeler": {
     "did": "did:plc:6ebfnuunfngxfw3rth3ewojw",
