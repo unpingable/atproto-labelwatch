@@ -1,5 +1,15 @@
 # Specimen DISAGREEMENTS + FINDINGS log
 
+> **The doctrine block immediately below is FROZEN.** It is the
+> load-bearing claim cited by `docs/findings/operator-maturity/`
+> (the public findings page) and by F-001, F-004, F-007, F-008.
+> Edit only for correctness — not for vibes, not for shorter prose,
+> not for "I have a better word now." If you genuinely need to
+> change it: open the change with a one-line rationale, leave the
+> prior wording as a strikethrough or footnote so a future reader
+> can audit the drift, and update the findings page in the same
+> commit.
+
 Three kinds of entries:
 
 **D-NNN — disagreements.** The classifier's verdict on a real-data
