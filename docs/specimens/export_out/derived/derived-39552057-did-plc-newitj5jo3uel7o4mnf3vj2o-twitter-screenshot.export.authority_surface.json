@@ -3,7 +3,7 @@
   "schema_version": 2,
   "lane": "authority_surface",
   "exporter": "specimen_exporter.py v2 (Bundle E state-basis gate)",
-  "exported_at": "2026-06-08T16:59:15Z",
+  "exported_at": "2026-06-08T17:09:14Z",
   "evidence_source": "derived/derived-39552057-did-plc-newitj5jo3uel7o4mnf3vj2o-twitter-screenshot.evidence.json",
   "labeler": {
     "did": "did:plc:newitj5jo3uel7o4mnf3vj2o",
@@ -51,7 +51,7 @@
   },
   "state_basis": {
     "source_kind": "db_row",
-    "captured_at": "2026-06-08T16:59:13Z",
+    "captured_at": "2026-06-08T17:08:35Z",
     "artifact_identity": "labelwatch.label_events.id=39552057",
     "artifact_hash": null,
     "freshness_horizon": "unknown",

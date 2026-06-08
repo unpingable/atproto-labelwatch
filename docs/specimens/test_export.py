@@ -314,6 +314,44 @@ def test_freshness_current_basis_exports_clean() -> None:
     print("  PASS current_basis exports clean (basis horizon honored)")
 
 
+def test_source_table_is_classification_invariant() -> None:
+    """Bundle F regression: snapshot path and discovery_events path must
+    classify the same labelValueDefinition identically. The source of the
+    bytes (snapshot fallback vs labelwatch.db) must change only the
+    provenance string; never the gap, scope, or exporter decision."""
+    base_ev = _synth(
+        "fringe-media",
+        labeler_class="third_party",
+        policy_status="absent_for_consumer",
+        policy_consumer_scope="unknown",
+        emitter_status="documented_via_service_record",
+        emitter_artifact_kind="service_record",
+        emitter_consumer_scope="emitter_declared",
+    )
+    # Two evidence packets identical except for source_table
+    ev_from_discovery = json.loads(json.dumps(base_ev))
+    ev_from_discovery["LabelerEmitterDocumentation"]["service_record_provenance"] = {
+        "labeler_did": "did:plc:synth",
+        "source_table": "labelwatch.db / discovery_events",
+    }
+    ev_from_snapshot = json.loads(json.dumps(base_ev))
+    ev_from_snapshot["LabelerEmitterDocumentation"]["service_record_provenance"] = {
+        "labeler_did": "did:plc:synth",
+        "source_table": "service_record_snapshots/ (F-005 fallback)",
+    }
+    out_d = _run("test_invariant_discovery", ev_from_discovery)
+    out_s = _run("test_invariant_snapshot", ev_from_snapshot)
+    # Compare classification outcomes (everything except evidence_source +
+    # exported_at + source-pointing fields)
+    for field in ("schema_kind", "consumer_scope_effective", "conversion_gap",
+                  "policy_provenance", "emitter_provenance", "export_caveats"):
+        assert out_d.get(field) == out_s.get(field), (
+            f"source_table changed {field!r}: "
+            f"discovery={out_d.get(field)!r} snapshot={out_s.get(field)!r}"
+        )
+    print("  PASS source_table is classification-invariant (Bundle F regression)")
+
+
 def test_authority_surface_ignores_state_basis_absence() -> None:
     """Bundle E invariant: authority_surface lane does NOT gate on
     StateBasis. D.5 behavior unchanged for global_platform/emitter_declared/
@@ -419,6 +457,7 @@ def main() -> int:
         test_freshness_stale_basis_exports_with_caveat,
         test_freshness_current_basis_exports_clean,
         test_authority_surface_ignores_state_basis_absence,
+        test_source_table_is_classification_invariant,
         test_no_label_observation_blocked,
     ]:
         try:

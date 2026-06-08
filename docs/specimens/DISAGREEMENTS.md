@@ -275,7 +275,38 @@ first-party labeler.
 2. If yes: confirm labelwatch's discovery pipeline knows to fetch it, and look at why it isn't in `discovery_events`.
 3. If no: moderation.bsky.app's labels are documented somewhere else (atproto-internal admin definitions, perhaps embedded in the bsky appview). That's a different artifact_kind candidate; possibly extends `PROTOCOL_DOCUMENTED_LABELS`.
 
-**Status (updated by Bundle D.5):** **mostly worked around.**
+**Status (updated by Bundle F):** **bytes-level resolved.**
+
+Bundle F added `docs/specimens/tools/backfill_service_record_via_appview.py`
+and ran it once for moderation.bsky.app. The 18-entry
+labelValueDefinitions block now lives in `labelwatch.db /
+discovery_events` as a row with `source='appview_backfill'`,
+`operation='create'`, synthetic
+`commit_rev='appview-backfill-<utc-ts>'`. The deriver's primary
+discovery_events lookup finds it on the first pass; the snapshot
+fallback no longer fires for mod.bsky.
+
+Externally-visible effect: every emitter_declared packet now reports
+`service_record_provenance.source_table = 'labelwatch.db /
+discovery_events'`. The snapshot file in
+`service_record_snapshots/` remains as a true fallback for labelers
+whose records haven't been backfilled (none currently in scope).
+
+The Bundle F regression test (`test_source_table_is_classification_invariant`)
+proves the source path does not change classification: two packets
+differing only in `source_table` yield identical gap, scope, exporter
+decision, and caveats. The discover-path change moves provenance bits,
+not doctrine.
+
+**What remains parked.** Modifying labelwatch's `discover.py` /
+`discovery_stream.py` to auto-backstop appview records on a schedule
+is its own architectural change in the live labelwatch package; it
+belongs to a labelwatch infrastructure cycle, not the specimens
+track. The current Bundle F state is: "the record is in the right
+table; refreshing it later is a separate ops question."
+
+**Status (D.5 historical, preserved):** mostly worked around via
+snapshot fallback path.
 
 Bundle D.5 confirmed via direct appview probe
 (`app.bsky.labeler.getServices?dids=did:plc:ar7c4by46qjdydhdevvrndac&detailed=true`)

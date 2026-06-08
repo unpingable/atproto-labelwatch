@@ -8,7 +8,7 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T16:59:13Z",
+    "derived_at": "2026-06-08T17:08:35Z",
     "source_row_id": 38885423,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
@@ -76,11 +76,11 @@
     "service_record_provenance": {
       "labeler_did": "did:plc:ar7c4by46qjdydhdevvrndac",
       "commit_cid": null,
-      "commit_rev": null,
-      "discovered_at": "2026-06-08T16:45:06Z",
+      "commit_rev": "appview-backfill-20260608T170522Z",
+      "discovered_at": "2026-06-08T17:05:22Z",
       "source_table": "labelwatch.db / discovery_events"
     },
-    "retrieved_at": "2026-06-08T16:59:13Z",
+    "retrieved_at": "2026-06-08T17:08:35Z",
     "reviewed_at": "2026-06-08",
     "reviewer": "labelwatch-claude (Bundle C)"
   },
@@ -102,7 +102,7 @@
   },
   "StateBasis": {
     "source_kind": "db_row",
-    "captured_at": "2026-06-08T16:59:13Z",
+    "captured_at": "2026-06-08T17:08:35Z",
     "artifact_identity": "labelwatch.label_events.id=38885423",
     "artifact_hash": null,
     "freshness_horizon": "unknown",

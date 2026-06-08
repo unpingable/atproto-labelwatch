@@ -8,7 +8,7 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T16:59:12Z",
+    "derived_at": "2026-06-08T17:08:35Z",
     "source_row_id": 39549839,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
@@ -98,7 +98,7 @@
   },
   "StateBasis": {
     "source_kind": "db_row",
-    "captured_at": "2026-06-08T16:59:12Z",
+    "captured_at": "2026-06-08T17:08:35Z",
     "artifact_identity": "labelwatch.label_events.id=39549839",
     "artifact_hash": null,
     "freshness_horizon": "unknown",

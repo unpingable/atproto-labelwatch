@@ -382,7 +382,9 @@ def _labeler_emitter_documentation(
             "commit_cid": found["service_record_commit_cid"],
             "commit_rev": found["service_record_commit_rev"],
             "discovered_at": found["service_record_discovered_at"],
-            "source_table": "labelwatch.db / discovery_events",
+            "source_table": found.get(
+                "source", "labelwatch.db / discovery_events"
+            ),
         },
         "retrieved_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "reviewed_at": "2026-06-08",

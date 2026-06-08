@@ -8,7 +8,7 @@
   "provenance": {
     "source": "labelwatch.label_events (auto-derived)",
     "deriver": "derive_evidence.py",
-    "derived_at": "2026-06-08T16:59:13Z",
+    "derived_at": "2026-06-08T17:08:35Z",
     "source_row_id": 39549897,
     "source_db_path": "/var/lib/labelwatch/labelwatch.db"
   },
@@ -80,7 +80,7 @@
       "discovered_at": "2026-05-19T23:19:15.619785Z",
       "source_table": "labelwatch.db / discovery_events"
     },
-    "retrieved_at": "2026-06-08T16:59:13Z",
+    "retrieved_at": "2026-06-08T17:08:35Z",
     "reviewed_at": "2026-06-08",
     "reviewer": "labelwatch-claude (Bundle C)"
   },
@@ -102,7 +102,7 @@
   },
   "StateBasis": {
     "source_kind": "db_row",
-    "captured_at": "2026-06-08T16:59:13Z",
+    "captured_at": "2026-06-08T17:08:35Z",
     "artifact_identity": "labelwatch.label_events.id=39549897",
     "artifact_hash": null,
     "freshness_horizon": "unknown",

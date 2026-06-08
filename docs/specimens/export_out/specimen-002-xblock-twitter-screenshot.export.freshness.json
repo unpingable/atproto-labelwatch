@@ -3,7 +3,7 @@
   "schema_version": 2,
   "lane": "freshness",
   "exporter": "specimen_exporter.py v2 (Bundle E state-basis gate)",
-  "exported_at": "2026-06-08T16:59:15Z",
+  "exported_at": "2026-06-08T17:09:14Z",
   "evidence_source": "specimen-002-xblock-twitter-screenshot.evidence.json",
   "labeler": {
     "did": "did:plc:newitj5jo3uel7o4mnf3vj2o",
