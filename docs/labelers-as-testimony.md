@@ -2,6 +2,7 @@
 
 **Status**: candidate doctrine. Binding distinction ratified; elaboration draft 2026-06-03.
 **Companion**: [authority-failure-modes.md](authority-failure-modes.md) — the failure modes this framing predicts.
+**Companion**: [observation-export-custody.md](observation-export-custody.md) — the export-side doctrine that prevents Labelwatch's own outputs from silently doing the testimony→authority conversion the labelers-as-testimony frame refuses.
 
 ## The binding distinction
 

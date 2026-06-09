@@ -2,6 +2,7 @@
 
 **Status**: candidate doctrine. Draft 2026-06-03.
 **Companion**: [labelers-as-testimony.md](labelers-as-testimony.md) — the framing that names these as a coherent family.
+**Companion**: [observation-export-custody.md](observation-export-custody.md) — the failure modes this doc predicts in the *labeler* ecosystem have a mirror in Labelwatch's *own export* path (Labelwatch silently becoming an authority through bundle-shape, timestamp-shape, or verification-failure-shape laundering). That mirror is what observation-export-custody refuses.
 
 ## What this doc is
 
