@@ -876,6 +876,52 @@ Receipts captured below the deploy.
 **Status:** patched in code; reachability verified post-deploy
 (see below or follow-up commit).
 
+**Completeness pass, 2026-06-09.** The T-002 fix made
+`/findings/operator-maturity/` reachable but left two
+custody gaps:
+
+1. **Broken cross-references inside the rendered page.** The
+   markdown contained nine source-tree relative links — to
+   `docs/specimens/DISAGREEMENTS.md` (cited seven times), the two
+   analysis writeups, and the scanner source. Those resolved
+   correctly in the source tree but 404'd at the served URL space.
+   `docs/specimens/DISAGREEMENTS.md` self-identified as "the load-
+   bearing claim cited by the public findings page" but was not
+   reachable from it.
+2. **Missing from `sitemap.xml`.** `/findings/`,
+   `/findings/<topic>/`, and any cited support pages were not in
+   the sitemap. Only the `findings_callout` on the homepage
+   advertised them.
+
+Patch (`findings_pages.py` + `report.py`):
+
+- Allowlisted **cited-support publication path**. The allowlist
+  `_CITED_SUPPORT_ALLOWLIST` holds exactly the four documents the
+  operator-maturity page currently cites; nothing under
+  `docs/analysis/` is published merely because it sits there.
+  Adding a new entry means "this doc is a load-bearing citation
+  from a public findings page" — public because cited, not public
+  because filed.
+- Canonical-path link rewriter (`_rewrite_cited_support_links`)
+  resolves source-tree relative paths to canonical
+  `docs/...`-style targets and rewrites only the allowlisted ones
+  to their served URLs. External URLs, anchors, absolute URLs, and
+  non-allowlisted relative paths pass through unchanged.
+- `report.py` writes `/findings/`, `/findings/<topic>/`, and the
+  newly-served cited URLs into `sitemap.xml`.
+
+**Refusal extended.** The T-002 discipline above now also covers:
+
+> Do not describe a cited support document as "load-bearing for
+> the public findings page" unless the support document is itself
+> reachable from the served Labelwatch surface and the page's
+> cross-reference to it resolves to a 200.
+
+Discipline gate against scope creep: never let the cited-support
+machinery become a general-purpose "publish all
+`docs/analysis/`" path. Public because cited; cited from a
+public findings page; nothing more.
+
 ---
 
 ## T-003 — `labeler_class` conflated calibration_role with platform_authority_class

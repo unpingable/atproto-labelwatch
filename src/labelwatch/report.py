@@ -3632,8 +3632,10 @@ events per day, not active inventory.</p>
     #   /findings/<topic>/   ← frozen (from docs/findings/<topic>/)
     #   /operator-maturity/  ← live (regenerated from current DB)
     from .findings_pages import (
+        install_cited_support,
         install_frozen_findings,
         install_live_operator_maturity,
+        list_frozen_topics,
     )
     try:
         frozen_count = install_frozen_findings(tmp_dir, _layout)
@@ -3646,6 +3648,16 @@ events per day, not active inventory.</p>
         install_live_operator_maturity(tmp_dir, conn, _layout)
     except Exception as e:
         print(f"warn: install_live_operator_maturity failed: {e}", file=sys.stderr)
+    try:
+        cited_support_urls = install_cited_support(tmp_dir, _layout)
+    except Exception as e:
+        print(f"warn: install_cited_support failed: {e}", file=sys.stderr)
+        cited_support_urls = []
+    try:
+        frozen_topic_slugs = list_frozen_topics()
+    except Exception as e:
+        print(f"warn: list_frozen_topics failed: {e}", file=sys.stderr)
+        frozen_topic_slugs = []
 
     # --- Per-labeler pages ---
     anomaly_rules = {"label_rate_spike", "flip_flop", "target_concentration", "churn_index", "data_gap"}
@@ -3971,7 +3983,12 @@ events per day, not active inventory.</p>
         ("authority.html", "daily", "0.8"),
         ("v1/registry", "daily", "0.8"),
         ("census.html", "daily", "0.7"),
+        ("findings/", "weekly", "0.7"),
     ]
+    for topic in frozen_topic_slugs:
+        sitemap_urls.append((f"findings/{topic}/", "weekly", "0.7"))
+    for served_url in cited_support_urls:
+        sitemap_urls.append((served_url.lstrip("/"), "weekly", "0.6"))
     for row in labelers:
         slug = _did_slug(row["labeler_did"])
         sitemap_urls.append((f"labeler/{slug}.html", "daily", "0.5"))

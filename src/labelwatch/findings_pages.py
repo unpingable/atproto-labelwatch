@@ -28,10 +28,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import sys
 from datetime import datetime, timezone
 from html import escape
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 
 PLATFORM_ROOT_DID = "did:plc:ar7c4by46qjdydhdevvrndac"  # moderation.bsky.app
@@ -42,6 +44,85 @@ _REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 _FROZEN_FINDINGS_SRC = os.path.join(_REPO_ROOT, "docs", "findings")
+
+
+# ---------------------------------------------------------------------
+# CITED-SUPPORT ALLOWLIST — docs published because a finding cites them
+# ---------------------------------------------------------------------
+#
+# Publication discipline: these documents are public BECAUSE they are
+# cited from frozen findings pages. This is not a general
+# "publish all docs/analysis" path. Adding a new entry here means
+# "this doc is a load-bearing citation from a public findings page."
+#
+# Each entry is (source_path_relative_to_repo_root, served_url,
+# page_title). page_title=None means "copy raw, don't render as HTML."
+
+_CITED_SUPPORT_ALLOWLIST: List[Tuple[str, str, Optional[str]]] = [
+    (
+        "docs/specimens/DISAGREEMENTS.md",
+        "/specimens/DISAGREEMENTS.html",
+        "Specimen disagreements + findings log",
+    ),
+    (
+        "docs/analysis/consumer-conversion-census.md",
+        "/analysis/consumer-conversion-census.html",
+        "Consumer-conversion census",
+    ),
+    (
+        "docs/analysis/labeler-operator-maturity-001.md",
+        "/analysis/labeler-operator-maturity-001.html",
+        "Labeler operator-maturity analysis (LOM-001)",
+    ),
+    (
+        "docs/analysis/tools/operator_maturity_scan.py",
+        "/analysis/tools/operator_maturity_scan.py",
+        None,
+    ),
+]
+
+_LINK_REWRITE_MAP: Dict[str, str] = {
+    src: served_url for src, served_url, _ in _CITED_SUPPORT_ALLOWLIST
+}
+
+_MD_LINK_RE = re.compile(r"\]\(([^)\s]+)\)")
+
+
+def _resolve_repo_relative(src_path: str, href: str) -> Optional[str]:
+    """Resolve `href` as a relative link from a markdown file at
+    `src_path` (both repo-relative). Returns the canonical
+    'docs/...'-style path the link resolves to, or None if it leaves
+    the repo or is not a repo-relative reference."""
+    src_dir = os.path.dirname(src_path)
+    target = os.path.normpath(os.path.join(src_dir, href))
+    if target.startswith("..") or os.path.isabs(target):
+        return None
+    return target
+
+
+def _rewrite_cited_support_links(md_text: str, src_path: str) -> str:
+    """Rewrite source-tree relative links in `md_text` to served URLs
+    when the link target is in the cited-support allowlist. Other
+    links — external URLs, anchors, non-allowlisted relative paths —
+    pass through unchanged.
+
+    `src_path` is the markdown file's repo-relative path (used to
+    resolve relative links to canonical 'docs/...' targets)."""
+
+    def _repl(m: "re.Match[str]") -> str:
+        href = m.group(1)
+        # Skip external URLs, mailtos, in-page anchors, absolute URLs
+        if (
+            href.startswith(("http://", "https://", "mailto:", "#", "/"))
+            or "://" in href
+        ):
+            return m.group(0)
+        canonical = _resolve_repo_relative(src_path, href)
+        if canonical and canonical in _LINK_REWRITE_MAP:
+            return f"]({_LINK_REWRITE_MAP[canonical]})"
+        return m.group(0)
+
+    return _MD_LINK_RE.sub(_repl, md_text)
 
 
 # ---------------------------------------------------------------------
@@ -93,6 +174,9 @@ def _render_frozen_topic_body(topic: str) -> str:
     src = os.path.join(_FROZEN_FINDINGS_SRC, topic, "index.md")
     with open(src) as f:
         md_text = f.read()
+    md_text = _rewrite_cited_support_links(
+        md_text, f"docs/findings/{topic}/index.md"
+    )
     body = _render_markdown_to_html(md_text)
     banner = """
 <aside class="findings-frozen-banner" style="border:1px solid var(--border,#ccc);border-left:4px solid var(--accent,#2980b9);padding:0.8rem 1rem;margin:0 0 1rem 0;background:var(--bg-muted,#f6f7f9);">
@@ -180,6 +264,62 @@ def install_frozen_findings(out_dir: str, layout_fn) -> int:
         f.write(index_html)
 
     return len(topics)
+
+
+def install_cited_support(out_dir: str, layout_fn) -> List[str]:
+    """Install allowlisted cited-support documents into the served
+    surface so cross-references inside frozen findings pages resolve.
+
+    Returns the list of served URLs that were written; report.py adds
+    these to sitemap.xml.
+
+    Allowlist-only: entries land here when a public findings page
+    cites the document. This is not a general docs-publication path.
+    See `_CITED_SUPPORT_ALLOWLIST` above.
+    """
+    written: List[str] = []
+    for src_path, served_url, title in _CITED_SUPPORT_ALLOWLIST:
+        full_src = os.path.join(_REPO_ROOT, src_path)
+        if not os.path.exists(full_src):
+            print(
+                f"warn: cited-support source missing: {src_path}",
+                file=sys.stderr,
+            )
+            continue
+        full_out = os.path.join(out_dir, served_url.lstrip("/"))
+        os.makedirs(os.path.dirname(full_out), exist_ok=True)
+
+        if title is None:
+            shutil.copy2(full_src, full_out)
+        else:
+            with open(full_src) as f:
+                md_text = f.read()
+            md_text = _rewrite_cited_support_links(md_text, src_path)
+            body = _render_markdown_to_html(md_text)
+            banner = (
+                '<aside class="cited-support-banner" '
+                'style="border:1px solid var(--border,#ccc);'
+                'border-left:4px solid var(--accent,#2980b9);'
+                'padding:0.8rem 1rem;margin:0 0 1rem 0;'
+                'background:var(--bg-muted,#f6f7f9);">'
+                '<p style="margin:0;"><strong>Cited support.</strong> '
+                "This document is published because it is cited by a "
+                '<a href="/findings/">Labelwatch findings page</a>. '
+                f"Source tree: <code>{escape(src_path)}</code>.</p>"
+                "</aside>"
+            )
+            page_html = layout_fn(
+                title,
+                banner + body,
+                canonical=served_url,
+                description=(
+                    f"Labelwatch cited-support document: {title}."
+                ),
+            )
+            with open(full_out, "w") as f:
+                f.write(page_html)
+        written.append(served_url)
+    return written
 
 
 # ---------------------------------------------------------------------
