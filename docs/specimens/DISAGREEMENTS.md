@@ -703,6 +703,83 @@ F-007 + F-008 are the population-level claims it supports.
 
 ---
 
+## F-009 — Discoverable / referenced / popular / useful ≠ enforcing / default / adopted
+
+**Recorded:** 2026-06-09, alongside specimen-004.
+
+**Observation.** A labeler being **discoverable** (in the registry),
+**referenced** (in Labelwatch's calibration set), **popular** (high
+emission volume), or **useful** (declaring rich label vocabulary in
+its service record) does NOT make its labels **platform-enforcing**,
+**client-default**, or **globally adopted**. Each pair is orthogonal.
+Consumer adoption must be separately witnessed.
+
+**Why this is a separate finding from F-001.** F-001 records the
+specific claim that *reference-labeler status* does not imply
+default-client conversion. F-009 generalizes across four
+soft-signal → consumer-adoption pairs:
+
+- discoverability (registry presence) → enforcement
+- reference designation → default
+- emission volume → global adoption
+- declared scope (service record vocabulary) → adopted policy
+
+The asymmetry is structural. Each soft signal is a property *of the
+labeler* or *of Labelwatch's apparatus*. Each adoption claim is a
+property *of the consumer*. The producer/consumer distinction is
+load-bearing; collapsing it in any direction is the laundering shape
+the no-laundering theorem refuses.
+
+**Where the doctrine is mechanically enforced.**
+
+- The classifier's `_classify_consumer_scope` (`classifier.py` line
+  ~140) maps `LabelerEmitterDocumentation.consumer_scope =
+  emitter_declared` → `consumer_scope = emitter_declared`, with the
+  invariant in the docstring at line 131: *"emitter_declared MUST
+  NEVER be promoted to global_platform."*
+- The gap classifier does not read `LabelObservation.is_reference_labeler`,
+  `events_30d`, or `service_record_revisions` when computing
+  `ConversionGap`.
+- **Specimen 004** is the regression test for this property:
+  identical evidence shape with `is_reference_labeler=true` and
+  `is_reference_labeler=false` must produce the same gap. If a
+  future classifier change reads any of the soft signals to promote
+  the gap or the consumer_scope, `verify.py` fails.
+
+**What this finding does NOT do.**
+
+- Claim that reference labelers, popular labelers, or
+  service-record-declaring labelers produce no constraint anywhere.
+  Adoption is a free variable; specimen-003 documents the named-opt-in
+  case (driftwatch adopting `skywatch.blue / fringe-media`).
+- Diminish the labelers it names. Volume, declared scope, and
+  reference status are real properties that Labelwatch measures.
+  F-009 is only about what those properties **do not entail** —
+  specifically, they do not entail consumer adoption.
+
+**Cross-references.**
+
+- **F-001** — Reference-labeler status ≠ default conversion (the
+  specific case F-009 generalizes).
+- **F-004** — Third-party labelers DO publish
+  `labelValueDefinitions`; opt-in consumers honor them. The flip
+  side: emitter declaration is necessary-but-not-sufficient for
+  consumer adoption.
+- **F-007 / F-008** — The cohort-scale shape of the discoverability
+  ≠ enforcement axis (high-volume emitters without declared
+  consumer semantics; abandoned labelers with rich declared
+  scope).
+- **Specimen 003** — Positive case: `skywatch.blue / fringe-media`
+  IS converted by a named opt-in consumer (`driftwatch`), with
+  policy artifact and receipt.
+- **Specimen 004** — Negative case: same emitter, different label
+  (`fundraising-link`), no default-client conversion. The
+  regression apparatus.
+
+**Status:** recorded; mechanically guarded via specimen-004.
+
+---
+
 ## D-002 — Operator-maturity taxonomy is heuristic, not normative
 
 **Recorded:** 2026-06-08 as a discipline note (no actual

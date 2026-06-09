@@ -1,0 +1,102 @@
+{
+  "specimen_id": "004",
+  "title": "skywatch.blue / fundraising-link / one post — reference-labeler non-conversion",
+  "summary": "Reference-labeler emission with emitter-declared rule; no consumer policy exists for it in the default Bluesky client's pipeline. is_reference_labeler=true must NOT promote to default conversion.",
+  "markdown_companion": "specimen-004-skywatch-blue-fundraising-link.md",
+  "schema_version": 1,
+  "schema_kind": "evidence",
+  "provenance": {
+    "source": "labelwatch label_events stream (live row pulled from prod 2026-06-09); skywatch.blue service record from discovery_events (latest revision at pull time)",
+    "captured_by": "labelwatch-claude",
+    "captured_at": "2026-06-09T12:00:00Z",
+    "session_anchor": "operator-classification arc / reference-labeler non-conversion"
+  },
+
+  "LabelObservation": {
+    "labeler_did": "did:plc:e4elbtctnfqocyfcml6h2lf7",
+    "labeler_handle": "skywatch.blue",
+    "labeler_class": "third_party",
+    "is_reference_labeler": true,
+    "target_uri": "at://did:plc:s6ktgg7ckbyz6bs66dlag6dj/app.bsky.feed.post/3mntabl3vcs2i",
+    "target_kind": "post_record",
+    "label_value": "fundraising-link",
+    "neg": 0,
+    "ts": "2026-06-09T03:25:22.950309Z",
+    "ingest_witness": "labelwatch label_events stream",
+    "labelwatch_authority_effect_classification": "unknown"
+  },
+
+  "PolicyDocumentation": {
+    "consumer": {
+      "consumer_id": "bsky.app-default-client",
+      "description": "Bluesky official appview + client (web / iOS / Android) running default moderation pipeline; skywatch.blue NOT subscribed as a labeler service",
+      "render_context": {
+        "client_family": "bsky.app",
+        "viewer_state": "any",
+        "skywatch_blue_labeler_service_subscribed": false,
+        "policy_pipeline_version_assumed": "client running @atproto/api at or near v0.19.17"
+      }
+    },
+    "policy_artifact_searched": {
+      "repo": "bluesky-social/atproto",
+      "package": "@atproto/api",
+      "package_version": "0.19.17",
+      "file_path": "packages/api/src/moderation/const/labels.ts",
+      "head_or_commit": "7b8c5d60a",
+      "search_result": "no_entry",
+      "search_evidence": "Per F-002 correction, the global LABELS map contains exactly 8 entries: !hide, !warn, !no-unauthenticated, porn, sexual, nudity, graphic-media, gore. No entry for 'fundraising-link'."
+    },
+    "status": "absent_for_consumer",
+    "consumer_scope": "unknown",
+    "execution_surface": null,
+    "execution_surface_source": "no documented policy for this label_value in the named consumer's pipeline; execution_surface is undefined for an absent policy",
+    "scoping_note": "This is the policy-documentation status FOR THE NAMED CONSUMER (bsky.app-default-client) under the stated render_context. The evidence is silent over other consumer configurations (e.g., a viewer who has explicitly subscribed to skywatch.blue as a labeler service, or a non-default consumer like driftwatch that opts in — see specimen-003). A separate specimen would be required to characterize each of those cases."
+  },
+
+  "LabelerEmitterDocumentation": {
+    "status": "documented_via_service_record",
+    "artifact_kind": "service_record",
+    "consumer_scope": "emitter_declared",
+    "scoping_note": "skywatch.blue publishes an app.bsky.labeler.service record declaring labelValueDefinitions for fundraising-link. consumer_scope='emitter_declared' means the LABELER has declared a rule; it does NOT mean the bsky.app-default-client consumer honors it. The default consumer does not subscribe to skywatch.blue unless the viewer opts in. F-001 and F-004 record this distinction; this specimen is the apparatus that enforces it under is_reference_labeler=true.",
+    "extracted_definition": {
+      "identifier": "fundraising-link",
+      "defaultSetting": "ignore",
+      "severity": "inform",
+      "blurs": "content",
+      "note": "Pulled from the most recent discovery_events record for skywatch.blue at fixture-author time. The full definition body (locales, descriptions) is available in labelwatch's discovery_events table; abbreviated here for fixture compactness."
+    },
+    "service_record_provenance": {
+      "labeler_did": "did:plc:e4elbtctnfqocyfcml6h2lf7",
+      "source_table": "labelwatch.db / discovery_events"
+    }
+  },
+
+  "PolicyWitness": {
+    "status": "not_applicable",
+    "reason": "No policy is documented for this label_value in this consumer's pipeline; there is no rule whose live application could be witnessed."
+  },
+
+  "RenderObservation": {
+    "status": "absent",
+    "reason": "Same architectural absence as 002: ATProto publishes no per-render receipts. Additionally for 004, no render action is expected under the named consumer's documented policy, so the absence is both architectural and consequential.",
+    "what_would_be_required_for_observation": [
+      "consumer-side per-render receipts in a published stream (does not currently exist in atproto)",
+      "or external probes"
+    ]
+  },
+
+  "HostingObservation": {
+    "status": "not_applicable",
+    "reason": "No documented policy for this label_value in the named consumer's pipeline; hosting observation is not framed for an absent policy."
+  },
+
+  "StateBasis": {
+    "source_kind": "live_pull",
+    "captured_at": "2026-06-09T12:00:00Z",
+    "artifact_identity": "live: labelwatch.db label_events row + most recent discovery_events for did:plc:e4elbtctnfqocyfcml6h2lf7",
+    "artifact_hash": null,
+    "freshness_horizon": "captured_at point-in-time",
+    "derivation_source": "live SQL pull from labelwatch.db on 2026-06-09; pinned policy artifact @atproto/api v0.19.17 HEAD 7b8c5d60a matches specimens 001/002 for cross-snapshot comparability",
+    "note": "Live-pulled label observation; emitter declaration captured at the same snapshot. freshness_horizon is the captured_at timestamp. The skywatch service record may have been re-published since; the pinned policy artifact may have moved upstream. The point of the specimen does not depend on either being current — it depends on the structural property that no version of @atproto/api LABELS contains fundraising-link, and skywatch's reference status is a Labelwatch designation, not a consumer-adoption claim."
+  }
+}
