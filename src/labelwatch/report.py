@@ -2992,13 +2992,26 @@ cell intensity scales with edge count.</p>
     except Exception as exc:
         log.warning("Authority-effect inventory failed: %s", exc)
 
-    # --- Unknown decomposition (classifier debt ledger) ---
-    # The unknown bucket is publicly framed as instrumentation debt; this
-    # section shows which vals and labelers drive it so the
-    # AUTHORITY_EFFECT_MAP gets a concrete top-N list to work through.
+    # --- Unprofiled decomposition (classifier debt ledger) ---
+    # Renamed from "Unknown" per the doctrine that emitter descriptions
+    # are testimony, not opacity: the bucket measures registry coverage
+    # debt, not semantic mystery. Section now runs the tier-2 (emitter-
+    # described) + tier-3 (pattern) classifiers against each top-N value
+    # and splits the ledger into three visible sub-tables.
+    #
+    # Doctrine line baked in below: Emitter descriptions are TESTIMONY,
+    # not truth — the labeler's own framing is preserved as provenance,
+    # not adopted as our editorial.
     unknown_debt_section = ""
     try:
         from .authority_inventory import unknown_decomposition
+        from .emitter_classifier import (
+            enrich_top_vals_with_tier_classification,
+            tier_histogram,
+            SEMANTIC_SOURCE_EMITTER_DESCRIBED,
+            SEMANTIC_SOURCE_PATTERN_PROFILE,
+            SEMANTIC_SOURCE_RAW_FALLBACK,
+        )
         ud = unknown_decomposition(conn, days=7)
         ud_total = ud["total_unknown_events"]
         if ud_total > 0:
@@ -3009,18 +3022,79 @@ cell intensity scales with edge count.</p>
             top10_val_share = round(100.0 * ud["concentration"]["top10_val_share"], 1)
             top5_lab_share = round(100.0 * ud["concentration"]["top5_labeler_share"], 1)
 
-            # Top vals table
-            val_rows_html = "".join(
-                f'<tr><td><code>{escape(v.get("value", ""))}</code></td>'
-                f'<td><code>{escape(v.get("family", ""))}</code></td>'
-                f'<td>{int(v.get("event_count", 0)):,}</td>'
-                f'<td>{int(v.get("labeler_count", 0))}</td></tr>'
-                for v in ud["top_vals"][:15]
+            # Tier-2 / tier-3 enrichment over the top values.
+            enriched = enrich_top_vals_with_tier_classification(
+                conn, ud["top_vals"], per_val_limit=30,
             )
-            val_table = (
-                '<table><thead><tr><th>label value</th><th>family</th>'
-                '<th>events (7d)</th><th>labelers emitting</th></tr></thead>'
-                f'<tbody>{val_rows_html}</tbody></table>'
+            tier_hist = tier_histogram(enriched)
+
+            def _val_row(v):
+                tc = v.get("tier_classification", {}) or {}
+                effect = tc.get("authority_effect", "ambiguous")
+                scope = tc.get("target_scope", "ambiguous")
+                tone = tc.get("tone", "")
+                caveat = tc.get("scope_caveat", "") or ""
+                ev = tc.get("evidence", {}) or {}
+                excerpt = (ev.get("description_excerpt") or "").strip()
+                # Truncate excerpt for table layout; full text remains in
+                # the underlying record for audit.
+                if excerpt and len(excerpt) > 200:
+                    excerpt = excerpt[:200] + "…"
+                caveat_cell = (
+                    f'<div class="small" style="color:var(--fg-muted);">{escape(caveat)}</div>'
+                    if caveat else ""
+                )
+                excerpt_cell = (
+                    f'<div class="small" style="color:var(--fg-muted);font-style:italic;">"{escape(excerpt)}"</div>'
+                    if excerpt else ""
+                )
+                pattern_note = (ev.get("pattern_note") or "")
+                pattern_cell = (
+                    f'<div class="small" style="color:var(--fg-muted);">{escape(pattern_note)}</div>'
+                    if pattern_note else ""
+                )
+                return (
+                    f'<tr>'
+                    f'<td><code>{escape(v.get("value", ""))}</code></td>'
+                    f'<td>{int(v.get("event_count", 0)):,}</td>'
+                    f'<td>{int(v.get("labeler_count", 0))}</td>'
+                    f'<td>{escape(effect)}</td>'
+                    f'<td>{escape(scope)}</td>'
+                    f'<td>{escape(tone)}{caveat_cell}{excerpt_cell}{pattern_cell}</td>'
+                    f'</tr>'
+                )
+
+            def _val_table_for(tier_name, title):
+                rows = [v for v in enriched
+                        if (v.get("tier_classification") or {}).get("semantic_source") == tier_name]
+                if not rows:
+                    return f'<p class="small" style="margin:0.4rem 0;color:var(--fg-muted);">{escape(title)}: 0</p>'
+                body = "".join(_val_row(v) for v in rows[:15])
+                return (
+                    f'<h3 style="margin-top:1rem;font-size:1.0rem;">{escape(title)} '
+                    f'({len(rows)} of {len(enriched)} top entries)</h3>'
+                    '<table><thead><tr>'
+                    '<th>label value</th>'
+                    '<th>events (7d)</th>'
+                    '<th>labelers</th>'
+                    '<th>authority_effect</th>'
+                    '<th>target_scope</th>'
+                    '<th>tone / provenance excerpt</th>'
+                    '</tr></thead>'
+                    f'<tbody>{body}</tbody></table>'
+                )
+
+            emitter_table = _val_table_for(
+                SEMANTIC_SOURCE_EMITTER_DESCRIBED,
+                "Emitter-described (Tier 2 — labeler's own labelValueDefinition)",
+            )
+            pattern_table = _val_table_for(
+                SEMANTIC_SOURCE_PATTERN_PROFILE,
+                "Pattern-classified candidate (Tier 3 — regex over label string)",
+            )
+            raw_table = _val_table_for(
+                SEMANTIC_SOURCE_RAW_FALLBACK,
+                "Raw fallback (no profile, no emitter description, no pattern match)",
             )
 
             # Top labelers table
@@ -3033,7 +3107,7 @@ cell intensity scales with edge count.</p>
             )
             lab_table = (
                 '<table><thead><tr><th>labeler</th><th>class</th>'
-                '<th>unknown volume (7d)</th><th>share of own 7d output</th></tr></thead>'
+                '<th>unprofiled volume (7d)</th><th>share of own 7d output</th></tr></thead>'
                 f'<tbody>{lab_rows_html}</tbody></table>'
             )
 
@@ -3046,27 +3120,43 @@ cell intensity scales with edge count.</p>
             else:
                 class_phrase = "no breakdown available"
 
+            # Tier-shift headline numbers
+            emitter_n = tier_hist.get(SEMANTIC_SOURCE_EMITTER_DESCRIBED, 0)
+            pattern_n = tier_hist.get(SEMANTIC_SOURCE_PATTERN_PROFILE, 0)
+            raw_n = tier_hist.get(SEMANTIC_SOURCE_RAW_FALLBACK, 0)
+            tier_headline = (
+                f'Of the top {len(enriched)} unprofiled values: '
+                f'<strong>{emitter_n}</strong> have a usable emitter '
+                f'description (Tier 2), <strong>{pattern_n}</strong> match a '
+                f'pattern profile (Tier 3), <strong>{raw_n}</strong> remain '
+                f'raw fallback.'
+            )
+
             unknown_debt_section = f"""
-<div class="boundary-section" id="unknown-debt" style="margin-top:1.5rem;">
-<h2>Unknown &mdash; classifier debt ledger</h2>
+<div class="boundary-section" id="unprofiled-debt" style="margin-top:1.5rem;">
+<h2>Unprofiled &mdash; classifier debt ledger</h2>
 <p class="labeler-context" style="font-size:1.0rem;">
 <strong>{ud_total:,} events</strong> ({ud_share_of_network}% of 7d network volume) sit in the
-authority-effect <code>unknown</code> bucket. Top 10 label values account for
-<strong>{top10_val_share}%</strong> of unknown volume; top 5 labelers for
-<strong>{top5_lab_share}%</strong>. Below: which values and which labelers
-drive the bucket. Each top-volume entry is a candidate AUTHORITY_EFFECT_MAP
-addition that would pull volume out of unknown into a proper category.</p>
-<p class="use-for"><strong>Use this to:</strong> prioritize classifier coverage work. <strong>Not for:</strong> inferring intent or misbehavior — unknown means we have not classified the label, not that the labeler is doing something wrong.</p>
-<h3 style="margin-top:1rem;font-size:1.0rem;">Top unknown label values (7d)</h3>
-{val_table}
-<h3 style="margin-top:1rem;font-size:1.0rem;">Top labelers by unknown volume (7d)</h3>
+authority-effect <code>unprofiled</code> bucket. Top 10 label values account for
+<strong>{top10_val_share}%</strong> of unprofiled volume; top 5 labelers for
+<strong>{top5_lab_share}%</strong>. Below: the bucket split by what evidence
+the registry can recover from sources already in our database.</p>
+<p class="labeler-context" style="font-size:1.0rem;">{tier_headline}</p>
+<p class="use-for"><strong>Use this to:</strong> prioritize classifier coverage work and audit emitter framing. <strong>Not for:</strong> inferring intent or misbehavior &mdash; unprofiled means our registry has not added a profile for the label, not that the labeler is doing something wrong.</p>
+<aside style="margin-top:0.6rem;padding:0.6rem 0.9rem;background:var(--bg-muted,#f6f7f9);border-left:3px solid var(--accent,#2980b9);">
+  <p style="margin:0;font-size:0.95rem;"><strong>Emitter descriptions are testimony, not truth.</strong> Where a labeler's own <code>labelValueDefinition</code> drives the classification, the excerpt below is quoted from the labeler &mdash; cited, not adopted. We do not editorialize the emitter's editorializing.</p>
+</aside>
+{emitter_table}
+{pattern_table}
+{raw_table}
+<h3 style="margin-top:1.2rem;font-size:1.0rem;">Top labelers by unprofiled volume (7d)</h3>
 {lab_table}
 <p class="small" style="margin-top:0.5rem;">By labeler class: {class_phrase}.</p>
-<p class="small" style="margin-top:0.4rem;color:var(--fg-muted);">Unknown is classifier/coverage debt, not a clean authority posture. High-volume unknown values are candidates for review and possible AUTHORITY_EFFECT_MAP additions. As entries get classified, the bucket shrinks.</p>
+<p class="small" style="margin-top:0.4rem;color:var(--fg-muted);">Unprofiled = not yet assigned to a local authority-effect profile. Some values are self-describing or emitter-described; the bucket measures classifier coverage debt, not semantic opacity.</p>
 </div>
 """
     except Exception as exc:
-        log.warning("Unknown decomposition section failed: %s", exc)
+        log.warning("Unprofiled decomposition section failed: %s", exc)
 
     # --- Label duration / claim persistence (add-cohort lifetime) ---
     # DURATION view (new fourth graph-semantics class). v1 contract: labels

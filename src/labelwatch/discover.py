@@ -180,11 +180,41 @@ def _probe_with_host_limit(did: str, endpoint: str, host_slots: Dict[str, int],
         host_slots[host] = max(0, host_slots.get(host, 0) - 1)
 
 
+# Two distinct axes for labeler classification. Conflating them was the
+# T-003 bug: reference status leaked into `labeler_class` and inflated
+# the "official platform" share in authority charts. Keep them split.
+#
+#   labeler_class       = institutional/protocol authority
+#                         (official_platform | third_party)
+#   is_reference        = calibration role for Labelwatch's own analytics
+#                         (1 = use as benchmark; 0 = ordinary observed labeler)
+#
+# moderation.bsky.app is the only labeler that's BOTH official platform
+# AND a reference. Other reference DIDs (skywatch.blue, label.haus) are
+# third_party that we happen to use as calibration anchors.
+_OFFICIAL_PLATFORM_DIDS = frozenset({
+    "did:plc:ar7c4by46qjdydhdevvrndac",  # moderation.bsky.app
+})
+
+
 def _classify_labeler(did: str, config: Config) -> tuple[str, int]:
-    """Return (labeler_class, is_reference) for a DID."""
-    if did in config.reference_dids:
-        return "official_platform", 1
-    return "third_party", 0
+    """Return (labeler_class, is_reference) for a DID.
+
+    Two independent axes — do NOT collapse them:
+      labeler_class : 'official_platform' iff did is in
+                      _OFFICIAL_PLATFORM_DIDS (currently only mod.bsky)
+      is_reference  : 1 iff did is in config.reference_dids (the
+                      Labelwatch-curated calibration set)
+
+    A labeler can be either, neither, or both. The conflated prior
+    version (T-003) treated every reference labeler as official_platform,
+    inflating the 'official platform' share in authority charts. Fixed.
+    """
+    labeler_class = (
+        "official_platform" if did in _OFFICIAL_PLATFORM_DIDS else "third_party"
+    )
+    is_reference = 1 if did in config.reference_dids else 0
+    return labeler_class, is_reference
 
 
 def run_discovery(conn, config: Config, did_workers: int = 10,
@@ -307,29 +337,43 @@ def run_discovery(conn, config: Config, did_workers: int = 10,
         )
     conn.commit()
 
-    # Mark reference DIDs even if not discovered via enumeration
+    # Mark reference DIDs even if not discovered via enumeration. T-003
+    # fix: is_reference and labeler_class are independent axes; setting
+    # is_reference does NOT force labeler_class='official_platform'.
+    # Only DIDs in _OFFICIAL_PLATFORM_DIDS get the official_platform class.
     for ref_did in config.reference_dids:
+        official_cls = (
+            "official_platform" if ref_did in _OFFICIAL_PLATFORM_DIDS
+            else "third_party"
+        )
         conn.execute(
             """
-            UPDATE labelers SET is_reference=1, labeler_class='official_platform'
+            UPDATE labelers SET is_reference=1, labeler_class=?
             WHERE labeler_did=?
             """,
-            (ref_did,),
+            (official_cls, ref_did),
         )
 
     # Demote retired references. A reference labeler is a calibration witness,
     # not a memorial plaque — if its witness value has collapsed, the editorial
-    # demotion happens here, not by waiting for the next upsert to overwrite.
-    # labeler_class drops back to 'third_party' so the labeler is still tracked
-    # but no longer carries operational privilege.
+    # demotion happens here. is_reference drops to 0; labeler_class only flips
+    # back to 'third_party' if it was set to 'official_platform' AND the DID is
+    # NOT in _OFFICIAL_PLATFORM_DIDS (mod.bsky stays official_platform even if
+    # ever marked retired — institutional authority isn't a calibration choice).
     for retired_did in getattr(config, "retired_reference_dids", []):
-        conn.execute(
-            """
-            UPDATE labelers SET is_reference=0, labeler_class='third_party'
-            WHERE labeler_did=? AND (is_reference=1 OR labeler_class='official_platform')
-            """,
-            (retired_did,),
-        )
+        if retired_did in _OFFICIAL_PLATFORM_DIDS:
+            conn.execute(
+                "UPDATE labelers SET is_reference=0 WHERE labeler_did=?",
+                (retired_did,),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE labelers SET is_reference=0, labeler_class='third_party'
+                WHERE labeler_did=?
+                """,
+                (retired_did,),
+            )
     conn.commit()
 
     db.set_meta(conn, "last_discovery_ts", format_ts(now_utc()))

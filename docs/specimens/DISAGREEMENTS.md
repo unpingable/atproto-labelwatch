@@ -878,6 +878,176 @@ Receipts captured below the deploy.
 
 ---
 
+## T-003 — `labeler_class` conflated calibration_role with platform_authority_class
+
+**Recorded:** 2026-06-08 from operator review of the live
+`/operator-maturity/` + main `/` pages.
+
+**Item type:** technical hygiene. Doctrinal mistake hidden in code:
+two distinct axes collapsed into one column.
+
+**Observation.** Labelwatch's main page reported `official_platform: 3`
+in dial counts and classed `label.haus` + `skywatch.blue` as
+`official_platform` in the unprofiled-volume tables. But those two
+labelers are NOT atproto-official — they are calibration anchors that
+Labelwatch uses as references. Only `moderation.bsky.app` has
+institutional/protocol authority of the "official platform" kind.
+
+**Root cause.** `src/labelwatch/discover.py:_classify_labeler()`:
+
+```python
+if did in config.reference_dids:
+    return "official_platform", 1   # ← BUG: collapses both axes
+return "third_party", 0
+```
+
+Every DID in the curated `reference_dids` set was forced into
+`labeler_class='official_platform'`, regardless of whether it actually
+had platform-level authority. The downstream effect: authority-effect
+charts attributed reference-labeler volume to "official platform"
+share, making the share look bigger than reality.
+
+**The two-axis distinction (the operator's framing, made canonical):**
+
+```
+platform_authority_class:                calibration_role:
+  official_platform                        reference_labeler
+  third_party                              ordinary_labeler
+```
+
+- `moderation.bsky.app`: official_platform + reference_labeler
+- `label.haus`: third_party + reference_labeler
+- `skywatch.blue`: third_party + reference_labeler
+- everything else: third_party + ordinary
+
+**Doctrine:** **reference is epistemic utility; official is
+institutional authority.** Mixing them makes the chart sound smarter
+while being wrong.
+
+**Patch applied (this commit):**
+
+1. Added `_OFFICIAL_PLATFORM_DIDS = frozenset({mod.bsky DID})` in
+   `discover.py` — the only place "official platform" gets minted.
+2. Rewrote `_classify_labeler()` to compute the two axes
+   independently. is_reference comes from `config.reference_dids`;
+   labeler_class comes from `_OFFICIAL_PLATFORM_DIDS`.
+3. Updated the two bulk-UPDATE statements that previously coupled
+   the axes during the "mark/demote reference" passes.
+4. Data-fix SQL at `scripts/data_fix_t003_labeler_class.sql` —
+   one-shot UPDATE for existing rows where `labeler_class
+   ='official_platform' AND labeler_did != mod.bsky`. Idempotent.
+
+**Acceptance criteria (per operator):**
+
+- official_platform count = 1
+- reference_labelers count = 3 (mod.bsky, label.haus, skywatch.blue)
+- label.haus class = third_party, is_reference = 1
+- skywatch.blue class = third_party, is_reference = 1
+- authority-effect-by-labeler-class recomputes with no reference leakage
+
+**Storage note.** Underlying schema unchanged — `is_reference` column
+already existed and remains the storage for the calibration_role axis.
+The phrase "calibration_role" is the doctrinal/UI vocab; the column
+name stays as-is to avoid migration churn. The fix is purely in the
+classification logic + one-shot data correction.
+
+**Status:** patched in code; data fix run on deploy.
+
+---
+
+## T-004 — Registry was doing F-007 to itself; tier-2 emitter ingestion patched
+
+**Recorded:** 2026-06-08 from the live `/`-page unprofiled-debt
+section showing 56.8% of label volume as `unknown` despite the top
+entries being either self-describing strings (`*-screenshot`,
+`substack`, `nytimes`) or emitter-described in service records we
+already have in `discovery_events`.
+
+**Item type:** technical hygiene. The registry was treating
+unincorporated-but-available public evidence as "unknown" because the
+local `AUTHORITY_EFFECT_MAP` table hadn't been updated. The same
+F-007 shape (emission without declaration) applied to our own
+publication pipeline: **discovery without ingestion.**
+
+**Patch applied (this commit):**
+
+New module `src/labelwatch/emitter_classifier.py` — a tier-2/3/4
+cascade that runs AFTER `label_family.classify_authority_effect`
+returns "unknown":
+
+  - **Tier 2 — `classify_via_emitter(label_value, emitter_def)`**:
+    reads the labeler's `labelValueDefinition` (already ingested into
+    `discovery_events` post Bundle F) and derives target_scope +
+    authority_effect + tone + scope_caveat from the
+    severity/blurs/defaultSetting metadata plus the locale
+    name/description text. **Preserves the description excerpt as
+    provenance** so any classification can be audited against the
+    labeler's own words.
+
+  - **Tier 3 — `classify_via_pattern(label_value)`**: conservative
+    regex over the label string (`*-screenshot`, well-known publisher
+    tokens, `*-link`, `made-over-*-posts-*`, `store-tz2at-*`,
+    `*replyref*`). Coarse; only fires when no emitter description
+    exists.
+
+  - **Tier 4 — `classify_raw_fallback`**: ambiguous, no profile, no
+    description, no pattern.
+
+Schema additions (in classification output, NOT in DB):
+
+  - `semantic_source`: exact_profile | emitter_described |
+    pattern_profile | raw_fallback
+  - `classification_basis`: emitter_locale_description |
+    emitter_label_metadata | local_pattern_rule |
+    registry_manual_profile
+  - `target_scope`: post | account | profile | mixed | ambiguous |
+    external_entity
+  - `tone`: editorial | neutral | unknown
+  - `scope_caveat`: free-text flag for mixed/explicitly-bounded scope
+  - `evidence.description_excerpt`: the verbatim emitter text that
+    drove the classification
+
+**Discipline:** **Emitter descriptions are TESTIMONY, not truth.** The
+classifier reads what the labeler said; the report cites it (with the
+quoted excerpt rendered next to the classification). Same shape as
+Bundle G's `consumer_scope=emitter_declared` carrying
+`non_global_provenance` — provenance preserved, framing not adopted.
+
+**Wired into report.py:** the "Unknown — classifier debt ledger"
+section is renamed "Unprofiled — classifier debt ledger" and the
+top-vals table now splits into three sub-tables:
+  - Emitter-described (Tier 2 — labeler's own labelValueDefinition)
+  - Pattern-classified candidate (Tier 3 — regex over label string)
+  - Raw fallback (no profile, no emitter description, no pattern)
+
+Each emitter-described row shows the quoted description excerpt as
+provenance. A doctrine callout above the tables states the
+testimony-not-truth principle.
+
+**Acceptance verified (synthetic fixtures from skywatch.blue's
+actual service-record descriptions):**
+
+  - `fundraising-link` → emitter_described / post / advisory /
+    neutral / "emitter explicitly says never applied to profiles"
+  - `fringe-media` → emitter_described / mixed / reputational /
+    editorial / "description discusses both post-shape and
+    account/profile-shape subjects; scope creeps between layers"
+  - `twitter-screenshot` → pattern_profile / post / descriptive
+  - `made-over-thirty-posts-yesterday` → pattern_profile / account /
+    advisory
+  - `store-tz2at-wallets` → pattern_profile / external_entity /
+    descriptive
+
+The pair (fundraising-link / fringe-media) is the operator's
+canonical fixture for the discipline: same emitter, different
+self-description, different classification, BOTH carrying the
+labeler's own words as provenance.
+
+**Status:** patched in code; deploy this commit + restart labelwatch
++ wait for next report run to see the tier split on the live page.
+
+---
+
 ## D-001 — `!takedown` is render-layer per LABELS but hosting-layer in practice
 
 **Packet:** `derived/derived-39516736-did-plc-ar7c4by46qjdydhdevvrndac-takedown.evidence.json`
