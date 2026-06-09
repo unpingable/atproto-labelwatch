@@ -794,6 +794,90 @@ package code (not specimens-track scope). Pick up when the
 
 ---
 
+## T-002 — `docs/findings/` was not on the served Labelwatch surface
+
+**Recorded:** 2026-06-08, immediately after pushing the operator-
+maturity findings page (commit `078ff80`).
+
+**Item type:** technical hygiene. Meta-instance of F-007's
+publish-without-declare shape, applied to our own publication
+pipeline:
+
+  > "artifact exists in repo" silently converted into "artifact
+  > exists on served public surface."
+
+The push message could have read as "this is live." It wasn't.
+`docs/findings/operator-maturity/index.md` was committed and
+reproducible, but Labelwatch's live `report.py` publisher did not
+copy or render anything under `docs/findings/` into the output
+directory Caddy serves.
+
+**Fix shape (the user picked option 1 — report.py-driven):**
+
+Two published surfaces, intentionally separate URLs, both written
+by `report.py`'s `generate_report()` each run:
+
+  - `/findings/<topic>/` — **frozen** historical findings,
+    rendered from `docs/findings/<topic>/index.md` with all
+    `artifacts/` and `regression/` subdirectories copied verbatim.
+    Reproducible from the repo; pinned receipts; admissible
+    historical claim.
+  - `/operator-maturity/` — **live** operational scan, regenerated
+    from the current DB each run. Current measurements with
+    provenance + caveat banner. Not a historical claim.
+
+Both pages cross-link explicitly. Frozen page points at live; live
+page points at frozen. Neither silently overwrites the other.
+
+**Patch applied** (this commit):
+
+- `pyproject.toml`: added `markdown>=3` dependency.
+- New module `src/labelwatch/findings_pages.py`:
+  - `install_frozen_findings(out_dir, layout_fn)` — copies
+    `docs/findings/<topic>/` into `out_dir/findings/<topic>/`,
+    renders `index.md` → `index.html` wrapped in the standard
+    `_layout`, preserves `artifacts/` + `regression/` verbatim,
+    writes `/findings/index.html` listing all topics.
+  - `install_live_operator_maturity(out_dir, conn, layout_fn)` —
+    queries the live `labelers` + `discovery_events` tables (same
+    SQL shape as `docs/analysis/tools/operator_maturity_scan.py`),
+    classifies via the same heuristic, renders `/operator-maturity/
+    index.html` with provenance dl + the doctrine triad table
+    populated from current data + maturity histogram + top-20 table.
+- `report.py`: imports both functions and invokes them inside the
+  `generate_report()` Static-prose-pages section, wrapped in
+  `try/except` so a publication failure can't crash the main
+  report.
+- Homepage gets a `findings_callout` block — quiet pointer to the
+  findings index, the named frozen finding, and the live page.
+- Both rendered pages carry the discipline banner; the LIVE banner
+  explicitly says "current measurements, not historical claim" with
+  a link to the frozen one.
+
+**Refusal (the discipline this T-item enforces):**
+
+> Do not describe a findings page as "published" unless it is
+> reachable from the served Labelwatch surface (`curl -fsS
+> https://labelwatch.neutral.zone/findings/<topic>/` returns 200).
+
+**Verification** (post-deploy):
+
+```bash
+curl -fsS https://labelwatch.neutral.zone/findings/ \
+  >/dev/null && echo OK
+curl -fsS https://labelwatch.neutral.zone/findings/operator-maturity/ \
+  >/dev/null && echo OK
+curl -fsS https://labelwatch.neutral.zone/operator-maturity/ \
+  >/dev/null && echo OK
+```
+
+Receipts captured below the deploy.
+
+**Status:** patched in code; reachability verified post-deploy
+(see below or follow-up commit).
+
+---
+
 ## D-001 — `!takedown` is render-layer per LABELS but hosting-layer in practice
 
 **Packet:** `derived/derived-39516736-did-plc-ar7c4by46qjdydhdevvrndac-takedown.evidence.json`

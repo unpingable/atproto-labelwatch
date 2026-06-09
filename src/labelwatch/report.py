@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import time
 import uuid
 from importlib import metadata
@@ -3365,6 +3366,27 @@ events per day, not active inventory.</p>
         )
         boundary_finding = boundary_section
 
+    # --- Findings callout (T-002) ---
+    # Quiet pointer to /findings/ + /operator-maturity/ so the
+    # published findings page and the live operational scan are
+    # discoverable from the homepage without dominating the fold.
+    findings_callout = """
+<section id="findings-callout" style="margin-top:2rem;border:1px solid var(--border,#ccc);border-left:4px solid var(--accent,#2980b9);padding:0.8rem 1rem;background:var(--bg-muted,#f6f7f9);">
+  <p style="margin:0 0 0.4rem 0;font-family:'Gill Sans','Trebuchet MS',sans-serif;font-weight:bold;">Labelwatch findings</p>
+  <p style="margin:0 0 0.3rem 0;">
+    <a href="/findings/">Frozen findings index</a>
+    &middot;
+    <a href="/findings/operator-maturity/">Label emission is not moderation infrastructure</a>
+    <span class="small">(2026-06-08 snapshot, pinned receipts + regression)</span>
+  </p>
+  <p style="margin:0;" class="small">
+    Live current scan:
+    <a href="/operator-maturity/">/operator-maturity/</a>
+    (regenerated each report run; current measurements, not historical claim)
+  </p>
+</section>
+"""
+
     # --- Ops detail: collapsed disclosure ---
     ops_detail = f"""
 <details style="margin-top:2rem;">
@@ -3451,6 +3473,7 @@ events per day, not active inventory.</p>
         # dominating the fold. The /v1/registry page is the proper
         # browse surface; this stays here for in-page filtering only.
         + f'<div id="registry">{labeler_section}</div>'
+        + findings_callout
         + ops_detail
         + TRIAGE_JS,
     )
@@ -3511,6 +3534,28 @@ events per day, not active inventory.</p>
     claims_dir = os.path.join(tmp_dir, "claims")
     os.makedirs(claims_dir, exist_ok=True)
     _write(os.path.join(claims_dir, "index.html"), render_claims_html())
+
+    # --- Findings pages (T-002) ---
+    # Both frozen historical findings and live operational scans get
+    # written into the served surface. The two are intentionally
+    # separate URLs and never overwrite each other:
+    #   /findings/<topic>/   ← frozen (from docs/findings/<topic>/)
+    #   /operator-maturity/  ← live (regenerated from current DB)
+    from .findings_pages import (
+        install_frozen_findings,
+        install_live_operator_maturity,
+    )
+    try:
+        frozen_count = install_frozen_findings(tmp_dir, _layout)
+    except Exception as e:
+        # Findings publication should never crash the main report. Log
+        # and continue.
+        print(f"warn: install_frozen_findings failed: {e}", file=sys.stderr)
+        frozen_count = 0
+    try:
+        install_live_operator_maturity(tmp_dir, conn, _layout)
+    except Exception as e:
+        print(f"warn: install_live_operator_maturity failed: {e}", file=sys.stderr)
 
     # --- Per-labeler pages ---
     anomaly_rules = {"label_rate_spike", "flip_flop", "target_concentration", "churn_index", "data_gap"}
