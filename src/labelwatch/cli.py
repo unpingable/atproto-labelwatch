@@ -844,6 +844,32 @@ def cmd_index_audit(args) -> None:
         raise SystemExit(2)
 
 
+def cmd_authority_effect_triage(args) -> None:
+    """Rank unprofiled (labeler, val) volume in the window; emit receipts.
+
+    Per-candidate inference receipts use receipt_kind
+    `labelwatch.authority_effect_inference.v0`; the index receipt is
+    `labelwatch.authority_effect_triage.v0`. See specs/gaps/.
+    """
+    from . import authority_triage
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    if not os.path.exists(cfg.db_path):
+        raise SystemExit(f"Database not found: {cfg.db_path}")
+    index = authority_triage.run_triage(
+        db_path=cfg.db_path,
+        window_days=args.window_days,
+        top_values=args.top_values,
+        top_labelers=args.top_labelers,
+        out_dir=args.out,
+    )
+    if args.json_output:
+        print(json.dumps(index, indent=2))
+    else:
+        print(authority_triage.render_text(index))
+
+
 def cmd_state_pilot(args) -> None:
     """Bounded pilot backfill into the sidecar label_state DB.
 
@@ -1033,6 +1059,40 @@ def main(argv: Optional[list] = None) -> None:
         help="Output receipt as JSON instead of human-readable text",
     )
     p_audit.set_defaults(func=cmd_index_audit)
+
+    p_aetri = sub.add_parser(
+        "authority-effect-triage",
+        help=(
+            "Rank unprofiled (labeler, value) volume in the window and "
+            "emit receipted candidate effect classifications. "
+            "Default window 7d, top 20 values."
+        ),
+    )
+    p_aetri.add_argument(
+        "--window", dest="window_days", type=int, default=7,
+        help="Window in days (default 7)",
+    )
+    p_aetri.add_argument(
+        "--top-values", type=int, default=20,
+        help="Number of top unprofiled values to triage (default 20)",
+    )
+    p_aetri.add_argument(
+        "--top-labelers", type=int, default=10,
+        help="Number of top unprofiled labelers to report (default 10)",
+    )
+    p_aetri.add_argument(
+        "--out",
+        help=(
+            "Output directory; writes per-candidate inference receipts to "
+            "<out>/authority_effect_inference/ and the index receipt to "
+            "<out>/authority_effect_triage/. Without --out, only stdout."
+        ),
+    )
+    p_aetri.add_argument(
+        "--json", action="store_true", dest="json_output",
+        help="Output index receipt as JSON instead of human-readable text",
+    )
+    p_aetri.set_defaults(func=cmd_authority_effect_triage)
 
     p_state = sub.add_parser(
         "state-pilot",
