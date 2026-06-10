@@ -45,6 +45,30 @@ def sqlite_safe_text(value: Any) -> Optional[str]:
 
 
 def get_git_commit() -> Optional[str]:
+    """Return the deployed commit SHA, or None if unknown.
+
+    Resolution order:
+      1. LABELWATCH_GIT_SHA env var — preferred for service invocations.
+      2. <package>/../../GIT_SHA file — written by the deploy script so
+         one-shot CLI runs (audit, report regen) get a SHA without env plumbing.
+      3. .git/HEAD relative to cwd — local development.
+    """
+    env_sha = os.environ.get("LABELWATCH_GIT_SHA", "").strip()
+    if env_sha:
+        return env_sha
+
+    # Look for a deploy-written file at <repo_root>/GIT_SHA, anchored to the
+    # package directory rather than cwd.
+    here = os.path.dirname(os.path.abspath(__file__))
+    sha_path = os.path.normpath(os.path.join(here, "..", "..", "GIT_SHA"))
+    try:
+        with open(sha_path, "r", encoding="utf-8") as f:
+            sha = f.read().strip()
+            if sha:
+                return sha
+    except OSError:
+        pass
+
     try:
         head_path = os.path.join(os.getcwd(), ".git", "HEAD")
         if not os.path.exists(head_path):

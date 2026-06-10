@@ -17,3 +17,4 @@ build/
 config.toml
 out/
 /receipts/
+GIT_SHA
