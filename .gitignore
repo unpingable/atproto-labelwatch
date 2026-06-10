@@ -16,3 +16,4 @@ build/
 .mcp.json
 config.toml
 out/
+/receipts/

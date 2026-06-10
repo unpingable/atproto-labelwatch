@@ -1,0 +1,162 @@
+{
+  "receipt_kind": "labelwatch.index_audit.v1",
+  "receipt_schema_version": 1,
+  "consumer_surface": "whatsonme.frontdoor.v0",
+  "generated_at": "2026-06-10T01:06:45.680229Z",
+  "git_commit": null,
+  "db_path": "/var/lib/labelwatch/labelwatch.db",
+  "db_size_bytes": 40727498752,
+  "table_counts": {
+    "label_events": 40001755,
+    "labelers": 502,
+    "alerts": 81843
+  },
+  "probe_subject_did": "did:plc:000000000000000000000000",
+  "query_results": [
+    {
+      "query_id": "Q1",
+      "query_name": "subject_identity_resolution",
+      "purpose": "Resolve handle/DID -> canonical DID (PLC/DID-web).",
+      "kind": "external_resolution",
+      "publication_blocking": true,
+      "bounded_by_subject_or_time": true,
+      "sql_fingerprint": null,
+      "sql": null,
+      "observed_runtime_ms": null,
+      "explain_query_plan": [],
+      "covering_index_present": false,
+      "full_scan_detected": false,
+      "index_used": null,
+      "verdict": "admissible_external_resolution",
+      "note": "PLC/DID-web lookup; not a label_events query. Audit confirms by inspection that the resolution path does not fall back to a label_events scan on cache miss."
+    },
+    {
+      "query_id": "Q2",
+      "query_name": "labelers_touching_subject",
+      "purpose": "Per-labeler event count against subject.",
+      "kind": "sqlite",
+      "publication_blocking": true,
+      "bounded_by_subject_or_time": true,
+      "sql_fingerprint": "676057ed95f84331",
+      "sql": "SELECT labeler_did, COUNT(*) AS event_count FROM label_events WHERE target_did = ? GROUP BY labeler_did",
+      "observed_runtime_ms": 4.64,
+      "explain_query_plan": [
+        "SEARCH label_events USING INDEX idx_label_events_target_did_ts (target_did=?)",
+        "USE TEMP B-TREE FOR GROUP BY"
+      ],
+      "covering_index_present": true,
+      "full_scan_detected": false,
+      "index_used": "idx_label_events_target_did_ts",
+      "verdict": "admissible"
+    },
+    {
+      "query_id": "Q3",
+      "query_name": "label_values_touching_subject",
+      "purpose": "Per (labeler, val) rollup against subject (count + first_seen + last_seen).",
+      "kind": "sqlite",
+      "publication_blocking": true,
+      "bounded_by_subject_or_time": true,
+      "sql_fingerprint": "04cc67a5da14913b",
+      "sql": "SELECT labeler_did, val, COUNT(*) AS event_count, MIN(ts) AS first_seen, MAX(ts) AS last_seen FROM label_events WHERE target_did = ? GROUP BY labeler_did, val",
+      "observed_runtime_ms": 0.041,
+      "explain_query_plan": [
+        "SEARCH label_events USING INDEX idx_label_events_target_did_ts (target_did=?)",
+        "USE TEMP B-TREE FOR GROUP BY"
+      ],
+      "covering_index_present": true,
+      "full_scan_detected": false,
+      "index_used": "idx_label_events_target_did_ts",
+      "verdict": "admissible"
+    },
+    {
+      "query_id": "Q4",
+      "query_name": "latest_seen_per_labeler_value",
+      "purpose": "MAX(ts) per (labeler_did, val) \u2014 folded into Q3 (MAX in same GROUP BY).",
+      "kind": "folded",
+      "publication_blocking": false,
+      "bounded_by_subject_or_time": true,
+      "sql_fingerprint": null,
+      "sql": null,
+      "observed_runtime_ms": null,
+      "explain_query_plan": [],
+      "covering_index_present": false,
+      "full_scan_detected": false,
+      "index_used": null,
+      "verdict": "folded_into_parent",
+      "note": "Subsumed by another query in this inventory."
+    },
+    {
+      "query_id": "Q5",
+      "query_name": "authority_effect_breakdown",
+      "purpose": "Pure-function classify_authority_effect over (labeler_did, val) tuples from Q3.",
+      "kind": "internal_classifier",
+      "publication_blocking": true,
+      "bounded_by_subject_or_time": true,
+      "sql_fingerprint": null,
+      "sql": null,
+      "observed_runtime_ms": null,
+      "explain_query_plan": [],
+      "covering_index_present": false,
+      "full_scan_detected": false,
+      "index_used": null,
+      "verdict": "admissible_internal_classifier",
+      "note": "Pure-function map (classify_authority_effect) over Q3 result set. No DB scan."
+    },
+    {
+      "query_id": "Q6",
+      "query_name": "emitter_stability_summary",
+      "purpose": "Per labeler regime_state + auditability lookup (Q6+Q7).",
+      "kind": "sqlite",
+      "publication_blocking": true,
+      "bounded_by_subject_or_time": true,
+      "sql_fingerprint": "36bdc31940eb7c0a",
+      "sql": "SELECT labeler_did, regime_state, auditability, last_seen, events_7d, events_30d FROM labelers WHERE labeler_did = ?",
+      "observed_runtime_ms": 0.026,
+      "explain_query_plan": [
+        "SEARCH labelers USING INDEX sqlite_autoindex_labelers_1 (labeler_did=?)"
+      ],
+      "covering_index_present": true,
+      "full_scan_detected": false,
+      "index_used": "sqlite_autoindex_labelers_1",
+      "verdict": "admissible"
+    },
+    {
+      "query_id": "Q7",
+      "query_name": "auditability_summary",
+      "purpose": "Auditability dial per labeler \u2014 folded into Q6 (same row).",
+      "kind": "folded",
+      "publication_blocking": false,
+      "bounded_by_subject_or_time": true,
+      "sql_fingerprint": null,
+      "sql": null,
+      "observed_runtime_ms": null,
+      "explain_query_plan": [],
+      "covering_index_present": false,
+      "full_scan_detected": false,
+      "index_used": null,
+      "verdict": "folded_into_parent",
+      "note": "Subsumed by another query in this inventory."
+    },
+    {
+      "query_id": "Q8",
+      "query_name": "temporal_coherence_summary",
+      "purpose": "Per (labeler, val, ts, neg) timeline against subject for classification flips.",
+      "kind": "sqlite",
+      "publication_blocking": true,
+      "bounded_by_subject_or_time": true,
+      "sql_fingerprint": "c39ea4fa98897dac",
+      "sql": "SELECT labeler_did, val, ts, neg FROM label_events WHERE target_did = ? ORDER BY labeler_did, ts",
+      "observed_runtime_ms": 0.03,
+      "explain_query_plan": [
+        "SEARCH label_events USING INDEX idx_label_events_target_did_ts (target_did=?)",
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      "covering_index_present": true,
+      "full_scan_detected": false,
+      "index_used": "idx_label_events_target_did_ts",
+      "verdict": "admissible"
+    }
+  ],
+  "overall_verdict": "admissible",
+  "receipt_hash": "2e8a9688f4d38523364cfa48d4a6ff434f355dfe9b5944dcbd3e3c0235d66f3b"
+}
