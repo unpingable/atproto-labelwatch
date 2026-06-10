@@ -1,0 +1,34 @@
+=== labelwatch.index_audit.v1 ===
+consumer_surface : whatsonme.frontdoor.v0
+generated_at     : 2026-06-10T05:38:21.104886Z
+git_commit       : unknown
+db_path          : /var/lib/labelwatch/labelwatch.db
+db_size_bytes    : 40,779,870,208
+table_counts     : label_events=40,059,207, labelers=502, alerts=81,911
+overall_verdict  : admissible
+
+ID   verdict                            runtime_ms  query_name
+---- ---------------------------------- ----------  ----------------------------------------
+Q1   admissible_external_resolution              -  subject_identity_resolution
+      ~ PLC/DID-web lookup; not a label_events query. Audit confirms by inspection that the resolution path does not fall back to a label_events scan on cache miss.
+Q2   admissible                              4.478  labelers_touching_subject
+      | SEARCH label_events USING INDEX idx_label_events_target_did_ts (target_did=?)
+      | USE TEMP B-TREE FOR GROUP BY
+      . index: idx_label_events_target_did_ts
+Q3   admissible                              0.069  label_values_touching_subject
+      | SEARCH label_events USING INDEX idx_label_events_target_did_ts (target_did=?)
+      | USE TEMP B-TREE FOR GROUP BY
+      . index: idx_label_events_target_did_ts
+Q4   folded_into_parent                          -  latest_seen_per_labeler_value
+      ~ Subsumed by another query in this inventory.
+Q5   admissible_internal_classifier              -  authority_effect_breakdown
+      ~ Pure-function map (classify_authority_effect) over Q3 result set. No DB scan.
+Q6   admissible                              0.022  emitter_stability_summary
+      | SEARCH labelers USING INDEX sqlite_autoindex_labelers_1 (labeler_did=?)
+      . index: sqlite_autoindex_labelers_1
+Q7   folded_into_parent                          -  auditability_summary
+      ~ Subsumed by another query in this inventory.
+Q8   admissible                              0.031  temporal_coherence_and_locus
+      | SEARCH label_events USING INDEX idx_label_events_target_did_ts (target_did=?)
+      | USE TEMP B-TREE FOR ORDER BY
+      . index: idx_label_events_target_did_ts
