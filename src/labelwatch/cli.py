@@ -783,6 +783,26 @@ def cmd_db_optimize(args) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_load_probe(args) -> None:
+    from . import load_probe
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    if not os.path.exists(cfg.db_path):
+        raise SystemExit(f"Database not found: {cfg.db_path}")
+    receipt = load_probe.run_probe(
+        db_path=cfg.db_path,
+        sample_size=args.sample_size,
+        consumer_surface=args.consumer_surface,
+    )
+    if args.json_output:
+        print(json.dumps(receipt, indent=2))
+    else:
+        print(load_probe.render_text(receipt))
+    if receipt["verdict"].startswith("refused_"):
+        raise SystemExit(2)
+
+
 def cmd_index_audit(args) -> None:
     from . import index_audit
     cfg = load_config(args.config)
@@ -928,6 +948,32 @@ def main(argv: Optional[list] = None) -> None:
 
     p_dbopt = sub.add_parser("db-optimize", help="Run ANALYZE and query planner optimization")
     p_dbopt.set_defaults(func=cmd_db_optimize)
+
+    p_load = sub.add_parser(
+        "load-probe",
+        help=(
+            "Real-subject load characterization: lookup_subject() across "
+            "top-N labeled subjects; emits labelwatch.load_probe.v1 receipt"
+        ),
+    )
+    p_load.add_argument(
+        "--consumer-surface",
+        default="whatsonme.frontdoor.v0",
+        help="Consumer surface contract this probe characterizes",
+    )
+    p_load.add_argument(
+        "--sample-size",
+        type=int,
+        default=100,
+        help="Top-N labeled subjects to probe (default 100)",
+    )
+    p_load.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Output receipt as JSON instead of human-readable text",
+    )
+    p_load.set_defaults(func=cmd_load_probe)
 
     p_audit = sub.add_parser(
         "index-audit",
