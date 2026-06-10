@@ -570,10 +570,8 @@ THEME_TOGGLE_JS = """
 
 
 _OG_DESCRIPTION = (
-    "Bluesky doesn\u2019t have a single moderation team deciding what you see. "
-    "Instead, it has labelers \u2014 and nobody\u2019s watching the watchers. "
-    "Labelwatch monitors every public labeler: who\u2019s labeling, what they\u2019re "
-    "labeling, and whether their behavior is stable, bursty, or going dark."
+    "Labelers are testimony. Labelwatch shows what is observed, what is "
+    "bounded, and where testimony becomes consequence."
 )
 
 SITE_URL = os.environ.get("LABELWATCH_SITE_URL", "https://labelwatch.neutral.zone")
@@ -3504,7 +3502,7 @@ events per day, not active inventory.</p>
     # Layer 3: Utilities (registry browse, account lookup)
     # Layer 4: Explanation + ops detail (collapsed)
     overview_html = _layout(
-        "Labelwatch",
+        "Labelwatch — system dashboard",
         hero_html
         + summary_strip
         + (
@@ -3566,6 +3564,12 @@ events per day, not active inventory.</p>
         + findings_callout
         + ops_detail
         + TRIAGE_JS,
+        canonical=f"{SITE_URL}/methodology.html",
+        description=(
+            "Network weather, authority-effect graphs, concentration, "
+            "hosting, active labeler conflicts classified by type, alerts, "
+            "and the labeler registry. The cockpit, signposted."
+        ),
     )
     # Methodology / dashboard content moved off the homepage 2026-06-10 as
     # part of the whatsonme.frontdoor.v0 slice. The new index.html is the
@@ -3610,7 +3614,16 @@ events per day, not active inventory.</p>
         + (authority_posture_section or "")
         + (authority_effect_html or "")
     )
-    authority_page_html = _layout("Labelwatch — Authority report", authority_page_body)
+    authority_page_html = _layout(
+        "Labelwatch — Authority report",
+        authority_page_body,
+        canonical=f"{SITE_URL}/authority.html",
+        description=(
+            "Per-effect inventory of every observed label, classified by "
+            "what kind of authority it attempts to exercise. Posture "
+            "aggregate plus the testimony layer's authority surface."
+        ),
+    )
     _write(os.path.join(tmp_dir, "authority.html"), authority_page_html)
 
     # --- Census page ---

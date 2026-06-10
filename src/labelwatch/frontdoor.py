@@ -1280,6 +1280,50 @@ def render_result_body_html(result: FrontdoorResult) -> str:
     )
 
 
+# Public site URL — used for og:url + canonical. Override via env in test/dev.
+_SITE_URL = os.environ.get("LABELWATCH_SITE_URL", "https://labelwatch.neutral.zone")
+
+# Homepage social-card copy. Keep this sharp: the card is doing first-contact
+# duty whether it deserves the job or not.
+_HOMEPAGE_TITLE = "Labelwatch — observable labeler activity on Bluesky"
+_HOMEPAGE_DESCRIPTION = (
+    "Labelers are testimony. Labelwatch shows what is observed, what is "
+    "bounded, and where testimony becomes consequence."
+)
+
+
+def _render_social_meta(
+    title: str,
+    description: str,
+    *,
+    canonical: Optional[str] = None,
+    og_type: str = "website",
+) -> str:
+    """OG + Twitter card meta + canonical link. Used by frontdoor's hand-rolled
+    head templates (homepage, result page) which do not go through report._layout.
+    """
+    canonical_tag = (
+        f"<link rel=\"canonical\" href=\"{_esc(canonical)}\"/>"
+        if canonical else ""
+    )
+    og_url_tag = (
+        f"<meta property=\"og:url\" content=\"{_esc(canonical)}\"/>"
+        if canonical else ""
+    )
+    return (
+        f"<meta name=\"description\" content=\"{_esc(description)}\"/>"
+        f"<meta property=\"og:title\" content=\"{_esc(title)}\"/>"
+        f"<meta property=\"og:description\" content=\"{_esc(description)}\"/>"
+        f"<meta property=\"og:type\" content=\"{_esc(og_type)}\"/>"
+        f"{og_url_tag}"
+        f"<meta property=\"og:site_name\" content=\"Labelwatch\"/>"
+        f"<meta name=\"twitter:card\" content=\"summary\"/>"
+        f"<meta name=\"twitter:title\" content=\"{_esc(title)}\"/>"
+        f"<meta name=\"twitter:description\" content=\"{_esc(description)}\"/>"
+        f"{canonical_tag}"
+    )
+
+
 def render_result_page_html(
     result: FrontdoorResult,
     *,
@@ -1316,12 +1360,25 @@ def render_result_page_html(
             " &middot; <a href=\"/methodology.html\">system dashboard &amp; graphs</a>"
             "</footer>"
         )
+    # Social card description for a subject view — page is per-subject, so the
+    # description focuses on the action and the doctrinal frame, not a specific
+    # subject. Keeps the card honest when shared in a thread.
+    result_description = (
+        "Observed labeler testimony attached to this Bluesky account and its "
+        "posts. Labelwatch publishes observations, not verdicts."
+    )
+    social_meta = _render_social_meta(
+        title=title,
+        description=result_description,
+        og_type="article",
+    )
     return (
         "<!doctype html>"
         "<html lang=\"en\"><head>"
         "<meta charset=\"utf-8\"/>"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
         f"<title>{_esc(title)}</title>"
+        f"{social_meta}"
         f"<style>{_RESULT_CSS}</style>"
         f"{_THEME_SYNC_JS}"
         "</head><body>"
@@ -1387,12 +1444,18 @@ def render_homepage_html(
             "</footer>"
         )
 
+    social_meta = _render_social_meta(
+        title=_HOMEPAGE_TITLE,
+        description=_HOMEPAGE_DESCRIPTION,
+        canonical=_SITE_URL + "/",
+    )
     return (
         "<!doctype html>"
         "<html lang=\"en\"><head>"
         "<meta charset=\"utf-8\"/>"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
-        "<title>labelwatch — what's observed on a Bluesky account?</title>"
+        f"<title>{_esc(_HOMEPAGE_TITLE)}</title>"
+        f"{social_meta}"
         f"<style>{_HOMEPAGE_CSS}</style>"
         f"{_THEME_SYNC_JS}"
         "</head><body>"

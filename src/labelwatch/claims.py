@@ -147,7 +147,8 @@ miss them.</p>
         body,
         canonical="https://labelwatch.neutral.zone/claims",
         description=(
-            "Analytical findings, their methodology, and their current status. "
-            "Labelwatch publishes its reasoning, not just its conclusions."
+            "Public-facing investigations with explicit bounds and support. "
+            "Labelwatch publishes weather, not verdicts — every claim cites "
+            "its evidence and its limits."
         ),
     )

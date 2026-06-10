@@ -231,8 +231,8 @@ precisely because it does not carry final authority.</p>
         body,
         canonical="https://labelwatch.neutral.zone/about",
         description=(
-            "Labelers are a cheap, non-sovereign moderation and reputation layer "
-            "with enough force to matter and too little grounding to be mistaken "
-            "for truth. Labelwatch exists to make that layer legible over time."
+            "What labelers are, what they aren't, and why observable "
+            "consequences matter. Labelers publish testimony; moderation "
+            "begins when consumers convert testimony into constraint."
         ),
     )
