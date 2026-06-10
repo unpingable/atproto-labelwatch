@@ -783,6 +783,27 @@ def cmd_db_optimize(args) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_weather_digest(args) -> None:
+    from . import weather_digest as wd
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    if not os.path.exists(cfg.db_path):
+        raise SystemExit(f"Database not found: {cfg.db_path}")
+    conn = db.connect(cfg.db_path, readonly=True)
+    try:
+        digest = wd.build_digest(conn, window_days=args.window_days)
+    finally:
+        conn.close()
+    fmt = args.format
+    if fmt == "json":
+        print(wd.render_json(digest))
+    elif fmt == "bluesky":
+        print(wd.render_bluesky(digest))
+    else:
+        print(wd.render_text(digest))
+
+
 def cmd_load_probe(args) -> None:
     from . import load_probe
     cfg = load_config(args.config)
@@ -948,6 +969,27 @@ def main(argv: Optional[list] = None) -> None:
 
     p_dbopt = sub.add_parser("db-optimize", help="Run ANALYZE and query planner optimization")
     p_dbopt.set_defaults(func=cmd_db_optimize)
+
+    p_digest = sub.add_parser(
+        "weather-digest",
+        help=(
+            "Generate weekly network-weather digest "
+            "(text / json / bluesky-compact)"
+        ),
+    )
+    p_digest.add_argument(
+        "--format",
+        choices=["text", "json", "bluesky"],
+        default="text",
+        help="Output format (default text)",
+    )
+    p_digest.add_argument(
+        "--window-days",
+        type=int,
+        default=7,
+        help="Digest window in days (default 7)",
+    )
+    p_digest.set_defaults(func=cmd_weather_digest)
 
     p_load = sub.add_parser(
         "load-probe",
