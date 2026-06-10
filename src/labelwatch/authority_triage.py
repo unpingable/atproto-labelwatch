@@ -563,7 +563,7 @@ def run_triage(
     conn = db_mod.connect(db_path, readonly=True)
     queue: List[Dict[str, Any]] = []
     try:
-        for v in val_ranked[:top_values]:
+        for rank, v in enumerate(val_ranked[:top_values], start=1):
             # Dominant emitter for this val
             top_labeler, top_count = max(v["by_labeler"], key=lambda x: x[1])
             receipt = build_candidate(
@@ -575,6 +575,11 @@ def run_triage(
                 end_ts=end_ts,
                 window_label=window_label,
             )
+            # Stable candidate_id within this triage receipt — referenced
+            # by review HTML + decisions TOML. Sequential, zero-padded to
+            # 3 digits so sort order matches rank order.
+            receipt["candidate_id"] = f"aeinf_{rank:03d}"
+            receipt["rank"] = rank
             queue.append(receipt)
     finally:
         conn.close()

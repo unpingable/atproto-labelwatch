@@ -573,6 +573,31 @@ LABELER_DEFAULT_EFFECT: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Overlay merge — operator-ratified additions from `authority-effect-promote`
+# ---------------------------------------------------------------------------
+#
+# Hand-authored AUTHORITY_EFFECT_MAP / LABELER_DEFAULT_EFFECT entries above
+# always win. The overlay's setdefault calls only fill gaps; conflicts are
+# silently kept on the hand-authored side. The promotion CLI records the
+# skipped-conflict count in its receipt so the operator sees what didn't
+# land.
+#
+# Missing overlay file (e.g. fresh checkout, no promotions yet) is fine —
+# the import is wrapped to no-op gracefully.
+try:
+    from .label_family_overlay import (  # type: ignore[import-not-found]
+        AUTHORITY_EFFECT_ADDITIONS,
+        LABELER_DEFAULT_EFFECT_ADDITIONS,
+    )
+    for _k, _v in AUTHORITY_EFFECT_ADDITIONS.items():
+        AUTHORITY_EFFECT_MAP.setdefault(_k, _v)
+    for _k, _v in LABELER_DEFAULT_EFFECT_ADDITIONS.items():
+        LABELER_DEFAULT_EFFECT.setdefault(_k, _v)
+except ImportError:
+    pass
+
+
 def classify_kind(family: str) -> str:
     """Classify what sort of thing a label family is.
 

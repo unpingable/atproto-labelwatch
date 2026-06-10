@@ -844,6 +844,56 @@ def cmd_index_audit(args) -> None:
         raise SystemExit(2)
 
 
+def cmd_authority_effect_review(args) -> None:
+    """Generate static HTML review packet + TOML decisions template from a
+    labelwatch.authority_effect_triage.v0 receipt.
+    """
+    from . import authority_review
+    if not os.path.exists(args.from_path):
+        raise SystemExit(f"Triage receipt not found: {args.from_path}")
+    receipt = authority_review.load_triage_receipt(args.from_path)
+    authority_review.write_review_packet(
+        receipt,
+        receipt_path=args.from_path,
+        out_html=args.out,
+        out_decisions=args.decisions_out,
+    )
+    decisions_target = args.decisions_out or (args.out + ".decisions.toml")
+    print(json.dumps({
+        "review_html": args.out,
+        "decisions_template": decisions_target,
+        "candidates": len(receipt.get("queue", [])),
+    }, indent=2))
+
+
+def cmd_authority_effect_promote(args) -> None:
+    """Apply operator decisions from a TOML file to the authority_effect
+    overlay; emit a labelwatch.authority_effect_promotion.v0 receipt.
+    """
+    from . import authority_promote, authority_review
+    if not os.path.exists(args.from_path):
+        raise SystemExit(f"Triage receipt not found: {args.from_path}")
+    if not os.path.exists(args.decisions):
+        raise SystemExit(f"Decisions file not found: {args.decisions}")
+    triage = authority_review.load_triage_receipt(args.from_path)
+    decisions_doc = authority_promote.load_decisions(args.decisions)
+    receipt = authority_promote.apply_promotions(
+        triage,
+        decisions_doc,
+        decisions_path=args.decisions,
+        triage_receipt_path=args.from_path,
+        overlay_path=args.overlay_path,
+        dry_run=args.dry_run,
+    )
+    if args.out:
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump(receipt, f, indent=2)
+    print(json.dumps(receipt, indent=2))
+    if receipt["verdict"] == "refused":
+        raise SystemExit(2)
+
+
 def cmd_authority_effect_triage(args) -> None:
     """Rank unprofiled (labeler, val) volume in the window; emit receipts.
 
@@ -1093,6 +1143,61 @@ def main(argv: Optional[list] = None) -> None:
         help="Output index receipt as JSON instead of human-readable text",
     )
     p_aetri.set_defaults(func=cmd_authority_effect_triage)
+
+    p_aerev = sub.add_parser(
+        "authority-effect-review",
+        help=(
+            "Generate static HTML review packet + TOML decisions template "
+            "from a labelwatch.authority_effect_triage.v0 receipt."
+        ),
+    )
+    p_aerev.add_argument(
+        "--from", dest="from_path", required=True,
+        help="Path to the authority_effect_triage.v0 receipt JSON",
+    )
+    p_aerev.add_argument(
+        "--out", required=True,
+        help="Output HTML path; decisions TOML written to <out>.decisions.toml "
+             "unless --decisions-out is given",
+    )
+    p_aerev.add_argument(
+        "--decisions-out", dest="decisions_out",
+        help="Override path for the decisions TOML template",
+    )
+    p_aerev.set_defaults(func=cmd_authority_effect_review)
+
+    p_aepro = sub.add_parser(
+        "authority-effect-promote",
+        help=(
+            "Apply operator decisions to the authority_effect overlay and "
+            "emit a labelwatch.authority_effect_promotion.v0 receipt."
+        ),
+    )
+    p_aepro.add_argument(
+        "--from", dest="from_path", required=True,
+        help="Path to the authority_effect_triage.v0 receipt JSON",
+    )
+    p_aepro.add_argument(
+        "--decisions", required=True,
+        help="Path to the operator-filled decisions TOML",
+    )
+    p_aepro.add_argument(
+        "--overlay-path", dest="overlay_path",
+        default="src/labelwatch/label_family_overlay.py",
+        help="Path to write the auto-generated overlay file (default: "
+             "src/labelwatch/label_family_overlay.py)",
+    )
+    p_aepro.add_argument(
+        "--out",
+        help="Optional path to write the promotion receipt JSON (in addition "
+             "to stdout)",
+    )
+    p_aepro.add_argument(
+        "--dry-run", action="store_true",
+        help="Validate decisions and produce a receipt without writing the "
+             "overlay file",
+    )
+    p_aepro.set_defaults(func=cmd_authority_effect_promote)
 
     p_state = sub.add_parser(
         "state-pilot",
