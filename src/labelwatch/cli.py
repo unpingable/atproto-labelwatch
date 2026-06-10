@@ -783,6 +783,26 @@ def cmd_db_optimize(args) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_index_audit(args) -> None:
+    from . import index_audit
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    if not os.path.exists(cfg.db_path):
+        raise SystemExit(f"Database not found: {cfg.db_path}")
+    receipt = index_audit.run_audit(
+        db_path=cfg.db_path,
+        consumer_surface=args.consumer_surface,
+    )
+    if args.json_output:
+        print(json.dumps(receipt, indent=2))
+    else:
+        print(index_audit.render_text(receipt))
+    # Exit non-zero on refused verdict so CI/cron can gate on it
+    if receipt["overall_verdict"].startswith("refused_"):
+        raise SystemExit(2)
+
+
 def cmd_state_pilot(args) -> None:
     """Bounded pilot backfill into the sidecar label_state DB.
 
@@ -908,6 +928,23 @@ def main(argv: Optional[list] = None) -> None:
 
     p_dbopt = sub.add_parser("db-optimize", help="Run ANALYZE and query planner optimization")
     p_dbopt.set_defaults(func=cmd_db_optimize)
+
+    p_audit = sub.add_parser(
+        "index-audit",
+        help="Audit consumer-surface query paths (read-only; no mutations)",
+    )
+    p_audit.add_argument(
+        "--consumer-surface",
+        default="whatsonme.frontdoor.v0",
+        help="Consumer surface contract this audit verdicts against",
+    )
+    p_audit.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Output receipt as JSON instead of human-readable text",
+    )
+    p_audit.set_defaults(func=cmd_index_audit)
 
     p_state = sub.add_parser(
         "state-pilot",
