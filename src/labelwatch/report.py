@@ -3567,7 +3567,25 @@ events per day, not active inventory.</p>
         + ops_detail
         + TRIAGE_JS,
     )
-    _write(os.path.join(tmp_dir, "index.html"), overview_html)
+    # Methodology / dashboard content moved off the homepage 2026-06-10 as
+    # part of the whatsonme.frontdoor.v0 slice. The new index.html is the
+    # lookup-first landing page; the methodology page is the secondary
+    # surface at methodology.html. Internal back-links below were updated
+    # accordingly.
+    _write(os.path.join(tmp_dir, "methodology.html"), overview_html)
+
+    # Lookup-first homepage. Generated statically so Caddy can serve it
+    # without proxying / to the HTTP API. The form posts to /v1/frontdoor
+    # which Caddy already proxies to localhost:8423.
+    try:
+        from . import frontdoor as fd
+        audit_receipt = fd.find_latest_audit_receipt()
+        homepage_html = fd.render_homepage_html(audit_receipt=audit_receipt)
+    except Exception:  # pragma: no cover — defensive; report should still ship
+        # Fallback: serve a minimal lookup form without audit-gate info.
+        from . import frontdoor as fd
+        homepage_html = fd.render_homepage_html(audit_receipt=None)
+    _write(os.path.join(tmp_dir, "index.html"), homepage_html)
 
     # --- Authority report page ---
     # Full authority surface — posture aggregate + per-effect label
@@ -3575,7 +3593,7 @@ events per day, not active inventory.</p>
     # obnoxious. The posture section is repeated here as context;
     # the inventory is the new content.
     authority_page_body = (
-        '<p><a href="index.html">&larr; Back to overview</a></p>'
+        '<p><a href="methodology.html">&larr; Back to methodology</a></p>'
         '<h1>Authority report</h1>'
         '<p class="labeler-context">'
         "Full view of the testimony layer's authority surface. "
@@ -3611,7 +3629,7 @@ events per day, not active inventory.</p>
         census_body += '</div>'
 
     census_body += f'<p class="small">Last census: {escape(_human_ts(now_ts))}</p>'
-    census_body += '<p><a href="index.html">Back to overview</a></p>'
+    census_body += '<p><a href="methodology.html">Back to methodology</a></p>'
     census_html = _layout("Labelwatch Census", census_body)
     _write(os.path.join(tmp_dir, "census.html"), census_html)
 
@@ -3958,7 +3976,7 @@ events per day, not active inventory.</p>
             )
         html = _layout(
             f"Alert {row['id']}",
-            f"<p><a href=\"../index.html\">Overview</a></p>" + receipt_table + "<h2>Evidence events</h2>" + events_table,
+            f"<p><a href=\"../methodology.html\">Overview</a></p>" + receipt_table + "<h2>Evidence events</h2>" + events_table,
         )
         _write(os.path.join(tmp_dir, "alert", f"{row['id']}.html"), html)
 
@@ -3980,6 +3998,7 @@ events per day, not active inventory.</p>
     # --- sitemap.xml ---
     sitemap_urls = [
         ("index.html", "daily", "1.0"),
+        ("methodology.html", "daily", "0.9"),
         ("authority.html", "daily", "0.8"),
         ("v1/registry", "daily", "0.8"),
         ("census.html", "daily", "0.7"),

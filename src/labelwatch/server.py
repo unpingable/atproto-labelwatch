@@ -186,6 +186,9 @@ class ClimateHandler(BaseHTTPRequestHandler):
     disabled: bool = False
     generation_timeout: int = 10
     flaky_reference_dids: tuple = ()
+    # Frontdoor audit-gate: loaded at configure time; refused state causes
+    # every frontdoor lookup to return a refusal rather than silently scan.
+    audit_receipt: Optional[dict] = None
 
     def log_message(self, format, *args):
         # Suppress default stderr logging — we do our own
@@ -230,7 +233,9 @@ class ClimateHandler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
 
         try:
-            if path == "/health":
+            if path == "" or path == "/":
+                self._handle_homepage()
+            elif path == "/health":
                 self._handle_health()
             elif path == "/about":
                 self._handle_about()
@@ -240,6 +245,8 @@ class ClimateHandler(BaseHTTPRequestHandler):
                 self._handle_registry(query)
             elif "/v1/climate/" in path:
                 self._handle_climate(path, query)
+            elif path == "/v1/frontdoor" or "/v1/frontdoor/" in path:
+                self._handle_frontdoor(path, query)
             else:
                 self._send_error(404, "Not found")
         except Exception:
@@ -261,6 +268,83 @@ class ClimateHandler(BaseHTTPRequestHandler):
             msg = self.stats.flush_if_due()
             if msg:
                 logger.info(msg)
+
+    def _handle_homepage(self):
+        from . import frontdoor as fd
+        receipt = self.audit_receipt
+        html = fd.render_homepage_html(audit_receipt=receipt)
+        self._last_status = 200
+        self._send_html(200, html.encode("utf-8"),
+                        {"Cache-Control": "public, max-age=120"})
+
+    def _handle_frontdoor(self, path: str, query: dict):
+        from . import frontdoor as fd
+
+        if self.disabled:
+            self._last_status = 503
+            self._send_error(503, "Service disabled")
+            return
+
+        # Two routing shapes:
+        #   /v1/frontdoor?q=<handle_or_did>     (from homepage form)
+        #   /v1/frontdoor/<handle_or_did>       (canonical)
+        identifier: Optional[str] = None
+        if "/v1/frontdoor/" in path:
+            parts = path.split("/v1/frontdoor/", 1)
+            if len(parts) >= 2 and parts[1]:
+                identifier = urllib.parse.unquote(parts[1]).strip()
+                if "/" in identifier:
+                    self._last_status = 404
+                    self._send_error(404, "Not found")
+                    return
+        else:
+            q_list = query.get("q", [])
+            if q_list:
+                identifier = q_list[0].strip()
+
+        if not identifier:
+            self._last_status = 400
+            self._send_error(400, "Provide a handle or DID via path or ?q=")
+            return
+
+        # Rate limit + concurrency gate, mirroring climate's posture.
+        if self.bucket:
+            wait = self.bucket.consume()
+            if wait > 0:
+                self._last_status = 429
+                self._send_error(429, "Rate limited",
+                                 {"Retry-After": str(int(wait) + 1),
+                                  "Cache-Control": "no-store"})
+                return
+        if self.semaphore and not self.semaphore.acquire(blocking=False):
+            self._last_status = 503
+            self._send_error(503, "Server busy")
+            return
+
+        try:
+            conn = db.connect(self.db_path, readonly=True)
+            try:
+                result = fd.lookup_subject(
+                    conn,
+                    identifier,
+                    audit_receipt=self.audit_receipt,
+                )
+            finally:
+                conn.close()
+        finally:
+            if self.semaphore:
+                self.semaphore.release()
+
+        fmt = (query.get("format", ["html"]) or ["html"])[0]
+        if fmt not in ("json", "html"):
+            fmt = "html"
+
+        self._last_status = 200
+        headers = {"Cache-Control": "private, max-age=60"}
+        if fmt == "json":
+            self._send_json(200, fd.result_to_json(result), headers)
+        else:
+            self._send_html(200, fd.render_result_page_html(result).encode("utf-8"), headers)
 
     def _handle_about(self):
         from .about import render_about_html
@@ -549,8 +633,24 @@ class ClimateHandler(BaseHTTPRequestHandler):
 def configure_handler(db_path: str, cache_dir: str, max_concurrent: int = 2,
                       rate_limit: int = 30, cache_ttl: int = 300,
                       generation_timeout: int = 10,
-                      flaky_reference_dids: Optional[List[str]] = None) -> type:
+                      flaky_reference_dids: Optional[List[str]] = None,
+                      audit_receipts_dir: Optional[str] = None) -> type:
     """Create a configured handler class."""
+    from . import frontdoor as fd
+    audit_receipt = fd.find_latest_audit_receipt(audit_receipts_dir)
+    if audit_receipt is None:
+        logger.warning(
+            "frontdoor: no labelwatch.index_audit.v1 receipt found "
+            "(searched dir=%s); lookups will refuse with index_audit_missing",
+            audit_receipts_dir or fd._default_receipts_dir(),
+        )
+    else:
+        logger.info(
+            "frontdoor: loaded audit receipt verdict=%s generated_at=%s",
+            audit_receipt.get("overall_verdict"),
+            audit_receipt.get("generated_at"),
+        )
+
     # Refill rate: rate_limit per minute → rate_limit/60 per second
     handler = type("ConfiguredClimateHandler", (ClimateHandler,), {
         "db_path": db_path,
@@ -561,6 +661,7 @@ def configure_handler(db_path: str, cache_dir: str, max_concurrent: int = 2,
         "disabled": os.environ.get("CLIMATE_API_DISABLED", "") == "1",
         "generation_timeout": generation_timeout,
         "flaky_reference_dids": tuple(flaky_reference_dids or ()),
+        "audit_receipt": audit_receipt,
     })
     return handler
 

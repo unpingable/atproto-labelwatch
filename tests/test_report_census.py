@@ -283,7 +283,7 @@ def test_generate_report_warmup_banner():
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "report")
         generate_report(conn, out, now=now)
-        content = open(os.path.join(out, "index.html")).read()
+        content = open(os.path.join(out, "methodology.html")).read()
         assert "Baselines forming" in content
         assert "warm-up period" in content
 
@@ -297,7 +297,7 @@ def test_generate_report_no_warmup_banner_when_all_mature():
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "report")
         generate_report(conn, out, now=now)
-        content = open(os.path.join(out, "index.html")).read()
+        content = open(os.path.join(out, "methodology.html")).read()
         assert "Baselines forming" not in content
 
 
@@ -310,7 +310,7 @@ def test_generate_report_scope_statement():
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "report")
         generate_report(conn, out, now=now)
-        content = open(os.path.join(out, "index.html")).read()
+        content = open(os.path.join(out, "methodology.html")).read()
         assert "observes labeler behavior only" in content
         assert "No content analysis" in content
         assert "What is a labeler?" in content
@@ -325,7 +325,7 @@ def test_generate_report_cache_headers():
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "report")
         generate_report(conn, out, now=now)
-        content = open(os.path.join(out, "index.html")).read()
+        content = open(os.path.join(out, "methodology.html")).read()
         assert 'Cache-Control' in content
         assert 'no-cache' in content
 
@@ -339,7 +339,7 @@ def test_generate_report_triage_tabs():
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "report")
         generate_report(conn, out, now=now)
-        content = open(os.path.join(out, "index.html")).read()
+        content = open(os.path.join(out, "methodology.html")).read()
         assert 'data-view="active"' in content
         assert 'data-view="alerts"' in content
         assert 'data-view="new"' in content
@@ -506,7 +506,7 @@ def test_generate_report_staleness_indicators():
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "report")
         generate_report(conn, out, now=now)
-        content = open(os.path.join(out, "index.html")).read()
+        content = open(os.path.join(out, "methodology.html")).read()
         assert "Generated" in content
         assert "Last ingest" in content
         assert "Last scan" in content
@@ -528,7 +528,7 @@ def test_generate_report_alert_rollups_in_index():
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "report")
         generate_report(conn, out, now=now)
-        content = open(os.path.join(out, "index.html")).read()
+        content = open(os.path.join(out, "methodology.html")).read()
         assert "Low confidence" in content
         assert "5 labelers" in content
 
@@ -544,7 +544,7 @@ def test_generate_report_test_dev_toggle():
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "report")
         generate_report(conn, out, now=now)
-        content = open(os.path.join(out, "index.html")).read()
+        content = open(os.path.join(out, "methodology.html")).read()
         assert "toggle-test-dev" in content
         assert "Show test/dev (2)" in content
 
@@ -559,7 +559,7 @@ def test_generate_report_data_attributes():
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "report")
         generate_report(conn, out, now=now)
-        content = open(os.path.join(out, "index.html")).read()
+        content = open(os.path.join(out, "methodology.html")).read()
         assert 'data-opaque="1"' in content
         assert 'data-test-dev="1"' in content
 

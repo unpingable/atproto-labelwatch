@@ -349,7 +349,7 @@ def test_generate_report_triage_table_has_behavior_badges():
     with tempfile.TemporaryDirectory() as tmpdir:
         out = os.path.join(tmpdir, "report")
         generate_report(conn, out, now=now)
-        content = open(os.path.join(out, "index.html")).read()
+        content = open(os.path.join(out, "methodology.html")).read()
         # Should have reversal-heavy badge (from flip_flop alert)
         assert "Reversal-heavy" in content
         assert "badge-flipflop" in content
