@@ -1127,8 +1127,9 @@ def render_refusal_html(result: FrontdoorResult) -> str:
 
 _GLOBAL_USE_NOT_BLOCK = (
     "<aside class=\"use-not\">"
-    "<p><strong>Use:</strong> observed claims from these labelers about this subject, "
-    "and what kind of authority each label attempts.</p>"
+    "<p><strong>Use:</strong> observed labels attached to this account or to "
+    "records authored by it, plus the authority effect Labelwatch assigns to "
+    "those labels.</p>"
     "<p><strong>Not:</strong> truth, ranking, or recommended action. "
     "We publish observations of testimony, not adjudication.</p>"
     "</aside>"
