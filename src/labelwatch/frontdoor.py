@@ -95,6 +95,14 @@ class LabelerCard:
     events_30d: Optional[int]
     plain_language_sentence: str
     classification_changed: bool      # temporal coherence: did labeler flip?
+    # Attachment-locus epistemics: WHERE the label attached.
+    # locus_counts: {locus_kind → event_count}. Locus kinds:
+    #   account / profile / post / list / list_item / feed_generator / record / unknown
+    locus_counts: dict[str, int] = field(default_factory=dict)
+    # labeled_records: per-URI breakdown for non-account loci. Capped per
+    # labeler to bound the result-page size; URI list is observational, not
+    # adjudicative — same weather-not-verdict discipline.
+    labeled_records: list[dict] = field(default_factory=list)
     # Negative-space — fields the card MUST NOT contain. Kept here so an
     # accidental field-name collision turns into a test failure.
     _forbidden_fields: tuple = field(
@@ -266,11 +274,62 @@ _Q6_LABELER_PROFILE = (
 )
 
 _Q8_COHERENCE = (
-    "SELECT labeler_did, val, ts, neg "
+    "SELECT labeler_did, val, ts, neg, uri "
     "FROM label_events "
     "WHERE target_did = ? "
     "ORDER BY labeler_did, ts"
 )
+
+
+# Cap on per-labeler labeled-records exposed in the result. The full set is
+# always reflected in locus_counts; the per-URI list is a UI affordance for
+# auditors, not a complete dump.
+MAX_LABELED_RECORDS_PER_LABELER = 50
+
+
+# ATProto record collections we name explicitly. Anything else under an
+# at:// URI lands in "record"; non-at:// URIs that are also not bare DIDs
+# fall to "unknown".
+_LEXICON_LOCUS_MAP = {
+    "app.bsky.actor.profile": "profile",
+    "app.bsky.feed.post": "post",
+    "app.bsky.feed.generator": "feed_generator",
+    "app.bsky.graph.list": "list",
+    "app.bsky.graph.listitem": "list_item",
+    "app.bsky.graph.starterpack": "starterpack",
+}
+
+
+def attachment_locus(uri: Optional[str], target_did: Optional[str]) -> str:
+    """Classify where a label attached.
+
+    Returns one of:
+        account / profile / post / list / list_item / feed_generator /
+        starterpack / record / unknown
+
+    The ATProto label model has `subject.uri` either as a DID (account-level
+    label) or an `at://did/collection/rkey` URI (record-level). For account
+    labels the URI is the DID. For record labels the URI is the AT-URI and
+    the *account* it touches is target_did (extracted by parse_target_did).
+
+    No external state; no network. Pure string classification.
+    """
+    if not uri:
+        return "unknown"
+    # Account-level labels: uri == DID (or target_did when explicitly set).
+    if uri.startswith("did:"):
+        return "account"
+    if target_did and uri == target_did:
+        return "account"
+    if not uri.startswith("at://"):
+        return "unknown"
+    # at://did/{collection}/{rkey}
+    # Splitting on "/" with maxsplit=4 gives: ['at:', '', 'did:plc:xxx', collection, rkey]
+    parts = uri.split("/", 4)
+    if len(parts) < 4:
+        return "record"
+    collection = parts[3]
+    return _LEXICON_LOCUS_MAP.get(collection, "record")
 
 
 def _classification_changed(events_for_labeler: list[Mapping]) -> bool:
@@ -328,7 +387,8 @@ def _build_labeler_card(
     labeler_did: str,
     rows_for_labeler: list[Mapping],   # Q3 rows: (labeler_did, val, event_count, first_seen, last_seen)
     profile_row: Optional[Mapping],     # Q6: labelers PK row
-    coherence_events: list[Mapping],    # Q8 events for this labeler+subject
+    coherence_events: list[Mapping],    # Q8 events (labeler_did, val, ts, neg, uri) for this labeler+subject
+    target_did: Optional[str],          # subject DID, used for attachment-locus classification
 ) -> LabelerCard:
     label_values: list[dict] = []
     authority_effects: dict[str, int] = {}
@@ -349,6 +409,39 @@ def _build_labeler_card(
         event_count_total += c
         if r["last_seen"] and (last_seen is None or r["last_seen"] > last_seen):
             last_seen = r["last_seen"]
+
+    # Attachment-locus aggregation from Q8 per-event rows.
+    locus_counts: dict[str, int] = {}
+    # Per-URI rollup for non-account loci (so the UI can expose "where it
+    # actually attached" without exploding the table for high-volume labelers).
+    per_uri: dict[str, dict] = {}
+    for ev in coherence_events:
+        uri = ev["uri"] if "uri" in ev.keys() else ev.get("uri") if isinstance(ev, dict) else None
+        locus = attachment_locus(uri, target_did)
+        locus_counts[locus] = locus_counts.get(locus, 0) + 1
+        if locus != "account" and uri:
+            entry = per_uri.setdefault(uri, {
+                "uri": uri,
+                "locus": locus,
+                "count": 0,
+                "vals": {},
+                "first_seen": ev["ts"],
+                "last_seen": ev["ts"],
+            })
+            entry["count"] += 1
+            entry["vals"][ev["val"]] = entry["vals"].get(ev["val"], 0) + 1
+            if ev["ts"] < entry["first_seen"]:
+                entry["first_seen"] = ev["ts"]
+            if ev["ts"] > entry["last_seen"]:
+                entry["last_seen"] = ev["ts"]
+
+    labeled_records = sorted(
+        per_uri.values(),
+        key=lambda e: (-e["count"], e["uri"]),
+    )[:MAX_LABELED_RECORDS_PER_LABELER]
+    # Stable vals list inside each record entry.
+    for entry in labeled_records:
+        entry["vals"] = sorted(entry["vals"].items(), key=lambda kv: (-kv[1], kv[0]))
 
     handle = (profile_row.get("handle") if profile_row else None) or None
     regime = (profile_row.get("regime_state") if profile_row else None) or None
@@ -372,6 +465,8 @@ def _build_labeler_card(
         events_30d=events_30d,
         plain_language_sentence=sentence,
         classification_changed=changed,
+        locus_counts=locus_counts,
+        labeled_records=labeled_records,
     )
 
 
@@ -473,6 +568,7 @@ def lookup_subject(
             rows_for_labeler=rows_for_labeler,
             profile_row=profile,
             coherence_events=coherence_events,
+            target_did=did,
         )
         cards.append(card)
 
@@ -492,6 +588,130 @@ def lookup_subject(
         audit_verdict=audit_verdict,
         audit_receipt_path=audit_path,
         audit_generated_at=audit_ts,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Network weather (small dimension-table summary)
+# ---------------------------------------------------------------------------
+#
+# These queries do NOT touch label_events directly. They scan the small
+# `labelers` table (~500 rows) and the small `alerts` table (filtered by
+# rule_id + ts via idx_alerts_rule_ts). They are NOT part of the
+# labelwatch.index_audit.v1 inventory, which gates the per-subject lookup
+# path over label_events. Same detection rule as in chatty's spec: small
+# dimension/config tables can scan without panic.
+
+def network_weather(
+    conn: sqlite3.Connection,
+    *,
+    now: Optional[datetime] = None,
+) -> dict:
+    """Compute the lookup-page network weather strip.
+
+    Returns a dict with:
+        total_labelers
+        emitting_this_week
+        events_7d_total
+        unreachable
+        signals          # list of weather words: "noisy" / "churny" / "degraded" / "calm"
+        attribution      # one-line "what triggered each signal"
+        computed_at      # ISO ts
+    """
+    if now is None:
+        now = now_utc()
+
+    total = conn.execute("SELECT COUNT(*) AS c FROM labelers").fetchone()["c"] or 0
+    emitting = conn.execute(
+        "SELECT COUNT(*) AS c FROM labelers WHERE events_7d > 0"
+    ).fetchone()["c"] or 0
+    events_7d_total = conn.execute(
+        "SELECT COALESCE(SUM(events_7d), 0) AS s FROM labelers"
+    ).fetchone()["s"] or 0
+    unreachable = conn.execute(
+        "SELECT COUNT(*) AS c FROM labelers WHERE endpoint_status = 'down' AND events_30d > 0"
+    ).fetchone()["c"] or 0
+
+    # Alert-side counts for the tagline (matches report.py:2880+ semantics).
+    since_24h = format_ts(now - _timedelta_24h())
+    try:
+        spike_24h = conn.execute(
+            "SELECT COUNT(*) AS c FROM alerts WHERE rule_id = 'label_rate_spike' AND ts > ?",
+            (since_24h,),
+        ).fetchone()["c"] or 0
+    except sqlite3.Error:
+        spike_24h = 0
+    try:
+        churn_24h = conn.execute(
+            "SELECT COUNT(*) AS c FROM alerts WHERE rule_id = 'churn_index' AND ts > ?",
+            (since_24h,),
+        ).fetchone()["c"] or 0
+    except sqlite3.Error:
+        churn_24h = 0
+
+    signals: list[str] = []
+    attribution: list[str] = []
+    if spike_24h > 10:
+        signals.append("noisy")
+        attribution.append(f"{spike_24h} rate-spike alerts (24h)")
+    if churn_24h > 50:
+        signals.append("churny")
+        attribution.append(f"{churn_24h} churn alerts (24h)")
+    if unreachable > 5:
+        signals.append("degraded")
+        attribution.append(f"{unreachable} labelers unreachable")
+    if not signals:
+        signals.append("calm")
+        attribution.append("no triggers crossed")
+
+    return {
+        "total_labelers": int(total),
+        "emitting_this_week": int(emitting),
+        "events_7d_total": int(events_7d_total),
+        "unreachable": int(unreachable),
+        "signals": signals,
+        "attribution": " · ".join(attribution),
+        "computed_at": format_ts(now),
+    }
+
+
+def _timedelta_24h():
+    from datetime import timedelta
+    return timedelta(hours=24)
+
+
+def _format_events_compact(n: int) -> str:
+    """Format big counts compactly: 2400000 → '2.4M', 12500 → '12.5K'."""
+    if n is None:
+        return "—"
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}K"
+    return str(n)
+
+
+def _render_weather_strip_html(weather: Optional[dict]) -> str:
+    """Compact one-line strip linking to /methodology.html."""
+    if not weather:
+        return ""
+    signals_str = ", ".join(weather["signals"]) or "calm"
+    return (
+        "<aside class=\"weather-strip\">"
+        f"<p class=\"weather-line\">"
+        f"<span class=\"weather-label\">Network weather:</span> "
+        f"<strong>{_esc(signals_str)}</strong>"
+        "</p>"
+        f"<p class=\"weather-counts\">"
+        f"{_format_count(weather['total_labelers'])} labelers"
+        f" &middot; {_format_count(weather['emitting_this_week'])} emitting this week"
+        f" &middot; {_format_events_compact(weather['events_7d_total'])} events in 7d"
+        f" &middot; {_format_count(weather['unreachable'])} unreachable"
+        "</p>"
+        f"<p class=\"weather-link\">"
+        f"<a href=\"/methodology.html\">Open system dashboard &amp; graphs &rarr;</a>"
+        "</p>"
+        "</aside>"
     )
 
 
@@ -594,14 +814,107 @@ def _render_label_values_html(label_values: list[dict]) -> str:
     )
 
 
+# Display labels for the locus_kind values produced by attachment_locus().
+_LOCUS_LABELS = {
+    "account": "account-level",
+    "profile": "profile record",
+    "post": "post",
+    "list": "list",
+    "list_item": "list-item",
+    "feed_generator": "feed generator",
+    "starterpack": "starter pack",
+    "record": "record",
+    "unknown": "unknown locus",
+}
+
+
+def _render_locus_summary_html(locus_counts: dict[str, int]) -> str:
+    """Compact line: 'Where attached: account 8 · post 51 · profile 1'.
+
+    Empty when no events observed (locus_counts empty)."""
+    if not locus_counts:
+        return ""
+    total = sum(locus_counts.values())
+    if total == 0:
+        return ""
+    parts = sorted(locus_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    chips = " &middot; ".join(
+        f"<span class=\"locus-chip\">"
+        f"{_esc(_LOCUS_LABELS.get(k, k))} <b>{_format_count(v)}</b>"
+        f"</span>"
+        for k, v in parts
+    )
+    return f"<p class=\"locus\"><strong>Where attached:</strong> {chips}</p>"
+
+
+def _truncate_uri(uri: str, max_len: int = 80) -> str:
+    """Truncate an at:// URI for table display, keeping the collection + rkey suffix."""
+    if not uri or len(uri) <= max_len:
+        return uri
+    # Show "at://did:plc:XXXX…/collection/rkey" — keep the suffix
+    if uri.startswith("at://"):
+        parts = uri.split("/", 4)
+        if len(parts) == 5:
+            head = f"{parts[0]}//{parts[2][:20]}…"
+            tail = f"{parts[3]}/{parts[4]}"
+            shrunk = f"{head}/{tail}"
+            if len(shrunk) <= max_len:
+                return shrunk
+            return shrunk[: max_len - 1] + "…"
+    return uri[: max_len - 1] + "…"
+
+
+def _render_labeled_records_html(labeled_records: list[dict], total_non_account: int) -> str:
+    """Expandable per-URI table for non-account labels.
+
+    Capped at MAX_LABELED_RECORDS_PER_LABELER; surfaces "and N more" when capped."""
+    if not labeled_records:
+        return ""
+    rows: list[str] = []
+    for entry in labeled_records:
+        vals_str = ", ".join(
+            f"{_esc(v)} ({c})" for v, c in entry["vals"][:5]
+        )
+        if len(entry["vals"]) > 5:
+            vals_str += f", +{len(entry['vals']) - 5} more"
+        rows.append(
+            "<tr>"
+            f"<td><code>{_esc(_truncate_uri(entry['uri']))}</code></td>"
+            f"<td>{_esc(_LOCUS_LABELS.get(entry['locus'], entry['locus']))}</td>"
+            f"<td>{_format_count(entry['count'])}</td>"
+            f"<td>{vals_str}</td>"
+            f"<td>{_esc(entry['first_seen'])}</td>"
+            f"<td>{_esc(entry['last_seen'])}</td>"
+            "</tr>"
+        )
+    capped_note = ""
+    shown = sum(e["count"] for e in labeled_records)
+    if total_non_account > shown:
+        capped_note = (
+            f"<p class=\"capped-note\">Showing top {len(labeled_records)} "
+            f"labeled records ({_format_count(shown)} events). "
+            f"{_format_count(total_non_account - shown)} additional non-account "
+            f"events not listed.</p>"
+        )
+    return (
+        "<details><summary>Show labeled records (non-account)</summary>"
+        f"{capped_note}"
+        "<table class=\"records\">"
+        "<thead><tr>"
+        "<th>target URI</th><th>locus</th><th>events</th>"
+        "<th>vals</th><th>first seen</th><th>last seen</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table></details>"
+    )
+
+
 def render_labeler_card_html(card: LabelerCard) -> str:
     """Render one per-labeler card.
 
-    Order is: chatty-mandated 'Use this to see' + 'Not for' frames at the
-    top → plain-language sentence → authority breakdown → expandable raw
-    tables. The card describes the labeler, not the subject.
+    Order: per-labeler header → plain-language sentence → attachment locus
+    → authority breakdown → expandable raw tables. The page-level Use/Not
+    framing lives once at the top of the page, not per card (chatty 2026-06-10).
     """
-    use_for, not_for = _card_disclaimers(card)
     handle_display = card.handle or "(handle not resolved)"
 
     classification_note = ""
@@ -614,14 +927,17 @@ def render_labeler_card_html(card: LabelerCard) -> str:
             "</p>"
         )
 
+    # locus_counts may include "account" plus various record-level loci.
+    non_account_total = sum(
+        v for k, v in card.locus_counts.items() if k != "account"
+    )
+
     return (
         "<article class=\"labeler-card\">"
         "<header>"
         f"<h3>{_esc(handle_display)}</h3>"
         f"<p class=\"did\">{_esc(card.labeler_did)}</p>"
         "</header>"
-        f"<p class=\"frame use-for\"><strong>Use this to see:</strong> {_esc(use_for)}</p>"
-        f"<p class=\"frame not-for\"><strong>Not for:</strong> {_esc(not_for)}</p>"
         f"<p class=\"sentence\">{_esc(card.plain_language_sentence)}</p>"
         f"{classification_note}"
         f"<p class=\"summary\">"
@@ -629,7 +945,9 @@ def render_labeler_card_html(card: LabelerCard) -> str:
         f" &middot; Last seen: {_esc(card.last_seen or '—')}"
         f" &middot; Labeler activity 7d/30d: {_format_count(card.events_7d)}/{_format_count(card.events_30d)}"
         "</p>"
+        f"{_render_locus_summary_html(card.locus_counts)}"
         f"{_render_authority_breakdown_html(card.authority_effects)}"
+        f"{_render_labeled_records_html(card.labeled_records, non_account_total)}"
         f"{_render_label_values_html(card.label_values)}"
         "</article>"
     )
@@ -716,6 +1034,16 @@ def render_refusal_html(result: FrontdoorResult) -> str:
     )
 
 
+_GLOBAL_USE_NOT_BLOCK = (
+    "<aside class=\"use-not\">"
+    "<p><strong>Use:</strong> observed claims from these labelers about this subject, "
+    "and what kind of authority each label attempts.</p>"
+    "<p><strong>Not:</strong> truth, ranking, or recommended action. "
+    "We publish observations of testimony, not adjudication.</p>"
+    "</aside>"
+)
+
+
 def render_result_body_html(result: FrontdoorResult) -> str:
     """Render the inner body of the result page. Caller wraps in layout."""
     if result.refusal:
@@ -731,18 +1059,17 @@ def render_result_body_html(result: FrontdoorResult) -> str:
         f"<p class=\"observed-count\">"
         f"{len(result.labelers)} observed labelers touching this subject."
         "</p>"
-        "<p class=\"disclaimer\">"
-        "Labelwatch publishes observations of labeler testimony. The "
-        "labels below are claims by labelers about this subject; their "
-        "presence here does not validate them. We do not adjudicate "
-        "subjects, rank labelers, or produce a unified score."
-        "</p>"
+        f"{_GLOBAL_USE_NOT_BLOCK}"
         f"{cards_html}"
         "</section>"
     )
 
 
-def render_result_page_html(result: FrontdoorResult) -> str:
+def render_result_page_html(
+    result: FrontdoorResult,
+    *,
+    weather: Optional[dict] = None,
+) -> str:
     """Full HTML page (standalone; safe to serve directly)."""
     title = (
         f"What's observed on {result.subject_handle or result.subject_did or 'subject'} — labelwatch"
@@ -750,6 +1077,20 @@ def render_result_page_html(result: FrontdoorResult) -> str:
         else f"Lookup — {result.refusal} — labelwatch"
     )
     body = render_result_body_html(result)
+
+    # CTA back to the system view, near the bottom of the result.
+    cta_block = (
+        "<aside class=\"system-cta\">"
+        "<p><strong>This is the subject view.</strong> "
+        "For the whole labeling network — network weather, authority-effect "
+        "graphs, concentration, hosting, contradictions, alerts, registry — "
+        "see the <a href=\"/methodology.html\">system dashboard &amp; graphs</a>."
+        "</p>"
+        "</aside>"
+    )
+
+    weather_strip = _render_weather_strip_html(weather) if weather else ""
+
     audit_footer = ""
     if result.audit_verdict:
         audit_footer = (
@@ -757,6 +1098,7 @@ def render_result_page_html(result: FrontdoorResult) -> str:
             f"Audit verdict: <code>{_esc(result.audit_verdict)}</code> "
             f"as of <time datetime=\"{_esc(result.audit_generated_at)}\">"
             f"{_esc(result.audit_generated_at)}</time>"
+            " &middot; <a href=\"/methodology.html\">system dashboard &amp; graphs</a>"
             "</footer>"
         )
     return (
@@ -766,20 +1108,27 @@ def render_result_page_html(result: FrontdoorResult) -> str:
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
         f"<title>{_esc(title)}</title>"
         f"<style>{_RESULT_CSS}</style>"
+        f"{_THEME_SYNC_JS}"
         "</head><body>"
         "<header class=\"top\">"
-        "<a class=\"home-link\" href=\"/\">labelwatch</a>"
+        "<a class=\"home-link\" href=\"/\"><strong>labelwatch</strong></a>"
         " &middot; "
-        "<a class=\"method-link\" href=\"/methodology.html\">methodology</a>"
+        "<a class=\"dashboard-link\" href=\"/methodology.html\">system dashboard &amp; graphs</a>"
+        " &middot; "
+        "<a href=\"/about\">about</a>"
         "</header>"
-        f"<main>{body}</main>"
+        f"<main>{weather_strip}{body}{cta_block}</main>"
         f"{audit_footer}"
         "</body></html>"
     )
 
 
-def render_homepage_html(audit_receipt: Optional[dict] = None) -> str:
-    """Lookup-first homepage. The methodology page lives at /methodology.html."""
+def render_homepage_html(
+    audit_receipt: Optional[dict] = None,
+    *,
+    weather: Optional[dict] = None,
+) -> str:
+    """Lookup-first homepage. The system dashboard (with graphs) lives at /methodology.html."""
     admissible, refusal_state, _ = audit_gate_status(audit_receipt)
     audit_verdict = audit_receipt.get("overall_verdict") if audit_receipt else None
     audit_ts = audit_receipt.get("generated_at") if audit_receipt else None
@@ -795,13 +1144,31 @@ def render_homepage_html(audit_receipt: Optional[dict] = None) -> str:
             "</aside>"
         )
 
+    weather_strip = _render_weather_strip_html(weather) if weather else ""
+
+    # "Want the system view?" block — chatty 2026-06-10 CTA for the relocated
+    # graph/dashboard surface. Methodology page is the system dashboard;
+    # nav label is renamed for accuracy.
+    system_view_cta = (
+        "<aside class=\"system-cta\">"
+        "<h2>Want the system view?</h2>"
+        "<p>"
+        "Network weather, authority-effect graphs, concentration, hosting, "
+        "contradictions, alerts, and the labeler registry."
+        "</p>"
+        "<p><a class=\"button-link\" href=\"/methodology.html\">"
+        "Open system dashboard &amp; graphs &rarr;"
+        "</a></p>"
+        "</aside>"
+    )
+
     audit_footer = ""
     if audit_verdict:
         audit_footer = (
             "<footer class=\"audit-footer\">"
             f"Audit verdict: <code>{_esc(audit_verdict)}</code> "
             f"as of <time datetime=\"{_esc(audit_ts)}\">{_esc(audit_ts)}</time>"
-            " &middot; <a href=\"/methodology.html\">how this works</a>"
+            " &middot; <a href=\"/methodology.html\">system dashboard &amp; graphs</a>"
             "</footer>"
         )
 
@@ -812,9 +1179,11 @@ def render_homepage_html(audit_receipt: Optional[dict] = None) -> str:
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
         "<title>labelwatch — what's observed on a Bluesky account?</title>"
         f"<style>{_HOMEPAGE_CSS}</style>"
+        f"{_THEME_SYNC_JS}"
         "</head><body>"
         "<header class=\"top\"><strong>labelwatch</strong>"
-        " &middot; <a href=\"/methodology.html\">methodology</a>"
+        " &middot; <a class=\"dashboard-link\" href=\"/methodology.html\">"
+        "system dashboard &amp; graphs</a>"
         " &middot; <a href=\"/about\">about</a>"
         "</header>"
         "<main>"
@@ -835,6 +1204,8 @@ def render_homepage_html(audit_receipt: Optional[dict] = None) -> str:
         "placeholder=\"alice.bsky.social or did:plc:…\" autofocus required/>"
         "<button type=\"submit\">Look up</button>"
         "</form>"
+        f"{weather_strip}"
+        f"{system_view_cta}"
         "<details class=\"non-outputs\">"
         "<summary>What this page will never tell you</summary>"
         "<ul>"
@@ -843,7 +1214,6 @@ def render_homepage_html(audit_receipt: Optional[dict] = None) -> str:
         "<li>A unified trust or risk score for any labeler</li>"
         "<li>Any moderation recommendation</li>"
         "</ul>"
-        "<p>If you want methodology, that's now at <a href=\"/methodology.html\">/methodology.html</a>.</p>"
         "</details>"
         "</main>"
         f"{audit_footer}"
@@ -868,9 +1238,32 @@ def render_homepage_html(audit_receipt: Optional[dict] = None) -> str:
 # ---------------------------------------------------------------------------
 
 _BASE_CSS = """
-:root { color-scheme: light dark; --fg:#1a1a1a; --bg:#fafafa; --muted:#666; --border:#ddd; --accent:#205080; }
+/* Token palette deliberately matches report.py STYLE / [data-theme="dark"]
+   so frontdoor and the system-dashboard page render with the same colors
+   in both modes. Frontdoor uses prefers-color-scheme; methodology uses
+   data-theme="dark" set by JS that ALSO honors prefers-color-scheme on
+   first load, so both surfaces flip together. */
+:root {
+  color-scheme: light dark;
+  --fg:#111; --bg:#fff; --muted:#666; --border:#ddd; --accent:#0b5394;
+  --bg-muted:#f6f7f9;
+}
 @media (prefers-color-scheme: dark) {
-  :root { --fg:#e8e8e8; --bg:#111; --muted:#999; --border:#333; --accent:#9ab4cc; }
+  :root {
+    --fg:#e0e0e0; --bg:#1a1a2e; --muted:#999; --border:#333; --accent:#6db3f2;
+    --bg-muted:#16213e;
+  }
+}
+/* Honor explicit data-theme override (set by the methodology theme toggle JS
+   when the user clicks Light/Dark on the system-dashboard page). Keeps the
+   manual toggle's state consistent when navigating to the frontdoor. */
+[data-theme="dark"] {
+  --fg:#e0e0e0; --bg:#1a1a2e; --muted:#999; --border:#333; --accent:#6db3f2;
+  --bg-muted:#16213e;
+}
+[data-theme="light"] {
+  --fg:#111; --bg:#fff; --muted:#666; --border:#ddd; --accent:#0b5394;
+  --bg-muted:#f6f7f9;
 }
 * { box-sizing: border-box; }
 body { font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color:var(--fg); background:var(--bg); margin:0; }
@@ -884,7 +1277,35 @@ p.lede { font-size:1.05rem; color:var(--muted); }
 footer.audit-footer { max-width:880px; margin:48px auto 32px; padding:12px 28px; border-top:1px solid var(--border); font-size:.85rem; color:var(--muted); }
 """
 
-_HOMEPAGE_CSS = _BASE_CSS + """
+# Tiny inline JS shared by homepage + result page. Reads the same `lw-theme`
+# localStorage key the methodology page uses, so a user who toggles Dark on
+# the system dashboard sees the frontdoor honor that choice on navigation.
+_THEME_SYNC_JS = (
+    "<script>"
+    "(function(){"
+    "var s=localStorage.getItem('lw-theme');"
+    "if(s){document.documentElement.setAttribute('data-theme',s);}"
+    "})();"
+    "</script>"
+)
+
+_SHARED_COMPONENTS_CSS = """
+aside.weather-strip { margin:20px 0; padding:14px 16px; border:1px solid var(--border); border-radius:8px; background:rgba(0,0,0,0.02); }
+@media (prefers-color-scheme: dark) { aside.weather-strip { background:rgba(255,255,255,0.03); } }
+aside.weather-strip p { margin:4px 0; }
+aside.weather-strip .weather-label { color:var(--muted); }
+aside.weather-strip .weather-counts { font-size:.92rem; color:var(--muted); }
+aside.weather-strip .weather-link a { color:var(--accent); text-decoration:none; font-size:.92rem; }
+aside.weather-strip .weather-link a:hover { text-decoration:underline; }
+aside.system-cta { margin:32px 0; padding:20px 22px; border:1px solid var(--border); border-radius:8px; background:linear-gradient(180deg, rgba(32,80,128,0.04), transparent); }
+@media (prefers-color-scheme: dark) { aside.system-cta { background:linear-gradient(180deg, rgba(154,180,204,0.06), transparent); } }
+aside.system-cta h2 { margin:0 0 6px; font-size:1.05rem; }
+aside.system-cta p { margin:6px 0; }
+a.button-link { display:inline-block; padding:9px 16px; background:var(--accent); color:white; text-decoration:none; border-radius:6px; font-weight:600; }
+a.button-link:hover { filter:brightness(1.1); text-decoration:none; }
+"""
+
+_HOMEPAGE_CSS = _BASE_CSS + _SHARED_COMPONENTS_CSS + """
 form.lookup { margin:28px 0; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
 form.lookup label { font-weight:600; }
 form.lookup input { flex:1 1 320px; padding:10px 12px; font-size:1rem; border:1px solid var(--border); border-radius:6px; background:transparent; color:var(--fg); }
@@ -892,26 +1313,34 @@ form.lookup button { padding:10px 18px; font-size:1rem; border:1px solid var(--a
 details.non-outputs { margin-top:32px; border-top:1px dashed var(--border); padding-top:16px; }
 details.non-outputs summary { cursor:pointer; font-weight:600; }
 aside.banner.pause { margin:20px 0; padding:14px 16px; border-left:4px solid #b07700; background:rgba(176, 119, 0, 0.08); }
+a.dashboard-link { font-weight:600; }
 """
 
-_RESULT_CSS = _BASE_CSS + """
+_RESULT_CSS = _BASE_CSS + _SHARED_COMPONENTS_CSS + """
 p.did { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size:.85rem; color:var(--muted); word-break:break-all; }
 p.observed-count { font-weight:600; }
-p.disclaimer { font-size:.92rem; color:var(--muted); border-left:3px solid var(--border); padding:6px 12px; }
+aside.use-not { margin:16px 0 28px; padding:14px 16px; border-left:3px solid var(--border); background:rgba(0,0,0,0.02); font-size:.92rem; }
+@media (prefers-color-scheme: dark) { aside.use-not { background:rgba(255,255,255,0.03); } }
+aside.use-not p { margin:6px 0; }
+aside.use-not strong { color:var(--accent); }
 article.labeler-card { margin:24px 0; padding:20px; border:1px solid var(--border); border-radius:8px; background:rgba(0,0,0,0.015); }
+@media (prefers-color-scheme: dark) { article.labeler-card { background:rgba(255,255,255,0.02); } }
 article.labeler-card h3 { margin:0 0 4px; font-size:1.1rem; }
-p.frame { font-size:.9rem; margin:6px 0; }
-p.frame.use-for strong { color:var(--accent); }
-p.frame.not-for strong { color:#a03030; }
 p.sentence { font-size:1.05rem; margin:14px 0; font-weight:500; }
 p.coherence-note { font-size:.85rem; color:var(--muted); border-left:3px solid #a07a30; padding:4px 12px; margin:8px 0; }
 p.summary { font-size:.88rem; color:var(--muted); }
+p.locus { font-size:.92rem; margin:10px 0; }
+p.locus .locus-chip { display:inline-block; padding:1px 8px; margin:2px 4px 2px 0; border-radius:11px; background:rgba(0,0,0,0.05); }
+@media (prefers-color-scheme: dark) { p.locus .locus-chip { background:rgba(255,255,255,0.07); } }
+p.capped-note { font-size:.85rem; color:var(--muted); margin:6px 0; }
 table { width:100%; border-collapse:collapse; margin:12px 0; font-size:.9rem; }
 table th, table td { padding:6px 10px; border-bottom:1px solid var(--border); text-align:left; }
 table caption { text-align:left; font-weight:600; padding:6px 0; }
+table.records td code { font-size:.82rem; word-break:break-all; }
 details { margin-top:12px; }
 details summary { cursor:pointer; color:var(--accent); }
 section.refusal { padding:24px; border:1px solid var(--border); border-radius:8px; }
 section.refusal h2 { margin-top:0; }
 p.refusal-detail { font-family: ui-monospace, monospace; font-size:.85rem; color:var(--muted); }
+a.dashboard-link { font-weight:600; }
 """

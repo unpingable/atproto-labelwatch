@@ -272,7 +272,18 @@ class ClimateHandler(BaseHTTPRequestHandler):
     def _handle_homepage(self):
         from . import frontdoor as fd
         receipt = self.audit_receipt
-        html = fd.render_homepage_html(audit_receipt=receipt)
+        # Network weather: cheap dimension-table query (not in audit inventory).
+        # Failure here is non-fatal — strip is decoration; homepage still ships.
+        weather = None
+        try:
+            conn = db.connect(self.db_path, readonly=True)
+            try:
+                weather = fd.network_weather(conn)
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("frontdoor: network_weather query failed", exc_info=True)
+        html = fd.render_homepage_html(audit_receipt=receipt, weather=weather)
         self._last_status = 200
         self._send_html(200, html.encode("utf-8"),
                         {"Cache-Control": "public, max-age=120"})
@@ -321,6 +332,7 @@ class ClimateHandler(BaseHTTPRequestHandler):
             self._send_error(503, "Server busy")
             return
 
+        weather = None
         try:
             conn = db.connect(self.db_path, readonly=True)
             try:
@@ -329,6 +341,13 @@ class ClimateHandler(BaseHTTPRequestHandler):
                     identifier,
                     audit_receipt=self.audit_receipt,
                 )
+                # Weather strip on the result page: same small-table query as
+                # the homepage. Failure is non-fatal.
+                try:
+                    weather = fd.network_weather(conn)
+                except Exception:
+                    logger.debug("frontdoor: network_weather query failed",
+                                 exc_info=True)
             finally:
                 conn.close()
         finally:
@@ -344,7 +363,8 @@ class ClimateHandler(BaseHTTPRequestHandler):
         if fmt == "json":
             self._send_json(200, fd.result_to_json(result), headers)
         else:
-            self._send_html(200, fd.render_result_page_html(result).encode("utf-8"), headers)
+            html_body = fd.render_result_page_html(result, weather=weather)
+            self._send_html(200, html_body.encode("utf-8"), headers)
 
     def _handle_about(self):
         from .about import render_about_html

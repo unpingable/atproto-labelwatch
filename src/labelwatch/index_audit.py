@@ -158,10 +158,10 @@ QUERIES: tuple[Query, ...] = (
     ),
     Query(
         query_id="Q8",
-        query_name="temporal_coherence_summary",
-        purpose="Per (labeler, val, ts, neg) timeline against subject for classification flips.",
+        query_name="temporal_coherence_and_locus",
+        purpose="Per (labeler, val, ts, neg, uri) timeline against subject for classification flips and attachment-locus aggregation.",
         sql=(
-            "SELECT labeler_did, val, ts, neg "
+            "SELECT labeler_did, val, ts, neg, uri "
             "FROM label_events "
             "WHERE target_did = ? "
             "ORDER BY labeler_did, ts"

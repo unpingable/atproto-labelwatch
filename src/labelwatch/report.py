@@ -3580,11 +3580,17 @@ events per day, not active inventory.</p>
     try:
         from . import frontdoor as fd
         audit_receipt = fd.find_latest_audit_receipt()
-        homepage_html = fd.render_homepage_html(audit_receipt=audit_receipt)
+        # Network weather strip — same conn used for the rest of the report.
+        try:
+            weather = fd.network_weather(conn)
+        except Exception:
+            weather = None
+        homepage_html = fd.render_homepage_html(
+            audit_receipt=audit_receipt, weather=weather,
+        )
     except Exception:  # pragma: no cover — defensive; report should still ship
-        # Fallback: serve a minimal lookup form without audit-gate info.
         from . import frontdoor as fd
-        homepage_html = fd.render_homepage_html(audit_receipt=None)
+        homepage_html = fd.render_homepage_html(audit_receipt=None, weather=None)
     _write(os.path.join(tmp_dir, "index.html"), homepage_html)
 
     # --- Authority report page ---

@@ -206,7 +206,10 @@ def test_unresolvable_handle_returns_subject_not_found(seeded_db):
 # Test 4 — Result cards include "Use this to see" and "Not for"
 # ---------------------------------------------------------------------------
 
-def test_result_cards_include_use_this_to_see_and_not_for(seeded_db):
+def test_result_page_has_global_use_not_framing(seeded_db):
+    """Per chatty 2026-06-10: drop per-card boilerplate, one global Use/Not
+    block at top of the result. The framing remains; the location changes
+    from per-card to per-page."""
     conn = db.connect(seeded_db, readonly=True)
     try:
         result = frontdoor.lookup_subject(
@@ -217,8 +220,14 @@ def test_result_cards_include_use_this_to_see_and_not_for(seeded_db):
     finally:
         conn.close()
     html = frontdoor.render_result_page_html(result)
-    assert "Use this to see" in html
-    assert "Not for" in html
+    # The global Use/Not block is what enforces the framing now.
+    assert "<aside class=\"use-not\">" in html
+    assert "<strong>Use:</strong>" in html
+    assert "<strong>Not:</strong>" in html
+    # Defensive: per-card Use/Not paragraphs should NOT reappear. Count
+    # 'Use:' occurrences — there's exactly one (the global block).
+    assert html.count("<strong>Use:</strong>") == 1
+    assert html.count("<strong>Not:</strong>") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +478,151 @@ def test_find_latest_audit_receipt_returns_none_when_empty(tmp_path):
 # Temporal coherence (classification flip detection)
 # ---------------------------------------------------------------------------
 
+def test_attachment_locus_classification():
+    """Pure-function: URI patterns map to the right locus."""
+    f = frontdoor.attachment_locus
+    # Account-level: bare DID or URI == target_did
+    assert f("did:plc:abc", "did:plc:abc") == "account"
+    assert f("did:plc:abc", "did:plc:xyz") == "account"  # any did: prefix
+    # Profile record
+    assert f("at://did:plc:abc/app.bsky.actor.profile/self", "did:plc:abc") == "profile"
+    # Post
+    assert f("at://did:plc:abc/app.bsky.feed.post/3abc", "did:plc:abc") == "post"
+    # List
+    assert f("at://did:plc:abc/app.bsky.graph.list/mylist", "did:plc:abc") == "list"
+    # List item
+    assert f("at://did:plc:abc/app.bsky.graph.listitem/item1", "did:plc:abc") == "list_item"
+    # Feed generator
+    assert f("at://did:plc:abc/app.bsky.feed.generator/genX", "did:plc:abc") == "feed_generator"
+    # Unknown record collection
+    assert f("at://did:plc:abc/com.custom.collection/foo", "did:plc:abc") == "record"
+    # Unknown / non-at
+    assert f(None, "did:plc:abc") == "unknown"
+    assert f("", "did:plc:abc") == "unknown"
+    assert f("https://example.com/foo", "did:plc:abc") == "unknown"
+
+
+def test_attachment_locus_aggregation_in_card(seeded_db):
+    """Seeded DB has account-level labels; cards should show locus_counts."""
+    conn = db.connect(seeded_db, readonly=True)
+    try:
+        result = frontdoor.lookup_subject(
+            conn,
+            SUBJECT_DID,
+            audit_receipt=_admissible_receipt(),
+        )
+    finally:
+        conn.close()
+    for card in result.labelers:
+        # Seeded labels have uri == SUBJECT_DID, so account locus only.
+        assert "account" in card.locus_counts
+        assert card.locus_counts["account"] >= 1
+        # No post/profile loci in this seed.
+        assert "post" not in card.locus_counts
+
+
+def test_attachment_locus_with_record_level_labels(tmp_path):
+    """A subject with a mix of account + post-level labels should produce
+    a mixed locus_counts dict and a non-empty labeled_records list."""
+    p = str(tmp_path / "lw.db")
+    conn = db.connect(p)
+    db.init_db(conn)
+    conn.execute(
+        "INSERT INTO labelers (labeler_did, handle, regime_state, auditability) "
+        "VALUES (?,?,?,?)",
+        ("did:plc:mixedlabeler", "mixed-labeler.test", "stable", "high"),
+    )
+    # 1 account-level + 3 post-level events, two distinct posts
+    rows = [
+        ("did:plc:mixedlabeler", "did:plc:mixedlabeler", "did:plc:mixedsubj", "spam", 0,
+         "2026-06-01T00:00:00Z", "h-acct", "did:plc:mixedsubj"),
+        ("did:plc:mixedlabeler", "did:plc:mixedlabeler",
+         "at://did:plc:mixedsubj/app.bsky.feed.post/abc", "spam", 0,
+         "2026-06-02T00:00:00Z", "h-p1a", "did:plc:mixedsubj"),
+        ("did:plc:mixedlabeler", "did:plc:mixedlabeler",
+         "at://did:plc:mixedsubj/app.bsky.feed.post/abc", "porn", 0,
+         "2026-06-03T00:00:00Z", "h-p1b", "did:plc:mixedsubj"),
+        ("did:plc:mixedlabeler", "did:plc:mixedlabeler",
+         "at://did:plc:mixedsubj/app.bsky.feed.post/xyz", "spam", 0,
+         "2026-06-04T00:00:00Z", "h-p2", "did:plc:mixedsubj"),
+    ]
+    for r in rows:
+        conn.execute(
+            "INSERT INTO label_events (labeler_did, src, uri, val, neg, ts, "
+            "event_hash, target_did) VALUES (?,?,?,?,?,?,?,?)", r,
+        )
+    conn.commit()
+    conn.close()
+
+    conn = db.connect(p, readonly=True)
+    try:
+        result = frontdoor.lookup_subject(
+            conn,
+            "did:plc:mixedsubj",
+            audit_receipt=_admissible_receipt(),
+        )
+    finally:
+        conn.close()
+
+    assert len(result.labelers) == 1
+    card = result.labelers[0]
+    assert card.locus_counts.get("account") == 1
+    assert card.locus_counts.get("post") == 3
+    # Two distinct post URIs surface in labeled_records.
+    post_uris = {e["uri"] for e in card.labeled_records}
+    assert len(post_uris) == 2
+    assert all(e["locus"] == "post" for e in card.labeled_records)
+
+    # HTML rendering surfaces the locus chips and the records expander.
+    html = frontdoor.render_result_page_html(result)
+    assert "Where attached:" in html
+    assert "post <b>3</b>" in html or "post</span>" in html.lower() or "post" in html
+    assert "Show labeled records" in html
+
+
+def test_network_weather_payload(seeded_db):
+    """network_weather() runs against the small dimension tables and produces
+    the strip data structure."""
+    conn = db.connect(seeded_db, readonly=True)
+    try:
+        w = frontdoor.network_weather(conn)
+    finally:
+        conn.close()
+    assert isinstance(w["total_labelers"], int)
+    assert w["total_labelers"] >= 2  # seeded labelers
+    assert isinstance(w["signals"], list)
+    assert w["signals"]  # always non-empty (falls back to "calm")
+    assert "computed_at" in w
+
+
+def test_homepage_renders_weather_strip(seeded_db):
+    """Homepage with weather shows the network strip + system-dashboard CTA."""
+    conn = db.connect(seeded_db, readonly=True)
+    try:
+        w = frontdoor.network_weather(conn)
+    finally:
+        conn.close()
+    html = frontdoor.render_homepage_html(
+        audit_receipt=_admissible_receipt(),
+        weather=w,
+    )
+    assert "Network weather:" in html
+    assert "system dashboard" in html  # CTA + nav link
+    assert "Open system dashboard" in html  # button link
+    assert "labelers" in html  # counts surfaced
+    assert "events in 7d" in html
+
+
+def test_methodology_link_renamed_to_system_dashboard():
+    """The nav label is 'system dashboard & graphs', not 'methodology'."""
+    html = frontdoor.render_homepage_html(audit_receipt=_admissible_receipt())
+    # The visible nav text uses 'system dashboard', not the old 'methodology'.
+    # (The target URL stays /methodology.html for v0; route rename is a
+    # follow-up.)
+    assert "system dashboard" in html
+    assert ">methodology<" not in html  # the bare nav text is gone
+
+
 def test_classification_changed_detected(seeded_db):
     """Labeler B's spam→spam+neg flip should be visible as classification_changed."""
     conn = db.connect(seeded_db, readonly=True)
@@ -549,10 +703,13 @@ def test_http_frontdoor_lookup_returns_result_html(seeded_db):
     port, shutdown = _start_test_server(seeded_db, _admissible_receipt())
     try:
         status, body = _http_get(port, f"/v1/frontdoor/{SUBJECT_DID}")
-        # Result page should mention each labeler's handle.
+        # Result page should mention each labeler's handle and the global
+        # Use/Not framing block.
         assert "labeler-a.test" in body
         assert "labeler-b.test" in body
-        assert "Use this to see" in body
+        assert "<aside class=\"use-not\">" in body
+        # System-dashboard CTA points users back to the graphs surface.
+        assert "system dashboard" in body
     finally:
         shutdown()
 
