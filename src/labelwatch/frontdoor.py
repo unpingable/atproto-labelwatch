@@ -59,16 +59,23 @@ REFUSAL_STATES = (
 
 # Circuit breaker for high-volume subjects. The shape audit's synthetic
 # zero-match probe (the all-zeros DID) passes — but a real subject with
-# 100k+ labels forces Python-side O(events) aggregation in
-# _build_labeler_card (locus + coherence walks). The load probe
-# (2026-06-10) measured p99 = 24s, max = 37s against the top-100 labeled
-# subjects on the live DB.
+# many labels forces Python-side O(events × labelers) aggregation in
+# _build_labeler_card (locus + coherence walks per labeler).
 #
-# Until SQL-side aggregation lands as a follow-up slice, refuse subjects
-# above this threshold with the dedicated `subject_too_dense` state.
-# Honest refusal beats a 30-second hung page.
+# Load probe history:
+#   2026-06-10T071856Z  cap=∞     p99=24309ms  refused_unbounded
+#   2026-06-10T074342Z  cap=10000 p99= 8720ms  refused_unbounded  68 gated
+#   →                   cap= 2000 (this slice) — tightened after observing
+#                       that even 8k events × 12 labelers takes ~3.7s; the
+#                       cost is events×labelers, not pure events.
+#
+# Until SQL-side aggregation lands (gap-spec
+# subject-lookup-sql-aggregation-001), refuse subjects above this
+# threshold with the dedicated `subject_too_dense` state. Honest refusal
+# beats a 30-second hung page. Tunable via env so the cap can be relaxed
+# once remediation lands without redeploying.
 MAX_EVENTS_FOR_AGGREGATION = int(
-    os.environ.get("LABELWATCH_FRONTDOOR_MAX_EVENTS", "10000")
+    os.environ.get("LABELWATCH_FRONTDOOR_MAX_EVENTS", "2000")
 )
 
 ADMISSIBLE_VERDICTS = {"admissible", "admissible_with_debt"}
