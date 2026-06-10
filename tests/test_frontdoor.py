@@ -478,6 +478,167 @@ def test_find_latest_audit_receipt_returns_none_when_empty(tmp_path):
 # Temporal coherence (classification flip detection)
 # ---------------------------------------------------------------------------
 
+def test_bsky_profile_url():
+    f = frontdoor.bsky_profile_url
+    assert f("did:plc:abc123") == "https://bsky.app/profile/did:plc:abc123"
+    assert f("did:web:example.com") == "https://bsky.app/profile/did:web:example.com"
+    assert f("") is None
+    assert f(None) is None
+    assert f("not-a-did") is None
+
+
+def test_bsky_post_url():
+    f = frontdoor.bsky_post_url
+    # Bluesky posts → clickable
+    assert f("at://did:plc:abc/app.bsky.feed.post/3xyz") == (
+        "https://bsky.app/profile/did:plc:abc/post/3xyz"
+    )
+    # Non-post records → None (no link)
+    assert f("at://did:plc:abc/app.bsky.actor.profile/self") is None
+    assert f("at://did:plc:abc/app.bsky.graph.list/mylist") is None
+    assert f("at://did:plc:abc/fm.plyr.track/abc") is None
+    # Malformed URIs → None
+    assert f(None) is None
+    assert f("") is None
+    assert f("did:plc:abc") is None
+    assert f("https://example.com/post") is None
+    assert f("at://did:plc:abc/app.bsky.feed.post") is None  # no rkey
+
+
+def test_labeler_default_effect_applied_in_card(tmp_path):
+    """If a labeler is in LABELER_DEFAULT_EFFECT, its 'unknown' family labels
+    resolve to the labeler's default effect. antisubstack is the canonical
+    case (added 2026-06-10)."""
+    from labelwatch.label_family import LABELER_DEFAULT_EFFECT
+
+    # Locate a real entry from the map to use in this test (avoids tying the
+    # test to a single example that may rotate).
+    decorative_labeler_did = next(
+        d for d, eff in LABELER_DEFAULT_EFFECT.items() if eff == "decorative"
+    )
+
+    p = str(tmp_path / "lw.db")
+    conn = db.connect(p)
+    db.init_db(conn)
+    conn.execute(
+        "INSERT INTO labelers (labeler_did, handle, regime_state, auditability) "
+        "VALUES (?,?,?,?)",
+        (decorative_labeler_did, "decorative.test", "stable", "high"),
+    )
+    # Synthetic novel val that's NOT in AUTHORITY_EFFECT_MAP.
+    conn.execute(
+        "INSERT INTO label_events (labeler_did, src, uri, val, neg, ts, "
+        "event_hash, target_did) VALUES (?,?,?,?,?,?,?,?)",
+        (decorative_labeler_did, decorative_labeler_did,
+         "did:plc:decosubj", "manner-of-death-improbable-cheese", 0,
+         "2026-06-01T00:00:00Z", "h-deco", "did:plc:decosubj"),
+    )
+    conn.commit()
+    conn.close()
+
+    conn = db.connect(p, readonly=True)
+    try:
+        result = frontdoor.lookup_subject(
+            conn,
+            "did:plc:decosubj",
+            audit_receipt=_admissible_receipt(),
+        )
+    finally:
+        conn.close()
+
+    card = result.labelers[0]
+    # authority_effects should NOT contain 'unknown' — the labeler-default
+    # fallback resolved it to 'decorative'.
+    assert "unknown" not in card.authority_effects
+    assert "decorative" in card.authority_effects
+
+
+def test_card_links_to_labeler_profile(seeded_db):
+    """Card header renders a clickable handle + 'View profile' link."""
+    conn = db.connect(seeded_db, readonly=True)
+    try:
+        result = frontdoor.lookup_subject(
+            conn,
+            SUBJECT_DID,
+            audit_receipt=_admissible_receipt(),
+        )
+    finally:
+        conn.close()
+    html = frontdoor.render_result_page_html(result)
+    # Both labelers' profile URLs should be present, with external-link attrs.
+    for labeler_did in (LABELER_A, LABELER_B):
+        url = f"https://bsky.app/profile/{labeler_did}"
+        assert url in html, f"labeler profile URL missing for {labeler_did}"
+    # External-link attributes applied.
+    assert 'rel="noopener noreferrer"' in html
+    assert 'target="_blank"' in html
+    # "View profile" affordance appears (at least once per labeler).
+    assert html.count("View profile") >= 2
+
+
+def test_post_target_links_in_records_expander(tmp_path):
+    """For at:// post URIs, the labeled-records table renders 'View post'
+    plus the raw URI; non-post records stay raw-only."""
+    p = str(tmp_path / "lw.db")
+    conn = db.connect(p)
+    db.init_db(conn)
+    conn.execute(
+        "INSERT INTO labelers (labeler_did, handle, regime_state, auditability) "
+        "VALUES (?,?,?,?)",
+        ("did:plc:linklabeler", "link-labeler.test", "stable", "high"),
+    )
+    # One post + one custom record
+    conn.execute(
+        "INSERT INTO label_events (labeler_did, src, uri, val, neg, ts, "
+        "event_hash, target_did) VALUES (?,?,?,?,?,?,?,?)",
+        ("did:plc:linklabeler", "did:plc:linklabeler",
+         "at://did:plc:linksubj/app.bsky.feed.post/3abcxyz", "spam", 0,
+         "2026-06-01T00:00:00Z", "h-link-post", "did:plc:linksubj"),
+    )
+    conn.execute(
+        "INSERT INTO label_events (labeler_did, src, uri, val, neg, ts, "
+        "event_hash, target_did) VALUES (?,?,?,?,?,?,?,?)",
+        ("did:plc:linklabeler", "did:plc:linklabeler",
+         "at://did:plc:linksubj/fm.plyr.track/customrkey", "copyright", 0,
+         "2026-06-02T00:00:00Z", "h-link-track", "did:plc:linksubj"),
+    )
+    conn.commit()
+    conn.close()
+
+    conn = db.connect(p, readonly=True)
+    try:
+        result = frontdoor.lookup_subject(
+            conn,
+            "did:plc:linksubj",
+            audit_receipt=_admissible_receipt(),
+        )
+    finally:
+        conn.close()
+    html = frontdoor.render_result_page_html(result)
+    # Post URI → clickable
+    assert "https://bsky.app/profile/did:plc:linksubj/post/3abcxyz" in html
+    assert "View post" in html
+    # Custom record type → raw URI visible, no link invented
+    assert "fm.plyr.track/customrkey" in html
+    # Make sure we did NOT invent a bsky URL for the custom record.
+    assert "/post/customrkey" not in html
+
+
+def test_subject_header_links_to_bsky_profile(seeded_db):
+    """Subject handle/DID link out to bsky.app/profile/<did>."""
+    conn = db.connect(seeded_db, readonly=True)
+    try:
+        result = frontdoor.lookup_subject(
+            conn,
+            SUBJECT_DID,
+            audit_receipt=_admissible_receipt(),
+        )
+    finally:
+        conn.close()
+    html = frontdoor.render_result_page_html(result)
+    assert f"https://bsky.app/profile/{SUBJECT_DID}" in html
+
+
 def test_attachment_locus_classification():
     """Pure-function: URI patterns map to the right locus."""
     f = frontdoor.attachment_locus

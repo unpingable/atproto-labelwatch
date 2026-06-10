@@ -561,6 +561,15 @@ LABELER_DEFAULT_EFFECT: dict[str, str] = {
     # an obvious decorative labeler but is not yet in the labelers registry
     # at the time of this map's last update. Add its DID here when discovery
     # resolves it.
+    #
+    # labeler.antisubstack.fyi — emits a single value (`substack`) ~3.5M times
+    # against accounts/posts linking to Substack. The labeler's framing is
+    # explicitly reputational — "this is Substack-linked, and Substack
+    # platforms Nazis" — not neutral metadata. Post-level attachment doesn't
+    # downgrade the effect; locus and effect are orthogonal axes (chatty
+    # 2026-06-10). Classifying as `descriptive` would underweight a label
+    # that functions as adverse testimony by association.
+    "did:plc:uxjwly6emtgik7juvxxdpl3c": "reputational",
 }
 
 

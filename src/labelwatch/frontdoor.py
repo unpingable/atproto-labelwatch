@@ -32,7 +32,11 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
-from .label_family import classify_authority_effect, normalize_family
+from .label_family import (
+    LABELER_DEFAULT_EFFECT,
+    classify_authority_effect,
+    normalize_family,
+)
 from .utils import format_ts, now_utc
 
 log = logging.getLogger(__name__)
@@ -394,9 +398,19 @@ def _build_labeler_card(
     authority_effects: dict[str, int] = {}
     event_count_total = 0
     last_seen: Optional[str] = None
+
+    # Labeler-context fallback for unknown effects: if the family-level map
+    # returns "unknown" AND this labeler has a LABELER_DEFAULT_EFFECT entry,
+    # use the labeler default. The label-level mapping always wins; this
+    # only resolves the unknown case. See LABELER_DEFAULT_EFFECT comment in
+    # label_family.py for the tension and antisubstack/oracle examples.
+    labeler_default = LABELER_DEFAULT_EFFECT.get(labeler_did)
+
     for r in rows_for_labeler:
         family = normalize_family(r["val"])
         effect = classify_authority_effect(family)
+        if effect == "unknown" and labeler_default:
+            effect = labeler_default
         c = int(r["event_count"])
         label_values.append({
             "val": r["val"],
@@ -847,6 +861,54 @@ def _render_locus_summary_html(locus_counts: dict[str, int]) -> str:
     return f"<p class=\"locus\"><strong>Where attached:</strong> {chips}</p>"
 
 
+# ---------------------------------------------------------------------------
+# Bluesky URL helpers — clickable witness/target affordances.
+#
+# Acceptance (chatty 2026-06-10 "custody triangle"):
+#   - labeler handle  → https://bsky.app/profile/<labeler_did>      (witness)
+#   - post target     → https://bsky.app/profile/<did>/post/<rkey>  (what)
+#   - subject account → https://bsky.app/profile/<did>              (subject)
+# Unknown record types stay raw-text-only; no link is invented. No post text
+# is fetched — clickable link only.
+# ---------------------------------------------------------------------------
+
+_BSKY_PROFILE_BASE = "https://bsky.app/profile/"
+
+
+def bsky_profile_url(did: str) -> Optional[str]:
+    """Build a profile URL for any actor DID (subject or labeler)."""
+    if not did or not did.startswith("did:"):
+        return None
+    return f"{_BSKY_PROFILE_BASE}{did}"
+
+
+def bsky_post_url(at_uri: str) -> Optional[str]:
+    """Build a bsky.app post URL from an at:// URI, or None for non-post URIs.
+
+    Handles `at://did:.../app.bsky.feed.post/<rkey>` only. Other record types
+    return None — the renderer falls back to raw URI display."""
+    if not at_uri or not at_uri.startswith("at://"):
+        return None
+    parts = at_uri.split("/", 4)
+    if len(parts) < 5:
+        return None
+    _, _, did, collection, rkey = parts
+    if collection != "app.bsky.feed.post":
+        return None
+    if not did.startswith("did:"):
+        return None
+    return f"{_BSKY_PROFILE_BASE}{did}/post/{rkey}"
+
+
+def _ext_link(url: str, text: str, *, css_class: str = "") -> str:
+    """Render an external link with rel=noopener noreferrer + target=_blank."""
+    cls = f' class="{css_class}"' if css_class else ""
+    return (
+        f'<a href="{_esc(url)}"{cls} target="_blank" '
+        f'rel="noopener noreferrer">{_esc(text)}</a>'
+    )
+
+
 def _truncate_uri(uri: str, max_len: int = 80) -> str:
     """Truncate an at:// URI for table display, keeping the collection + rkey suffix."""
     if not uri or len(uri) <= max_len:
@@ -867,7 +929,9 @@ def _truncate_uri(uri: str, max_len: int = 80) -> str:
 def _render_labeled_records_html(labeled_records: list[dict], total_non_account: int) -> str:
     """Expandable per-URI table for non-account labels.
 
-    Capped at MAX_LABELED_RECORDS_PER_LABELER; surfaces "and N more" when capped."""
+    Capped at MAX_LABELED_RECORDS_PER_LABELER; surfaces "and N more" when capped.
+    Post URIs render a "View post ↗" link to bsky.app; other record types stay
+    as raw at:// text. No post text is fetched."""
     if not labeled_records:
         return ""
     rows: list[str] = []
@@ -877,9 +941,21 @@ def _render_labeled_records_html(labeled_records: list[dict], total_non_account:
         )
         if len(entry["vals"]) > 5:
             vals_str += f", +{len(entry['vals']) - 5} more"
+
+        # Target column: link for post URIs, raw text + truncation otherwise.
+        post_url = bsky_post_url(entry["uri"])
+        if post_url:
+            link_html = _ext_link(post_url, "View post ↗", css_class="post-link")
+            target_html = (
+                f"{link_html}"
+                f"<br><code class=\"raw-uri\">{_esc(_truncate_uri(entry['uri']))}</code>"
+            )
+        else:
+            target_html = f"<code class=\"raw-uri\">{_esc(_truncate_uri(entry['uri']))}</code>"
+
         rows.append(
             "<tr>"
-            f"<td><code>{_esc(_truncate_uri(entry['uri']))}</code></td>"
+            f"<td>{target_html}</td>"
             f"<td>{_esc(_LOCUS_LABELS.get(entry['locus'], entry['locus']))}</td>"
             f"<td>{_format_count(entry['count'])}</td>"
             f"<td>{vals_str}</td>"
@@ -901,7 +977,7 @@ def _render_labeled_records_html(labeled_records: list[dict], total_non_account:
         f"{capped_note}"
         "<table class=\"records\">"
         "<thead><tr>"
-        "<th>target URI</th><th>locus</th><th>events</th>"
+        "<th>target</th><th>locus</th><th>events</th>"
         "<th>vals</th><th>first seen</th><th>last seen</th>"
         "</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table></details>"
@@ -911,11 +987,26 @@ def _render_labeled_records_html(labeled_records: list[dict], total_non_account:
 def render_labeler_card_html(card: LabelerCard) -> str:
     """Render one per-labeler card.
 
-    Order: per-labeler header → plain-language sentence → attachment locus
-    → authority breakdown → expandable raw tables. The page-level Use/Not
-    framing lives once at the top of the page, not per card (chatty 2026-06-10).
+    Order: per-labeler header (clickable witness) → plain-language sentence
+    → attachment locus → authority breakdown → expandable raw tables. The
+    page-level Use/Not framing lives once at the top of the page, not per
+    card (chatty 2026-06-10).
     """
     handle_display = card.handle or "(handle not resolved)"
+    labeler_profile_url = bsky_profile_url(card.labeler_did)
+    if labeler_profile_url:
+        handle_html = _ext_link(
+            labeler_profile_url, handle_display, css_class="labeler-handle"
+        )
+        view_profile_link = (
+            " " + _ext_link(
+                labeler_profile_url, "View profile ↗",
+                css_class="labeler-profile-link",
+            )
+        )
+    else:
+        handle_html = _esc(handle_display)
+        view_profile_link = ""
 
     classification_note = ""
     if card.classification_changed:
@@ -935,7 +1026,7 @@ def render_labeler_card_html(card: LabelerCard) -> str:
     return (
         "<article class=\"labeler-card\">"
         "<header>"
-        f"<h3>{_esc(handle_display)}</h3>"
+        f"<h3>{handle_html}{view_profile_link}</h3>"
         f"<p class=\"did\">{_esc(card.labeler_did)}</p>"
         "</header>"
         f"<p class=\"sentence\">{_esc(card.plain_language_sentence)}</p>"
@@ -1052,9 +1143,25 @@ def render_result_body_html(result: FrontdoorResult) -> str:
     subject_handle = result.subject_handle or "(handle unresolved)"
     cards_html = "".join(render_labeler_card_html(c) for c in result.labelers)
 
+    # Subject header: handle clickable to bsky profile if DID available.
+    subject_profile_url = bsky_profile_url(result.subject_did or "")
+    if subject_profile_url:
+        subject_header = _ext_link(
+            subject_profile_url, subject_handle, css_class="subject-handle"
+        )
+        view_subject_link = (
+            " " + _ext_link(
+                subject_profile_url, "View profile ↗",
+                css_class="subject-profile-link",
+            )
+        )
+    else:
+        subject_header = _esc(subject_handle)
+        view_subject_link = ""
+
     return (
         "<section class=\"subject\">"
-        f"<h2>{_esc(subject_handle)}</h2>"
+        f"<h2>{subject_header}{view_subject_link}</h2>"
         f"<p class=\"did\">{_esc(result.subject_did)}</p>"
         f"<p class=\"observed-count\">"
         f"{len(result.labelers)} observed labelers touching this subject."
@@ -1337,6 +1444,14 @@ table { width:100%; border-collapse:collapse; margin:12px 0; font-size:.9rem; }
 table th, table td { padding:6px 10px; border-bottom:1px solid var(--border); text-align:left; }
 table caption { text-align:left; font-weight:600; padding:6px 0; }
 table.records td code { font-size:.82rem; word-break:break-all; }
+table.records td a.post-link { font-weight:600; }
+table.records td code.raw-uri { display:inline-block; margin-top:4px; color:var(--muted); font-size:.78rem; }
+article.labeler-card h3 a.labeler-handle { color:inherit; text-decoration:none; }
+article.labeler-card h3 a.labeler-handle:hover { text-decoration:underline; }
+a.labeler-profile-link, a.subject-profile-link, a.post-link { font-size:.85rem; color:var(--accent); text-decoration:none; font-weight:500; }
+a.labeler-profile-link:hover, a.subject-profile-link:hover, a.post-link:hover { text-decoration:underline; }
+section.subject h2 a.subject-handle { color:inherit; text-decoration:none; }
+section.subject h2 a.subject-handle:hover { text-decoration:underline; }
 details { margin-top:12px; }
 details summary { cursor:pointer; color:var(--accent); }
 section.refusal { padding:24px; border:1px solid var(--border); border-radius:8px; }
