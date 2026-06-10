@@ -188,6 +188,90 @@ def test_unknown_subject_renders_refusal(seeded_db):
     assert "<section class=\"refusal\">" in html
 
 
+def test_subject_too_dense_refuses_cleanly(tmp_path, monkeypatch):
+    """High-volume subjects refuse with subject_too_dense rather than
+    chewing through Python aggregation. Load probe found p99 = 24s for
+    subjects with 100k+ events; this circuit breaker keeps the surface
+    bounded until SQL-side aggregation lands."""
+    # Tiny cap so we can trigger with a small fixture.
+    monkeypatch.setattr(frontdoor, "MAX_EVENTS_FOR_AGGREGATION", 3)
+
+    p = str(tmp_path / "lw.db")
+    conn = db.connect(p)
+    db.init_db(conn)
+    conn.execute(
+        "INSERT INTO labelers (labeler_did, handle, regime_state, auditability) "
+        "VALUES (?,?,?,?)",
+        ("did:plc:densely", "dense-labeler.test", "stable", "high"),
+    )
+    # 5 events against one subject; cap is 3 → should refuse.
+    for i in range(5):
+        conn.execute(
+            "INSERT INTO label_events (labeler_did, src, uri, val, neg, ts, "
+            "event_hash, target_did) VALUES (?,?,?,?,?,?,?,?)",
+            ("did:plc:densely", "did:plc:densely", "did:plc:densesubj",
+             "spam", 0, f"2026-06-01T00:0{i}:00Z", f"h-dense-{i}",
+             "did:plc:densesubj"),
+        )
+    conn.commit()
+    conn.close()
+
+    conn = db.connect(p, readonly=True)
+    try:
+        result = frontdoor.lookup_subject(
+            conn,
+            "did:plc:densesubj",
+            audit_receipt=_admissible_receipt(),
+        )
+    finally:
+        conn.close()
+
+    assert result.refusal == "subject_too_dense"
+    assert result.labelers == []
+    # Detail should mention the actual count.
+    assert "5" in result.refusal_detail
+
+    # Refusal renders cleanly to HTML.
+    html = frontdoor.render_result_page_html(result)
+    assert "Subject too dense" in html
+    # The forbidden phrases are still absent (no "trust score" etc).
+    for phrase in ("trust score", "risk score", "moderation recommendation"):
+        assert phrase not in html.lower()
+
+
+def test_subject_under_cap_passes(tmp_path, monkeypatch):
+    """Subjects under the cap still resolve normally."""
+    monkeypatch.setattr(frontdoor, "MAX_EVENTS_FOR_AGGREGATION", 100)
+    p = str(tmp_path / "lw.db")
+    conn = db.connect(p)
+    db.init_db(conn)
+    conn.execute(
+        "INSERT INTO labelers (labeler_did, handle, regime_state, auditability) "
+        "VALUES (?,?,?,?)",
+        ("did:plc:sparselbl", "sparse-labeler.test", "stable", "high"),
+    )
+    conn.execute(
+        "INSERT INTO label_events (labeler_did, src, uri, val, neg, ts, "
+        "event_hash, target_did) VALUES (?,?,?,?,?,?,?,?)",
+        ("did:plc:sparselbl", "did:plc:sparselbl", "did:plc:sparsesubj",
+         "spam", 0, "2026-06-01T00:00:00Z", "h-sparse", "did:plc:sparsesubj"),
+    )
+    conn.commit()
+    conn.close()
+
+    conn = db.connect(p, readonly=True)
+    try:
+        result = frontdoor.lookup_subject(
+            conn,
+            "did:plc:sparsesubj",
+            audit_receipt=_admissible_receipt(),
+        )
+    finally:
+        conn.close()
+    assert result.refusal is None
+    assert len(result.labelers) == 1
+
+
 def test_unresolvable_handle_returns_subject_not_found(seeded_db):
     conn = db.connect(seeded_db, readonly=True)
     try:

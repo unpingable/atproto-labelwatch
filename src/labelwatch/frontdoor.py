@@ -54,6 +54,21 @@ REFUSAL_STATES = (
     "query_shape_unbounded",
     "insufficient_labeler_profile",
     "insufficient_temporal_history",
+    "subject_too_dense",
+)
+
+# Circuit breaker for high-volume subjects. The shape audit's synthetic
+# zero-match probe (the all-zeros DID) passes — but a real subject with
+# 100k+ labels forces Python-side O(events) aggregation in
+# _build_labeler_card (locus + coherence walks). The load probe
+# (2026-06-10) measured p99 = 24s, max = 37s against the top-100 labeled
+# subjects on the live DB.
+#
+# Until SQL-side aggregation lands as a follow-up slice, refuse subjects
+# above this threshold with the dedicated `subject_too_dense` state.
+# Honest refusal beats a 30-second hung page.
+MAX_EVENTS_FOR_AGGREGATION = int(
+    os.environ.get("LABELWATCH_FRONTDOOR_MAX_EVENTS", "10000")
 )
 
 ADMISSIBLE_VERDICTS = {"admissible", "admissible_with_debt"}
@@ -537,6 +552,38 @@ def lookup_subject(
             labelers=[],
             refusal=id_refusal,
             refusal_detail=f"could not resolve input {identifier!r}",
+            audit_verdict=audit_verdict,
+            audit_receipt_path=audit_path,
+            audit_generated_at=audit_ts,
+        )
+
+    # Step 2.5: density circuit breaker. Pre-count Q8 rows for the subject
+    # using the same target_did index. If above the cap, refuse cleanly
+    # rather than do O(N) Python aggregation. See MAX_EVENTS_FOR_AGGREGATION.
+    try:
+        event_count_row = conn.execute(
+            "SELECT COUNT(*) AS c FROM label_events WHERE target_did = ?",
+            (did,),
+        ).fetchone()
+        event_count = int(event_count_row["c"]) if event_count_row else 0
+    except sqlite3.Error:
+        event_count = 0
+    if event_count > MAX_EVENTS_FOR_AGGREGATION:
+        return FrontdoorResult(
+            surface=SURFACE,
+            consumer_surface_version="v0",
+            generated_at=generated_at,
+            input_identifier=identifier,
+            subject_did=did,
+            subject_handle=handle,
+            labelers=[],
+            refusal="subject_too_dense",
+            refusal_detail=(
+                f"{event_count:,} label events against this subject exceed the "
+                f"per-page aggregation cap ({MAX_EVENTS_FOR_AGGREGATION:,}). "
+                f"The lookup surface refuses subjects above the cap until "
+                f"SQL-side aggregation lands."
+            ),
             audit_verdict=audit_verdict,
             audit_receipt_path=audit_path,
             audit_generated_at=audit_ts,
@@ -1103,6 +1150,15 @@ _REFUSAL_COPY = {
         "Insufficient temporal history",
         "This subject has labels but not enough history to populate the "
         "temporal coherence summary.",
+    ),
+    "subject_too_dense": (
+        "Subject too dense for the v0 surface",
+        "This subject has more labels than the lookup surface can currently "
+        "aggregate per request. The shape audit verdicts the index path as "
+        "admissible, but the Python-side aggregation is O(events). Until "
+        "SQL-side aggregation lands, the surface refuses cleanly rather than "
+        "render slowly. The labels are still observed and in the DB; just "
+        "not flattened into a card view here yet.",
     ),
 }
 
