@@ -639,6 +639,87 @@ def test_subject_header_links_to_bsky_profile(seeded_db):
     assert f"https://bsky.app/profile/{SUBJECT_DID}" in html
 
 
+def test_result_page_uses_locus_honest_copy(seeded_db):
+    """Per chatty 2026-06-10: avoid 'against this account' framing when
+    most labels are post-level. Heading + subtitle make scope explicit."""
+    conn = db.connect(seeded_db, readonly=True)
+    try:
+        result = frontdoor.lookup_subject(
+            conn,
+            SUBJECT_DID,
+            audit_receipt=_admissible_receipt(),
+        )
+    finally:
+        conn.close()
+    html = frontdoor.render_result_page_html(result)
+    # Heading explicitly names the act of touching, not "against".
+    assert "Observed labels touching" in html
+    # Subtitle states scope: account labels + record labels.
+    assert "attached directly to the account" in html
+    assert "posts or records authored by it" in html
+    # Forbidden adversarial copy.
+    assert "against this account" not in html
+    assert "against that account" not in html
+
+
+def test_page_level_locus_rollup_sums_across_labelers(tmp_path):
+    """Page-level rollup shows the locus mix at a glance — answers
+    'is this mostly account-level or post-level?'"""
+    p = str(tmp_path / "lw.db")
+    conn = db.connect(p)
+    db.init_db(conn)
+    # Two labelers; mixed loci.
+    for did, handle in (("did:plc:lpa", "lpa.test"), ("did:plc:lpb", "lpb.test")):
+        conn.execute(
+            "INSERT INTO labelers (labeler_did, handle, regime_state, auditability) "
+            "VALUES (?,?,?,?)",
+            (did, handle, "stable", "high"),
+        )
+    # 1 account-level (from A), 3 post-level (2 from A, 1 from B), 1 profile (B)
+    rows = [
+        ("did:plc:lpa", "did:plc:lpa", "did:plc:subjectp", "spam", 0,
+         "2026-06-01T00:00:00Z", "h-a-acct", "did:plc:subjectp"),
+        ("did:plc:lpa", "did:plc:lpa",
+         "at://did:plc:subjectp/app.bsky.feed.post/p1", "spam", 0,
+         "2026-06-02T00:00:00Z", "h-a-p1", "did:plc:subjectp"),
+        ("did:plc:lpa", "did:plc:lpa",
+         "at://did:plc:subjectp/app.bsky.feed.post/p2", "spam", 0,
+         "2026-06-03T00:00:00Z", "h-a-p2", "did:plc:subjectp"),
+        ("did:plc:lpb", "did:plc:lpb",
+         "at://did:plc:subjectp/app.bsky.feed.post/p3", "spam", 0,
+         "2026-06-04T00:00:00Z", "h-b-p3", "did:plc:subjectp"),
+        ("did:plc:lpb", "did:plc:lpb",
+         "at://did:plc:subjectp/app.bsky.actor.profile/self", "spam", 0,
+         "2026-06-05T00:00:00Z", "h-b-prof", "did:plc:subjectp"),
+    ]
+    for r in rows:
+        conn.execute(
+            "INSERT INTO label_events (labeler_did, src, uri, val, neg, ts, "
+            "event_hash, target_did) VALUES (?,?,?,?,?,?,?,?)", r,
+        )
+    conn.commit()
+    conn.close()
+
+    conn = db.connect(p, readonly=True)
+    try:
+        result = frontdoor.lookup_subject(
+            conn,
+            "did:plc:subjectp",
+            audit_receipt=_admissible_receipt(),
+        )
+    finally:
+        conn.close()
+    rollup = frontdoor._page_level_locus_rollup(result.labelers)
+    assert rollup == {"account": 1, "post": 3, "profile": 1}
+
+    # Rendered page surfaces "Where attached (all labelers):" with totals.
+    html = frontdoor.render_result_page_html(result)
+    assert "Where attached (all labelers):" in html
+    # All three loci visible in the rollup strip.
+    for word in ("account-level", "post", "profile record"):
+        assert word in html, f"locus label {word!r} missing from page rollup"
+
+
 def test_attachment_locus_classification():
     """Pure-function: URI patterns map to the right locus."""
     f = frontdoor.attachment_locus

@@ -1135,6 +1135,36 @@ _GLOBAL_USE_NOT_BLOCK = (
 )
 
 
+def _page_level_locus_rollup(labelers: list[LabelerCard]) -> dict[str, int]:
+    """Sum locus_counts across all labelers touching the subject. Used to
+    surface the actual mix (account vs post vs record vs ...) at page level,
+    not just per-card. Empty when no events observed."""
+    total: dict[str, int] = {}
+    for card in labelers:
+        for k, v in card.locus_counts.items():
+            total[k] = total.get(k, 0) + v
+    return total
+
+
+def _render_page_locus_rollup_html(rollup: dict[str, int]) -> str:
+    """Page-level 'Where attached, across all labelers' line. Mirrors the
+    per-card chip strip; same vocabulary, same order. Empty when no events."""
+    if not rollup or sum(rollup.values()) == 0:
+        return ""
+    parts = sorted(rollup.items(), key=lambda kv: (-kv[1], kv[0]))
+    chips = " &middot; ".join(
+        f"<span class=\"locus-chip\">"
+        f"{_esc(_LOCUS_LABELS.get(k, k))} <b>{_format_count(v)}</b>"
+        f"</span>"
+        for k, v in parts
+    )
+    return (
+        "<p class=\"locus page-locus\">"
+        "<strong>Where attached (all labelers):</strong> "
+        f"{chips}</p>"
+    )
+
+
 def render_result_body_html(result: FrontdoorResult) -> str:
     """Render the inner body of the result page. Caller wraps in layout."""
     if result.refusal:
@@ -1159,13 +1189,27 @@ def render_result_body_html(result: FrontdoorResult) -> str:
         subject_header = _esc(subject_handle)
         view_subject_link = ""
 
+    # Locus-honest framing: "against this account" implied account-level
+    # accusation when most labels are post-level. Heading + subtitle make
+    # the scope explicit (chatty 2026-06-10): labels touching the account
+    # OR records authored by it.
+    rollup = _page_level_locus_rollup(result.labelers)
+    rollup_html = _render_page_locus_rollup_html(rollup)
+    total_events = sum(rollup.values()) if rollup else 0
+
     return (
         "<section class=\"subject\">"
-        f"<h2>{subject_header}{view_subject_link}</h2>"
+        f"<h2>Observed labels touching {subject_header}{view_subject_link}</h2>"
         f"<p class=\"did\">{_esc(result.subject_did)}</p>"
-        f"<p class=\"observed-count\">"
-        f"{len(result.labelers)} observed labelers touching this subject."
+        "<p class=\"scope-note\">"
+        "Includes labels attached directly to the account and labels attached "
+        "to posts or records authored by it."
         "</p>"
+        f"<p class=\"observed-count\">"
+        f"{len(result.labelers)} labelers &middot; "
+        f"{_format_count(total_events)} events observed."
+        "</p>"
+        f"{rollup_html}"
         f"{_GLOBAL_USE_NOT_BLOCK}"
         f"{cards_html}"
         "</section>"
@@ -1179,7 +1223,7 @@ def render_result_page_html(
 ) -> str:
     """Full HTML page (standalone; safe to serve directly)."""
     title = (
-        f"What's observed on {result.subject_handle or result.subject_did or 'subject'} — labelwatch"
+        f"Observed labels touching {result.subject_handle or result.subject_did or 'subject'} — labelwatch"
         if not result.refusal
         else f"Lookup — {result.refusal} — labelwatch"
     )
@@ -1294,11 +1338,13 @@ def render_homepage_html(
         " &middot; <a href=\"/about\">about</a>"
         "</header>"
         "<main>"
-        "<h1>What's observed on a Bluesky account?</h1>"
+        "<h1>What's observed on a Bluesky account or its posts?</h1>"
         "<p class=\"lede\">"
-        "Paste a handle or DID. See which labelers have emitted labels "
-        "against that account, what kind of authority each label attempts "
-        "to exercise, and how stable each labeler's emission shape has been."
+        "Paste a handle or DID. See labeler testimony attached to that "
+        "account and to records authored by it &mdash; account-level labels, "
+        "profile labels, and post-level labels &mdash; what kind of authority "
+        "each label attempts, and how stable each labeler's emission shape "
+        "has been."
         " <strong>Labelwatch publishes observations of testimony.</strong>"
         " We do not adjudicate subjects, validate labels, rank labelers, "
         "or produce a unified score."
@@ -1426,6 +1472,10 @@ a.dashboard-link { font-weight:600; }
 _RESULT_CSS = _BASE_CSS + _SHARED_COMPONENTS_CSS + """
 p.did { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size:.85rem; color:var(--muted); word-break:break-all; }
 p.observed-count { font-weight:600; }
+p.scope-note { font-size:.92rem; color:var(--muted); margin:8px 0; }
+p.locus.page-locus { padding:8px 12px; background:rgba(0,0,0,0.02); border-radius:6px; margin:8px 0 16px; }
+@media (prefers-color-scheme: dark) { p.locus.page-locus { background:rgba(255,255,255,0.03); } }
+[data-theme="dark"] p.locus.page-locus { background:rgba(255,255,255,0.03); }
 aside.use-not { margin:16px 0 28px; padding:14px 16px; border-left:3px solid var(--border); background:rgba(0,0,0,0.02); font-size:.92rem; }
 @media (prefers-color-scheme: dark) { aside.use-not { background:rgba(255,255,255,0.03); } }
 aside.use-not p { margin:6px 0; }
