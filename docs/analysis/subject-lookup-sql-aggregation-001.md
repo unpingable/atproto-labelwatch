@@ -152,6 +152,52 @@ After the remediation lands:
   worst-case probe; representative-sampling probes are a separate
   follow-up).
 
+## Implementation verdict
+
+**Verdict: PARTIAL / DOES NOT CLOSE DENSE-SUBJECT GAP.**
+
+The Q8 SQL-side aggregation rewrite landed and is shape-admissible:
+
+- Q8a coherence aggregation
+- Q8b locus aggregation
+- Q8c top-N record selection
+
+Shape audit on production DB
+(`docs/analysis/receipts/labelwatch.index_audit.whatsonme.frontdoor.v0.20260611T153621Z.json`,
+git_commit `25a6e23`):
+
+- Q8a: 0.115 ms
+- Q8b: 0.123 ms
+- Q8c: 0.310 ms
+- overall_verdict: `admissible`
+- affected tests: 55 / 55 pass
+
+However, the performance acceptance criterion failed under dense-subject
+load probe
+(`docs/analysis/receipts/labelwatch.load_probe.whatsonme.frontdoor.v0.20260611T154213Z.json`):
+
+- p50: 5223 ms
+- p99: 28315 ms
+- max: 45290 ms
+- forcing subject: `did:plc:o6ggjvnj4ze3mnrpnv5oravg`, ~101k events × 12 labelers
+- successful probes: 100 / 100 (none refused at the temporary cap of 1_000_000)
+
+The original premise was incomplete. Python aggregation was not the sole
+bottleneck; the dominant cost is still per-row index scan / materialization
+over dense subject histories. Three SQL round-trips (Q8a + Q8b + Q8c)
+replacing one per-row fetch (Q8) does not save wall time when the
+underlying scan is what dominates, and Q8c's CTE materializations add
+their own overhead.
+
+Therefore the `subject_too_dense` refusal remains load-bearing and the
+public cap stays at 2000 events.
+
+The SQL rewrite is retained because it improves query shape and provides
+a cleaner foundation, but **this spec does not remove the dense-subject
+refusal**.
+
+Successor gap filed at `docs/analysis/subject-lookup-dense-history-001.md`.
+
 ## Composes with
 
 - `docs/analysis/subject-lookup-frontdoor-001.md` — the surface contract;
@@ -160,3 +206,8 @@ After the remediation lands:
   purpose; this is the first instance of its acceptance criterion firing.
 - `docs/analysis/receipts/labelwatch.load_probe.whatsonme.frontdoor.v0.20260610T071856Z.json`
   — the evidence the probe surfaced.
+- `docs/analysis/receipts/labelwatch.index_audit.whatsonme.frontdoor.v0.20260611T153621Z.json`
+  — post-implementation shape audit.
+- `docs/analysis/receipts/labelwatch.load_probe.whatsonme.frontdoor.v0.20260611T154213Z.json`
+  — post-implementation load probe; the negative evidence.
+- `docs/analysis/subject-lookup-dense-history-001.md` — the successor gap.
