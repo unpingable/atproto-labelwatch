@@ -72,6 +72,9 @@ class Query:
     kind: str  # 'sqlite' | 'external_resolution' | 'internal_classifier' | 'folded'
     publication_blocking: bool
     bounded_by_subject_or_time: bool
+    # Additional bind params appended after probe_subject_did. Used by queries
+    # that take more than the subject parameter (e.g. Q8c's top-N row cap).
+    extra_params: tuple = ()
 
 
 QUERIES: tuple[Query, ...] = (
@@ -156,19 +159,88 @@ QUERIES: tuple[Query, ...] = (
         publication_blocking=False,
         bounded_by_subject_or_time=True,
     ),
+    # Q8 (per-row fetch + Python aggregation) retired 2026-06-11; replaced by
+    # Q8a/Q8b/Q8c per gap-spec subject-lookup-sql-aggregation-001. Each new
+    # query is bounded by labeler count or by per-labeler top-N; together they
+    # remove the O(events) Python walk that forced the subject_too_dense gate.
     Query(
-        query_id="Q8",
-        query_name="temporal_coherence_and_locus",
-        purpose="Per (labeler, val, ts, neg, uri) timeline against subject for classification flips and attachment-locus aggregation.",
+        query_id="Q8a",
+        query_name="classification_changed_per_labeler",
+        purpose="COUNT(DISTINCT val||'|'||neg) per labeler — drives classification_changed flag without per-row fetch.",
         sql=(
-            "SELECT labeler_did, val, ts, neg, uri "
+            "SELECT labeler_did, COUNT(DISTINCT val || '|' || neg) AS distinct_states "
             "FROM label_events "
             "WHERE target_did = ? "
-            "ORDER BY labeler_did, ts"
+            "GROUP BY labeler_did"
         ),
         kind="sqlite",
         publication_blocking=True,
         bounded_by_subject_or_time=True,
+    ),
+    Query(
+        query_id="Q8b",
+        query_name="locus_bucket_per_labeler",
+        purpose="Per (labeler, locus) event count via CASE-bucketed GROUP BY. Drives locus_counts dict directly.",
+        sql=(
+            "SELECT labeler_did, "
+            "CASE "
+            "WHEN uri LIKE 'did:%' THEN 'account' "
+            "WHEN uri LIKE 'at://%/app.bsky.feed.post/%' THEN 'post' "
+            "WHEN uri LIKE 'at://%/app.bsky.actor.profile/%' THEN 'profile' "
+            "WHEN uri LIKE 'at://%/app.bsky.graph.list/%' THEN 'list' "
+            "WHEN uri LIKE 'at://%/app.bsky.graph.listitem/%' THEN 'list_item' "
+            "WHEN uri LIKE 'at://%/app.bsky.feed.generator/%' THEN 'feed_generator' "
+            "WHEN uri LIKE 'at://%/app.bsky.graph.starterpack/%' THEN 'starterpack' "
+            "WHEN uri LIKE 'at://%' THEN 'record' "
+            "ELSE 'unknown' "
+            "END AS locus, "
+            "COUNT(*) AS event_count "
+            "FROM label_events "
+            "WHERE target_did = ? "
+            "GROUP BY labeler_did, locus"
+        ),
+        kind="sqlite",
+        publication_blocking=True,
+        bounded_by_subject_or_time=True,
+    ),
+    Query(
+        query_id="Q8c",
+        query_name="top_n_labeled_records_per_labeler",
+        purpose="Per (labeler, uri, val) rollup over non-account events, capped via window function to top-N URIs per labeler.",
+        sql=(
+            "WITH per_uri_val AS ( "
+            "  SELECT labeler_did, uri, val, "
+            "         COUNT(*) AS val_count, "
+            "         MIN(ts) AS first_seen, "
+            "         MAX(ts) AS last_seen "
+            "  FROM label_events "
+            "  WHERE target_did = ? AND uri NOT LIKE 'did:%' "
+            "  GROUP BY labeler_did, uri, val "
+            "), "
+            "uri_totals AS ( "
+            "  SELECT labeler_did, uri, SUM(val_count) AS uri_total "
+            "  FROM per_uri_val "
+            "  GROUP BY labeler_did, uri "
+            "), "
+            "ranked AS ( "
+            "  SELECT labeler_did, uri, uri_total, "
+            "         ROW_NUMBER() OVER ("
+            "           PARTITION BY labeler_did ORDER BY uri_total DESC, uri"
+            "         ) AS rn "
+            "  FROM uri_totals "
+            ") "
+            "SELECT puv.labeler_did, puv.uri, puv.val, puv.val_count, "
+            "       puv.first_seen, puv.last_seen, r.uri_total "
+            "FROM per_uri_val puv "
+            "JOIN ranked r ON r.labeler_did = puv.labeler_did AND r.uri = puv.uri "
+            "WHERE r.rn <= ? "
+            "ORDER BY puv.labeler_did, r.rn, puv.val"
+        ),
+        kind="sqlite",
+        publication_blocking=True,
+        bounded_by_subject_or_time=True,
+        # Top-N row cap; matches frontdoor.MAX_LABELED_RECORDS_PER_LABELER.
+        extra_params=(50,),
     ),
 )
 
@@ -325,9 +397,11 @@ def audit_query(
     sql = query.sql
     fingerprint = hash_sha256(sql)[:16]
 
+    params = (probe_subject_did,) + tuple(query.extra_params)
+
     explain_sql = f"EXPLAIN QUERY PLAN {sql}"
     try:
-        raw_plan = conn.execute(explain_sql, (probe_subject_did,)).fetchall()
+        raw_plan = conn.execute(explain_sql, params).fetchall()
     except sqlite3.Error as exc:
         return {
             **base,
@@ -347,7 +421,7 @@ def audit_query(
     try:
         t0 = time.perf_counter()
         # fetchall to fully execute the plan; probe DID returns zero rows
-        conn.execute(sql, (probe_subject_did,)).fetchall()
+        conn.execute(sql, params).fetchall()
         runtime_ms = (time.perf_counter() - t0) * 1000.0
     except sqlite3.Error as exc:
         return {

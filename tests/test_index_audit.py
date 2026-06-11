@@ -74,8 +74,9 @@ def test_admissible_against_indexed_schema(tmp_path):
     assert by_id["Q7"]["verdict"] == "folded_into_parent"
 
     # SQL queries: admissible (or admissible_with_debt under load — empty DB
-    # here, so should be admissible).
-    for qid in ("Q2", "Q3", "Q6", "Q8"):
+    # here, so should be admissible). Q8 was retired 2026-06-11; Q8a/Q8b/Q8c
+    # replaced it via gap-spec subject-lookup-sql-aggregation-001.
+    for qid in ("Q2", "Q3", "Q6", "Q8a", "Q8b", "Q8c"):
         r = by_id[qid]
         assert r["verdict"] in {"admissible", "admissible_with_debt"}, (
             f"{qid} returned {r['verdict']}; plan: {r.get('explain_query_plan')}"
@@ -103,8 +104,8 @@ def test_refuses_when_subject_index_missing(tmp_path):
     receipt = run_audit(p)
     by_id = {r["query_id"]: r for r in receipt["query_results"]}
 
-    # Q2/Q3/Q8 are publication_blocking + touch label_events filtered by target_did
-    for qid in ("Q2", "Q3", "Q8"):
+    # Q2/Q3/Q8a/Q8b/Q8c are publication_blocking + touch label_events filtered by target_did
+    for qid in ("Q2", "Q3", "Q8a", "Q8b", "Q8c"):
         r = by_id[qid]
         assert r["verdict"].startswith("refused_"), (
             f"{qid} should refuse after dropping target_did index; got {r['verdict']}; "
@@ -211,9 +212,10 @@ def test_json_schema_stable(tmp_path):
     parsed = json.loads(rendered)
     assert parsed["receipt_hash"] == receipt["receipt_hash"]
 
-    # The 8 contract queries plus no extras.
+    # The contract queries plus no extras. Q8 retired 2026-06-11 in favor of
+    # Q8a/Q8b/Q8c per gap-spec subject-lookup-sql-aggregation-001.
     assert {r["query_id"] for r in receipt["query_results"]} == {
-        "Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8"
+        "Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8a", "Q8b", "Q8c"
     }
 
 
@@ -233,7 +235,7 @@ def test_text_output_is_operator_readable(tmp_path):
     assert "overall_verdict" in text
 
     # Every query ID is mentioned.
-    for qid in ("Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8"):
+    for qid in ("Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8a", "Q8b", "Q8c"):
         assert qid in text, f"missing {qid} from text output"
 
     # At least one EXPLAIN QUERY PLAN detail line surfaces for SQLite queries.

@@ -57,25 +57,28 @@ REFUSAL_STATES = (
     "subject_too_dense",
 )
 
-# Circuit breaker for high-volume subjects. The shape audit's synthetic
-# zero-match probe (the all-zeros DID) passes — but a real subject with
-# many labels forces Python-side O(events × labelers) aggregation in
-# _build_labeler_card (locus + coherence walks per labeler).
+# Defensive ceiling for high-volume subjects.
 #
-# Load probe history:
-#   2026-06-10T071856Z  cap=∞     p99=24309ms  refused_unbounded
-#   2026-06-10T074342Z  cap=10000 p99= 8720ms  refused_unbounded  68 gated
-#   →                   cap= 2000 (this slice) — tightened after observing
-#                       that even 8k events × 12 labelers takes ~3.7s; the
-#                       cost is events×labelers, not pure events.
+# Load probe history (gap-spec subject-lookup-sql-aggregation-001):
+#   2026-06-10T071856Z  cap=∞       p99=24309ms  refused_unbounded
+#   2026-06-10T074342Z  cap=10000   p99= 8720ms  refused_unbounded  68 gated
+#                       cap= 2000   tightened after observing 8k events × 12
+#                                   labelers took ~3.7s; cost was events×labelers
+#                                   in the Python-side per-event walks.
+#   2026-06-11          cap=1_000_000 — SQL-side aggregation landed (Q8a/Q8b/Q8c
+#                                       per gap-spec subject-lookup-sql-aggregation-001),
+#                                       removing the events×labelers Python walk.
+#                                       The cap now exists only as a defensive
+#                                       ceiling against unknown failure modes;
+#                                       its real value comes from the post-SQL
+#                                       probe verdict. Final disposition (raise
+#                                       further, leave, or remove the gate) is
+#                                       gated on a fresh labelwatch.load_probe.v1
+#                                       verdict against the production DB.
 #
-# Until SQL-side aggregation lands (gap-spec
-# subject-lookup-sql-aggregation-001), refuse subjects above this
-# threshold with the dedicated `subject_too_dense` state. Honest refusal
-# beats a 30-second hung page. Tunable via env so the cap can be relaxed
-# once remediation lands without redeploying.
+# Tunable via env so the cap can be relaxed without redeploying.
 MAX_EVENTS_FOR_AGGREGATION = int(
-    os.environ.get("LABELWATCH_FRONTDOOR_MAX_EVENTS", "2000")
+    os.environ.get("LABELWATCH_FRONTDOOR_MAX_EVENTS", "1000000")
 )
 
 ADMISSIBLE_VERDICTS = {"admissible", "admissible_with_debt"}
@@ -299,11 +302,77 @@ _Q6_LABELER_PROFILE = (
     "WHERE labeler_did = ?"
 )
 
-_Q8_COHERENCE = (
-    "SELECT labeler_did, val, ts, neg, uri "
+# Q8 was a per-row fetch + Python aggregation; for dense subjects this is
+# O(events) walked twice. Replaced 2026-06-11 with three SQL-aggregated
+# queries per gap-spec subject-lookup-sql-aggregation-001:
+#
+#   Q8a — distinct (val,neg) states per labeler  →  classification_changed
+#   Q8b — locus bucket counts per labeler        →  locus_counts dict
+#   Q8c — top-50 labeled-record URIs per labeler →  labeled_records list
+#
+# Each query SEARCHes via idx_label_events_target_did_ts; result sets are
+# bounded by labeler count (Q8a/Q8b) or by per-labeler top-N (Q8c).
+
+_Q8A_DISTINCT_STATES = (
+    "SELECT labeler_did, COUNT(DISTINCT val || '|' || neg) AS distinct_states "
     "FROM label_events "
     "WHERE target_did = ? "
-    "ORDER BY labeler_did, ts"
+    "GROUP BY labeler_did"
+)
+
+# Locus buckets match attachment_locus() output exactly. Each row gets
+# exactly one bucket (CASE branches are mutually exclusive and exhaustive).
+_Q8B_LOCUS = (
+    "SELECT labeler_did, "
+    "CASE "
+    "WHEN uri LIKE 'did:%' THEN 'account' "
+    "WHEN uri LIKE 'at://%/app.bsky.feed.post/%' THEN 'post' "
+    "WHEN uri LIKE 'at://%/app.bsky.actor.profile/%' THEN 'profile' "
+    "WHEN uri LIKE 'at://%/app.bsky.graph.list/%' THEN 'list' "
+    "WHEN uri LIKE 'at://%/app.bsky.graph.listitem/%' THEN 'list_item' "
+    "WHEN uri LIKE 'at://%/app.bsky.feed.generator/%' THEN 'feed_generator' "
+    "WHEN uri LIKE 'at://%/app.bsky.graph.starterpack/%' THEN 'starterpack' "
+    "WHEN uri LIKE 'at://%' THEN 'record' "
+    "ELSE 'unknown' "
+    "END AS locus, "
+    "COUNT(*) AS event_count "
+    "FROM label_events "
+    "WHERE target_did = ? "
+    "GROUP BY labeler_did, locus"
+)
+
+# Q8c — per-labeler top-50 URIs (non-account) with val breakdown.
+# Window function bounds per-labeler cardinality so dense subjects don't
+# stream thousands of rows back. Result: at most ~50 URIs × few vals
+# × num_labelers per subject.
+_Q8C_LABELED_RECORDS = (
+    "WITH per_uri_val AS ( "
+    "  SELECT labeler_did, uri, val, "
+    "         COUNT(*) AS val_count, "
+    "         MIN(ts) AS first_seen, "
+    "         MAX(ts) AS last_seen "
+    "  FROM label_events "
+    "  WHERE target_did = ? AND uri NOT LIKE 'did:%' "
+    "  GROUP BY labeler_did, uri, val "
+    "), "
+    "uri_totals AS ( "
+    "  SELECT labeler_did, uri, SUM(val_count) AS uri_total "
+    "  FROM per_uri_val "
+    "  GROUP BY labeler_did, uri "
+    "), "
+    "ranked AS ( "
+    "  SELECT labeler_did, uri, uri_total, "
+    "         ROW_NUMBER() OVER ("
+    "           PARTITION BY labeler_did ORDER BY uri_total DESC, uri"
+    "         ) AS rn "
+    "  FROM uri_totals "
+    ") "
+    "SELECT puv.labeler_did, puv.uri, puv.val, puv.val_count, "
+    "       puv.first_seen, puv.last_seen, r.uri_total "
+    "FROM per_uri_val puv "
+    "JOIN ranked r ON r.labeler_did = puv.labeler_did AND r.uri = puv.uri "
+    "WHERE r.rn <= ? "
+    "ORDER BY puv.labeler_did, r.rn, puv.val"
 )
 
 
@@ -358,24 +427,12 @@ def attachment_locus(uri: Optional[str], target_did: Optional[str]) -> str:
     return _LEXICON_LOCUS_MAP.get(collection, "record")
 
 
-def _classification_changed(events_for_labeler: list[Mapping]) -> bool:
-    """Detect whether a labeler's claim about the subject has flipped over time.
-
-    A flip = same val toggling neg, or distinct vals appearing across the
-    timeline. This is descriptive (testimony shifted), not adjudicative
-    (labeler was 'wrong').
-    """
-    if not events_for_labeler:
-        return False
-    seen_states: set[tuple[str, bool]] = set()
-    for ev in events_for_labeler:
-        state = (ev["val"], bool(ev["neg"]))
-        seen_states.add(state)
-        if len(seen_states) > 1:
-            # Two distinct (val, neg) pairs from the same labeler against the
-            # same subject = observable shift in testimony.
-            return True
-    return False
+# Classification-flip detection: SQL Q8a returns COUNT(DISTINCT val||'|'||neg)
+# per labeler. distinct_states > 1 means the labeler has emitted at least two
+# distinct (val, neg) tuples against the subject — observable shift in testimony.
+# Pure-function helper retained for unit testing / readability.
+def _classification_changed_from_distinct(distinct_states: int) -> bool:
+    return distinct_states > 1
 
 
 def plain_language_sentence(
@@ -413,8 +470,9 @@ def _build_labeler_card(
     labeler_did: str,
     rows_for_labeler: list[Mapping],   # Q3 rows: (labeler_did, val, event_count, first_seen, last_seen)
     profile_row: Optional[Mapping],     # Q6: labelers PK row
-    coherence_events: list[Mapping],    # Q8 events (labeler_did, val, ts, neg, uri) for this labeler+subject
-    target_did: Optional[str],          # subject DID, used for attachment-locus classification
+    distinct_states: int,               # Q8a: COUNT(DISTINCT val||'|'||neg) for this labeler
+    locus_counts: dict[str, int],       # Q8b: locus bucket → event_count for this labeler
+    labeled_records: list[dict],        # Q8c: top-N URI rollup for this labeler (already capped + sorted)
 ) -> LabelerCard:
     label_values: list[dict] = []
     authority_effects: dict[str, int] = {}
@@ -446,39 +504,6 @@ def _build_labeler_card(
         if r["last_seen"] and (last_seen is None or r["last_seen"] > last_seen):
             last_seen = r["last_seen"]
 
-    # Attachment-locus aggregation from Q8 per-event rows.
-    locus_counts: dict[str, int] = {}
-    # Per-URI rollup for non-account loci (so the UI can expose "where it
-    # actually attached" without exploding the table for high-volume labelers).
-    per_uri: dict[str, dict] = {}
-    for ev in coherence_events:
-        uri = ev["uri"] if "uri" in ev.keys() else ev.get("uri") if isinstance(ev, dict) else None
-        locus = attachment_locus(uri, target_did)
-        locus_counts[locus] = locus_counts.get(locus, 0) + 1
-        if locus != "account" and uri:
-            entry = per_uri.setdefault(uri, {
-                "uri": uri,
-                "locus": locus,
-                "count": 0,
-                "vals": {},
-                "first_seen": ev["ts"],
-                "last_seen": ev["ts"],
-            })
-            entry["count"] += 1
-            entry["vals"][ev["val"]] = entry["vals"].get(ev["val"], 0) + 1
-            if ev["ts"] < entry["first_seen"]:
-                entry["first_seen"] = ev["ts"]
-            if ev["ts"] > entry["last_seen"]:
-                entry["last_seen"] = ev["ts"]
-
-    labeled_records = sorted(
-        per_uri.values(),
-        key=lambda e: (-e["count"], e["uri"]),
-    )[:MAX_LABELED_RECORDS_PER_LABELER]
-    # Stable vals list inside each record entry.
-    for entry in labeled_records:
-        entry["vals"] = sorted(entry["vals"].items(), key=lambda kv: (-kv[1], kv[0]))
-
     handle = (profile_row.get("handle") if profile_row else None) or None
     regime = (profile_row.get("regime_state") if profile_row else None) or None
     auditability = (profile_row.get("auditability") if profile_row else None) or None
@@ -486,7 +511,7 @@ def _build_labeler_card(
     events_30d = profile_row.get("events_30d") if profile_row else None
 
     sentence = plain_language_sentence(profile_row or {}, authority_effects)
-    changed = _classification_changed(coherence_events)
+    changed = _classification_changed_from_distinct(distinct_states)
 
     return LabelerCard(
         labeler_did=labeler_did,
@@ -619,24 +644,69 @@ def lookup_subject(
     for r in q3_rows:
         by_labeler.setdefault(r["labeler_did"], []).append(r)
 
-    # Step 4: Q8 — temporal coherence (one query, grouped client-side).
-    q8_rows = [dict(r) for r in conn.execute(_Q8_COHERENCE, (did,)).fetchall()]
-    coherence_by_labeler: dict[str, list[dict]] = {}
-    for r in q8_rows:
-        coherence_by_labeler.setdefault(r["labeler_did"], []).append(r)
+    # Step 4: Q8a — distinct (val, neg) states per labeler (classification flips).
+    distinct_states_by_labeler: dict[str, int] = {
+        r["labeler_did"]: int(r["distinct_states"])
+        for r in conn.execute(_Q8A_DISTINCT_STATES, (did,)).fetchall()
+    }
 
-    # Step 5: Q6 — per-labeler profile (one round-trip per labeler, indexed PK).
+    # Step 5: Q8b — locus bucket counts per labeler (account/post/profile/...).
+    locus_by_labeler: dict[str, dict[str, int]] = {}
+    for r in conn.execute(_Q8B_LOCUS, (did,)).fetchall():
+        locus_by_labeler.setdefault(r["labeler_did"], {})[r["locus"]] = int(r["event_count"])
+
+    # Step 6: Q8c — top-N URI rollup per labeler (non-account loci, val breakdown).
+    # The window function caps per-labeler URIs at MAX_LABELED_RECORDS_PER_LABELER;
+    # the same labeler/uri may appear multiple times (one row per val) — we
+    # assemble entries client-side.
+    records_by_labeler: dict[str, dict[str, dict]] = {}  # labeler -> uri -> entry
+    for r in conn.execute(
+        _Q8C_LABELED_RECORDS, (did, MAX_LABELED_RECORDS_PER_LABELER)
+    ).fetchall():
+        labeler = r["labeler_did"]
+        uri = r["uri"]
+        per_uri = records_by_labeler.setdefault(labeler, {})
+        entry = per_uri.get(uri)
+        if entry is None:
+            entry = {
+                "uri": uri,
+                "locus": attachment_locus(uri, did),
+                "count": 0,
+                "vals": {},
+                "first_seen": r["first_seen"],
+                "last_seen": r["last_seen"],
+            }
+            per_uri[uri] = entry
+        vc = int(r["val_count"])
+        entry["count"] += vc
+        entry["vals"][r["val"]] = entry["vals"].get(r["val"], 0) + vc
+        if r["first_seen"] and r["first_seen"] < entry["first_seen"]:
+            entry["first_seen"] = r["first_seen"]
+        if r["last_seen"] and r["last_seen"] > entry["last_seen"]:
+            entry["last_seen"] = r["last_seen"]
+
+    # Step 7: Q6 — per-labeler profile (one round-trip per labeler, indexed PK).
     cards: list[LabelerCard] = []
     for labeler_did, rows_for_labeler in by_labeler.items():
         profile_row = conn.execute(_Q6_LABELER_PROFILE, (labeler_did,)).fetchone()
         profile = dict(profile_row) if profile_row is not None else None
-        coherence_events = coherence_by_labeler.get(labeler_did, [])
+        distinct_states = distinct_states_by_labeler.get(labeler_did, 0)
+        locus_counts = locus_by_labeler.get(labeler_did, {})
+        records_dict = records_by_labeler.get(labeler_did, {})
+        labeled_records = sorted(
+            records_dict.values(),
+            key=lambda e: (-e["count"], e["uri"]),
+        )
+        # Stable vals list inside each record entry.
+        for entry in labeled_records:
+            entry["vals"] = sorted(entry["vals"].items(), key=lambda kv: (-kv[1], kv[0]))
         card = _build_labeler_card(
             labeler_did=labeler_did,
             rows_for_labeler=rows_for_labeler,
             profile_row=profile,
-            coherence_events=coherence_events,
-            target_did=did,
+            distinct_states=distinct_states,
+            locus_counts=locus_counts,
+            labeled_records=labeled_records,
         )
         cards.append(card)
 
