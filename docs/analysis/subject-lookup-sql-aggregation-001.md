@@ -1,9 +1,30 @@
 # Frontdoor SQL-side aggregation — gap spec, 2026-06-10
 
-> **Status: named gap.** Filed in response to the
-> `labelwatch.load_probe.v1` verdict `refused_unbounded` from
-> 2026-06-10T07:18:56Z. The frontdoor v0 is gated via the
-> `subject_too_dense` circuit breaker; this spec describes the proper fix.
+> **Status: implemented 2026-06-11 at commit `25a6e23` — DID NOT DELIVER.**
+> Original gap filed in response to the `labelwatch.load_probe.v1` verdict
+> `refused_unbounded` from 2026-06-10T07:18:56Z. Q8 retired; Q8a/Q8b/Q8c
+> replaced it; production shape audit re-verdicts `admissible` (all queries
+> sub-millisecond on the synthetic zero-row probe).
+>
+> However, the post-implementation load probe
+> (`labelwatch.load_probe.whatsonme.frontdoor.v0.20260611T154213Z.json`)
+> verdicts `refused_unbounded`: p99 wall = 28315ms, p50 = 5223ms, max =
+> 45290ms — same ballpark as the pre-implementation probe (24309ms p99).
+>
+> **Diagnosis.** The premise that "the SQL is fast; the Python is O(events)"
+> was only partially true. SQL also pays per-row scan cost; for dense
+> subjects the index walks 100k+ entries regardless of aggregation shape,
+> and the CTE materializations in Q8c add their own overhead. Three
+> SQL-aggregated round-trips (Q8a + Q8b + Q8c) replacing one per-row
+> fetch (Q8) doesn't save wall time when the underlying scan is what
+> dominates.
+>
+> **Disposition.** `subject_too_dense` ceiling reverted 1_000_000 → 2000.
+> The SQL code is retained — it is no worse on sparse subjects and the
+> cleaner shape is a foundation for further work. The actual fix likely
+> requires pre-aggregated per-subject summaries (materialized rollups,
+> refreshed on background) or cold-path migration (Parquet/DuckDB).
+> File a new gap spec when the next attempt is scoped.
 
 ## What the probe found
 

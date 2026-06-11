@@ -63,22 +63,23 @@ REFUSAL_STATES = (
 #   2026-06-10T071856Z  cap=∞       p99=24309ms  refused_unbounded
 #   2026-06-10T074342Z  cap=10000   p99= 8720ms  refused_unbounded  68 gated
 #                       cap= 2000   tightened after observing 8k events × 12
-#                                   labelers took ~3.7s; cost was events×labelers
-#                                   in the Python-side per-event walks.
-#   2026-06-11          cap=1_000_000 — SQL-side aggregation landed (Q8a/Q8b/Q8c
-#                                       per gap-spec subject-lookup-sql-aggregation-001),
-#                                       removing the events×labelers Python walk.
-#                                       The cap now exists only as a defensive
-#                                       ceiling against unknown failure modes;
-#                                       its real value comes from the post-SQL
-#                                       probe verdict. Final disposition (raise
-#                                       further, leave, or remove the gate) is
-#                                       gated on a fresh labelwatch.load_probe.v1
-#                                       verdict against the production DB.
+#                                   labelers took ~3.7s.
+#   2026-06-11T154213Z  cap=1_000_000 (SQL aggregation Q8a/Q8b/Q8c)
+#                                   p99=28315ms  refused_unbounded  0 gated
+#                                   The SQL-side rewrite did NOT deliver the
+#                                   wall-time win the spec assumed. Bottleneck
+#                                   is per-row scan cost (idx walks 100k entries
+#                                   for dense subjects), not Python-side
+#                                   aggregation. Cap reverted to 2000 to keep
+#                                   the surface safe.
+#                       cap= 2000   restored after probe failure; awaiting new
+#                                   gap-spec for the actual bottleneck (likely
+#                                   pre-aggregated per-subject materialization
+#                                   or cold-path migration).
 #
 # Tunable via env so the cap can be relaxed without redeploying.
 MAX_EVENTS_FOR_AGGREGATION = int(
-    os.environ.get("LABELWATCH_FRONTDOOR_MAX_EVENTS", "1000000")
+    os.environ.get("LABELWATCH_FRONTDOOR_MAX_EVENTS", "2000")
 )
 
 ADMISSIBLE_VERDICTS = {"admissible", "admissible_with_debt"}

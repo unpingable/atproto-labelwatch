@@ -1,0 +1,55 @@
+=== labelwatch.index_audit.v1 ===
+consumer_surface : whatsonme.frontdoor.v0
+generated_at     : 2026-06-11T15:40:14.856303Z
+git_commit       : 25a6e23e9db5
+db_path          : /var/lib/labelwatch/labelwatch.db
+db_size_bytes    : 41,237,180,416
+table_counts     : label_events=40,521,234, labelers=502, alerts=82,498
+overall_verdict  : admissible
+
+ID   verdict                            runtime_ms  query_name
+---- ---------------------------------- ----------  ----------------------------------------
+Q1   admissible_external_resolution              -  subject_identity_resolution
+      ~ PLC/DID-web lookup; not a label_events query. Audit confirms by inspection that the resolution path does not fall back to a label_events scan on cache miss.
+Q2   admissible                              0.075  labelers_touching_subject
+      | SEARCH label_events USING INDEX idx_label_events_target_did_ts (target_did=?)
+      | USE TEMP B-TREE FOR GROUP BY
+      . index: idx_label_events_target_did_ts
+Q3   admissible                              0.055  label_values_touching_subject
+      | SEARCH label_events USING INDEX idx_label_events_target_did_ts (target_did=?)
+      | USE TEMP B-TREE FOR GROUP BY
+      . index: idx_label_events_target_did_ts
+Q4   folded_into_parent                          -  latest_seen_per_labeler_value
+      ~ Subsumed by another query in this inventory.
+Q5   admissible_internal_classifier              -  authority_effect_breakdown
+      ~ Pure-function map (classify_authority_effect) over Q3 result set. No DB scan.
+Q6   admissible                              0.028  emitter_stability_summary
+      | SEARCH labelers USING INDEX sqlite_autoindex_labelers_1 (labeler_did=?)
+      . index: sqlite_autoindex_labelers_1
+Q7   folded_into_parent                          -  auditability_summary
+      ~ Subsumed by another query in this inventory.
+Q8a  admissible                              0.115  classification_changed_per_labeler
+      | SEARCH label_events USING INDEX idx_label_events_target_did_ts (target_did=?)
+      | USE TEMP B-TREE FOR GROUP BY
+      | USE TEMP B-TREE FOR count(DISTINCT)
+      . index: idx_label_events_target_did_ts
+Q8b  admissible                              0.123  locus_bucket_per_labeler
+      | SEARCH label_events USING INDEX idx_label_events_target_did_ts (target_did=?)
+      | USE TEMP B-TREE FOR GROUP BY
+      . index: idx_label_events_target_did_ts
+Q8c  admissible                              0.310  top_n_labeled_records_per_labeler
+      | MATERIALIZE per_uri_val
+      | SEARCH label_events USING INDEX idx_label_events_target_did_ts (target_did=?)
+      | USE TEMP B-TREE FOR GROUP BY
+      | MATERIALIZE ranked
+      | CO-ROUTINE SUBQUERY 5
+      | CO-ROUTINE uri_totals
+      | SCAN per_uri_val
+      | USE TEMP B-TREE FOR GROUP BY
+      | SCAN uri_totals
+      | USE TEMP B-TREE FOR ORDER BY
+      | SCAN SUBQUERY 5
+      | SCAN r
+      | SEARCH puv USING AUTOMATIC COVERING INDEX (uri=? AND labeler_did=?)
+      | USE TEMP B-TREE FOR ORDER BY
+      . index: idx_label_events_target_did_ts

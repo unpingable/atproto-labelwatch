@@ -1,0 +1,956 @@
+{
+  "receipt_kind": "labelwatch.load_probe.v1",
+  "receipt_schema_version": 1,
+  "consumer_surface": "whatsonme.frontdoor.v0",
+  "generated_at": "2026-06-11T16:00:01.038286Z",
+  "git_commit": "b81b97b",
+  "db_path": "/var/lib/labelwatch/labelwatch.db",
+  "sample_size_requested": 100,
+  "sample_size_observed": 100,
+  "sample_method": "top_N_by_target_did_event_count",
+  "sample_query_ms": 359431.1,
+  "audit_verdict": "admissible",
+  "audit_receipt_path": "/opt/labelwatch/docs/analysis/receipts/labelwatch.index_audit.whatsonme.frontdoor.v0.20260611T153621Z.json",
+  "audit_generated_at": "2026-06-11T15:40:11.061370Z",
+  "successful_probes": 100,
+  "refusals": [],
+  "percentiles": {
+    "wall_ms": {
+      "p50": 5223.004,
+      "p90": 13107.381,
+      "p99": 28315.406,
+      "min": 740.0,
+      "max": 45289.679,
+      "n": 100
+    },
+    "labelers_per_subj": {
+      "p50": 6.0,
+      "p90": 14.0,
+      "p99": 17.01,
+      "min": 1,
+      "max": 18,
+      "n": 100
+    },
+    "events_per_subj": {
+      "p50": 11290.0,
+      "p90": 28012.1,
+      "p99": 104218.32,
+      "min": 8363,
+      "max": 165135,
+      "n": 100
+    },
+    "vals_per_subj": {
+      "p50": 10.0,
+      "p90": 25.2,
+      "p99": 43.05,
+      "min": 1,
+      "max": 48,
+      "n": 100
+    }
+  },
+  "subjects": [
+    {
+      "did": "did:plc:rqbqpaaluty5v47jwciowpik",
+      "sampled_event_count": 165135,
+      "observed_event_count": 165135,
+      "labelers": 2,
+      "distinct_label_values": 2,
+      "wall_ms": 24450.869,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:kzmukwaf72iwepygposicgt3",
+      "sampled_event_count": 103603,
+      "observed_event_count": 103603,
+      "labelers": 8,
+      "distinct_label_values": 19,
+      "wall_ms": 16113.822,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:o6ggjvnj4ze3mnrpnv5oravg",
+      "sampled_event_count": 101448,
+      "observed_event_count": 101448,
+      "labelers": 12,
+      "distinct_label_values": 36,
+      "wall_ms": 45289.679,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:soypnwqde6zz64rxdnmatxg2",
+      "sampled_event_count": 87992,
+      "observed_event_count": 87992,
+      "labelers": 2,
+      "distinct_label_values": 3,
+      "wall_ms": 4529.518,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:ouljh55hlg2oi3vvrezfzx6p",
+      "sampled_event_count": 69304,
+      "observed_event_count": 69304,
+      "labelers": 8,
+      "distinct_label_values": 12,
+      "wall_ms": 24265.517,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:bgt62gzl3y5ke7b45xi5vkvu",
+      "sampled_event_count": 48736,
+      "observed_event_count": 48736,
+      "labelers": 10,
+      "distinct_label_values": 29,
+      "wall_ms": 28143.949,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:r7ypi3rzfuz2acpta5wgzugm",
+      "sampled_event_count": 32644,
+      "observed_event_count": 32644,
+      "labelers": 2,
+      "distinct_label_values": 5,
+      "wall_ms": 24505.033,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:zngkeuqz6d6qsc65kfsmxqlt",
+      "sampled_event_count": 31476,
+      "observed_event_count": 31476,
+      "labelers": 8,
+      "distinct_label_values": 14,
+      "wall_ms": 21419.941,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:wjatbj4hiinxfqaeixaw2bcp",
+      "sampled_event_count": 31093,
+      "observed_event_count": 31093,
+      "labelers": 14,
+      "distinct_label_values": 48,
+      "wall_ms": 23889.762,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:qcwhrvzx6wmi5hz775uyi6fh",
+      "sampled_event_count": 30533,
+      "observed_event_count": 30533,
+      "labelers": 14,
+      "distinct_label_values": 25,
+      "wall_ms": 8121.211,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:3nmysccrsm6tca27soiqi4uj",
+      "sampled_event_count": 27732,
+      "observed_event_count": 27732,
+      "labelers": 7,
+      "distinct_label_values": 14,
+      "wall_ms": 7153.532,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:h5vvjc3sgrj7bkgjssntxi3u",
+      "sampled_event_count": 27337,
+      "observed_event_count": 27337,
+      "labelers": 14,
+      "distinct_label_values": 19,
+      "wall_ms": 8437.084,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:oznbnvgr7dmvddiyvr7dih52",
+      "sampled_event_count": 26025,
+      "observed_event_count": 26025,
+      "labelers": 2,
+      "distinct_label_values": 4,
+      "wall_ms": 7689.023,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:ap2b2wvozcts4jqny23o2ggo",
+      "sampled_event_count": 24829,
+      "observed_event_count": 24829,
+      "labelers": 17,
+      "distinct_label_values": 43,
+      "wall_ms": 18899.983,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:fum3w4xzx34oraieuoexypw5",
+      "sampled_event_count": 23996,
+      "observed_event_count": 23996,
+      "labelers": 14,
+      "distinct_label_values": 25,
+      "wall_ms": 11492.2,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:d5fnxwskloett4pb7dicp6c6",
+      "sampled_event_count": 21938,
+      "observed_event_count": 21938,
+      "labelers": 2,
+      "distinct_label_values": 2,
+      "wall_ms": 2832.315,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:u3daglfar4guemz7apw2a773",
+      "sampled_event_count": 21222,
+      "observed_event_count": 21222,
+      "labelers": 1,
+      "distinct_label_values": 1,
+      "wall_ms": 4672.335,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:u6wpahdxudi2unba3go2nbsv",
+      "sampled_event_count": 20940,
+      "observed_event_count": 20940,
+      "labelers": 11,
+      "distinct_label_values": 23,
+      "wall_ms": 12992.789,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:4llyqwdqnd6t7ncyvvjzeih7",
+      "sampled_event_count": 20911,
+      "observed_event_count": 20911,
+      "labelers": 15,
+      "distinct_label_values": 29,
+      "wall_ms": 12237.847,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:mxxi5ikigjrlcforff7g7z5j",
+      "sampled_event_count": 20435,
+      "observed_event_count": 20435,
+      "labelers": 3,
+      "distinct_label_values": 3,
+      "wall_ms": 8790.33,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:x2gb3aznxnx6smnzop2ff6js",
+      "sampled_event_count": 20042,
+      "observed_event_count": 20042,
+      "labelers": 2,
+      "distinct_label_values": 7,
+      "wall_ms": 7493.85,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:yauphjufk7phkwurn266ybx2",
+      "sampled_event_count": 18612,
+      "observed_event_count": 18612,
+      "labelers": 2,
+      "distinct_label_values": 4,
+      "wall_ms": 1319.904,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:2j2wpwfdjbho2fqlt4den7fy",
+      "sampled_event_count": 18413,
+      "observed_event_count": 18413,
+      "labelers": 15,
+      "distinct_label_values": 27,
+      "wall_ms": 9406.95,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:vnrf6vw4ypszi3dl3udpu446",
+      "sampled_event_count": 17988,
+      "observed_event_count": 17988,
+      "labelers": 5,
+      "distinct_label_values": 9,
+      "wall_ms": 6694.506,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:e73hqeabyrnpn7o52czpykyc",
+      "sampled_event_count": 17633,
+      "observed_event_count": 17633,
+      "labelers": 13,
+      "distinct_label_values": 24,
+      "wall_ms": 8335.418,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:ksf3dnxyyojwje3uyepbne2u",
+      "sampled_event_count": 16587,
+      "observed_event_count": 16587,
+      "labelers": 4,
+      "distinct_label_values": 8,
+      "wall_ms": 14138.712,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:pfvzb6km3kbg22ih5dm6j7rp",
+      "sampled_event_count": 16578,
+      "observed_event_count": 16578,
+      "labelers": 7,
+      "distinct_label_values": 19,
+      "wall_ms": 8757.268,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:zowegihbaoa5vb46skx3cqab",
+      "sampled_event_count": 16208,
+      "observed_event_count": 16208,
+      "labelers": 6,
+      "distinct_label_values": 11,
+      "wall_ms": 4582.678,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:cvgjuh3a42ina33yol2znsnq",
+      "sampled_event_count": 15384,
+      "observed_event_count": 15384,
+      "labelers": 7,
+      "distinct_label_values": 13,
+      "wall_ms": 9699.737,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:oh36yuaczulx3i2sohygjavb",
+      "sampled_event_count": 14354,
+      "observed_event_count": 14354,
+      "labelers": 1,
+      "distinct_label_values": 4,
+      "wall_ms": 2338.799,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:aunpu65mdrhwfie7ynymlzeh",
+      "sampled_event_count": 14146,
+      "observed_event_count": 14146,
+      "labelers": 14,
+      "distinct_label_values": 18,
+      "wall_ms": 9267.668,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:od4d6pwr6msdgnhnxmznax3w",
+      "sampled_event_count": 13994,
+      "observed_event_count": 13994,
+      "labelers": 12,
+      "distinct_label_values": 29,
+      "wall_ms": 7313.623,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:ixaay4mtxw5lj4a457vohlrr",
+      "sampled_event_count": 13442,
+      "observed_event_count": 13442,
+      "labelers": 3,
+      "distinct_label_values": 6,
+      "wall_ms": 3305.148,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:nyjm4ylfid2a7mjm6varxuiq",
+      "sampled_event_count": 13372,
+      "observed_event_count": 13372,
+      "labelers": 18,
+      "distinct_label_values": 40,
+      "wall_ms": 10610.92,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:flijdq6nzuscczuhvv2lt7bp",
+      "sampled_event_count": 13033,
+      "observed_event_count": 13033,
+      "labelers": 10,
+      "distinct_label_values": 14,
+      "wall_ms": 6695.592,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:mf4sf5yo6hmgl2ysgc3igzir",
+      "sampled_event_count": 12929,
+      "observed_event_count": 12929,
+      "labelers": 3,
+      "distinct_label_values": 3,
+      "wall_ms": 1669.995,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:plbe64qk3vk7ihy3z2pivshc",
+      "sampled_event_count": 12857,
+      "observed_event_count": 12857,
+      "labelers": 9,
+      "distinct_label_values": 17,
+      "wall_ms": 5631.881,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:poxxsebzfnj4kepqazbtwdld",
+      "sampled_event_count": 12825,
+      "observed_event_count": 12825,
+      "labelers": 7,
+      "distinct_label_values": 10,
+      "wall_ms": 6009.781,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:h2h6unwdc3ncsoput6d3bygy",
+      "sampled_event_count": 12819,
+      "observed_event_count": 12819,
+      "labelers": 13,
+      "distinct_label_values": 21,
+      "wall_ms": 5698.793,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:dx56kulxkvxs5f2tsra3o25g",
+      "sampled_event_count": 12600,
+      "observed_event_count": 12600,
+      "labelers": 5,
+      "distinct_label_values": 11,
+      "wall_ms": 7291.32,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:j5miexkqavtkvqgbyvjgrvbf",
+      "sampled_event_count": 12409,
+      "observed_event_count": 12409,
+      "labelers": 2,
+      "distinct_label_values": 6,
+      "wall_ms": 5807.14,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:6tuqst3lx46e2ouy5dy5llsb",
+      "sampled_event_count": 12405,
+      "observed_event_count": 12405,
+      "labelers": 4,
+      "distinct_label_values": 4,
+      "wall_ms": 1889.791,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:62gbuc4mela3mnxwamwku2gr",
+      "sampled_event_count": 12392,
+      "observed_event_count": 12392,
+      "labelers": 14,
+      "distinct_label_values": 32,
+      "wall_ms": 5821.626,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:iv7tdnt4vnkxql2x7tc3hhvl",
+      "sampled_event_count": 12309,
+      "observed_event_count": 12309,
+      "labelers": 3,
+      "distinct_label_values": 8,
+      "wall_ms": 10906.765,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:ad7kf6yn6mzhvo42amax3j2d",
+      "sampled_event_count": 12221,
+      "observed_event_count": 12221,
+      "labelers": 3,
+      "distinct_label_values": 6,
+      "wall_ms": 1951.857,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:anpfslmr5xhyw7oqzai3dprd",
+      "sampled_event_count": 11977,
+      "observed_event_count": 11977,
+      "labelers": 9,
+      "distinct_label_values": 12,
+      "wall_ms": 5504.88,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:zuscs6ohd66tqdwq2ycrwhl4",
+      "sampled_event_count": 11611,
+      "observed_event_count": 11611,
+      "labelers": 6,
+      "distinct_label_values": 9,
+      "wall_ms": 4085.402,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:f6lki5ps3r7nmxkuyjxftwru",
+      "sampled_event_count": 11447,
+      "observed_event_count": 11447,
+      "labelers": 3,
+      "distinct_label_values": 9,
+      "wall_ms": 5839.723,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:zjxvf45d2a6pwnygvyf3sxzf",
+      "sampled_event_count": 11401,
+      "observed_event_count": 11401,
+      "labelers": 13,
+      "distinct_label_values": 19,
+      "wall_ms": 5400.715,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:zwzau5z5p5ne4avjcrztr5mz",
+      "sampled_event_count": 11374,
+      "observed_event_count": 11374,
+      "labelers": 2,
+      "distinct_label_values": 4,
+      "wall_ms": 1278.266,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:iv77vo62rn5s7ery4crfwrno",
+      "sampled_event_count": 11206,
+      "observed_event_count": 11206,
+      "labelers": 4,
+      "distinct_label_values": 7,
+      "wall_ms": 6652.197,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:5wkkarsva5mtqpjcntmsgygh",
+      "sampled_event_count": 11196,
+      "observed_event_count": 11196,
+      "labelers": 4,
+      "distinct_label_values": 8,
+      "wall_ms": 6086.441,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:cukyh664zwfwfsi2qo7otdkl",
+      "sampled_event_count": 11188,
+      "observed_event_count": 11188,
+      "labelers": 17,
+      "distinct_label_values": 25,
+      "wall_ms": 5259.302,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:5b6m6bmr3bhkkhd2ceg6dud4",
+      "sampled_event_count": 11183,
+      "observed_event_count": 11183,
+      "labelers": 3,
+      "distinct_label_values": 4,
+      "wall_ms": 4672.731,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:gxdlzypksrycroeznj367kqp",
+      "sampled_event_count": 11034,
+      "observed_event_count": 11034,
+      "labelers": 7,
+      "distinct_label_values": 13,
+      "wall_ms": 4153.721,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:nvnz52tm7vgv7ujl3uhrgbj5",
+      "sampled_event_count": 10955,
+      "observed_event_count": 10955,
+      "labelers": 6,
+      "distinct_label_values": 10,
+      "wall_ms": 4764.112,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:a6r52ta5azdbgndmyhbzsaaw",
+      "sampled_event_count": 10794,
+      "observed_event_count": 10794,
+      "labelers": 4,
+      "distinct_label_values": 5,
+      "wall_ms": 7739.858,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:24vn35yhkgzy6h3p3diclnot",
+      "sampled_event_count": 10781,
+      "observed_event_count": 10781,
+      "labelers": 2,
+      "distinct_label_values": 6,
+      "wall_ms": 3502.122,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:5m5odpdlroxbqegmnl7cjahj",
+      "sampled_event_count": 10744,
+      "observed_event_count": 10744,
+      "labelers": 1,
+      "distinct_label_values": 1,
+      "wall_ms": 1046.043,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:wa3fpvdni6rii2aelxfol7im",
+      "sampled_event_count": 10722,
+      "observed_event_count": 10722,
+      "labelers": 8,
+      "distinct_label_values": 11,
+      "wall_ms": 4014.519,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:mcb6n67plnrlx4lg35natk2b",
+      "sampled_event_count": 10652,
+      "observed_event_count": 10652,
+      "labelers": 5,
+      "distinct_label_values": 17,
+      "wall_ms": 9142.493,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:mcavslkm5ono5hnvlxxzj5vj",
+      "sampled_event_count": 10591,
+      "observed_event_count": 10591,
+      "labelers": 10,
+      "distinct_label_values": 27,
+      "wall_ms": 5046.888,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:uo4didwt5qe4onrscbmqwvwm",
+      "sampled_event_count": 10571,
+      "observed_event_count": 10571,
+      "labelers": 10,
+      "distinct_label_values": 17,
+      "wall_ms": 3858.035,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:5qfvnlvwsliaar4frb46a7rc",
+      "sampled_event_count": 10468,
+      "observed_event_count": 10468,
+      "labelers": 6,
+      "distinct_label_values": 10,
+      "wall_ms": 4091.727,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:spti6rmnkg573ecdthjpczpj",
+      "sampled_event_count": 10371,
+      "observed_event_count": 10371,
+      "labelers": 1,
+      "distinct_label_values": 1,
+      "wall_ms": 740.0,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:qqxqxgdu5z3he2piqfbfaku4",
+      "sampled_event_count": 10362,
+      "observed_event_count": 10362,
+      "labelers": 6,
+      "distinct_label_values": 9,
+      "wall_ms": 2804.409,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:3jwwulbc6r4n5ysiam4w6qgn",
+      "sampled_event_count": 10231,
+      "observed_event_count": 10231,
+      "labelers": 2,
+      "distinct_label_values": 2,
+      "wall_ms": 913.824,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:xfzgnoojnaefamta3xbemmtz",
+      "sampled_event_count": 10132,
+      "observed_event_count": 10132,
+      "labelers": 11,
+      "distinct_label_values": 22,
+      "wall_ms": 4555.047,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:vqgzb6gkliars63r4y4tiuqe",
+      "sampled_event_count": 10044,
+      "observed_event_count": 10044,
+      "labelers": 9,
+      "distinct_label_values": 12,
+      "wall_ms": 4776.937,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:gulxm2onr6ryucxko5qoheke",
+      "sampled_event_count": 9948,
+      "observed_event_count": 9948,
+      "labelers": 5,
+      "distinct_label_values": 9,
+      "wall_ms": 2111.227,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:dvtnp4grlzoczq3uiebz4qle",
+      "sampled_event_count": 9941,
+      "observed_event_count": 9941,
+      "labelers": 6,
+      "distinct_label_values": 11,
+      "wall_ms": 6213.242,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:v3nv3i2h3fzwefctrwhmjryi",
+      "sampled_event_count": 9745,
+      "observed_event_count": 9745,
+      "labelers": 12,
+      "distinct_label_values": 22,
+      "wall_ms": 4844.062,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:hnhw5jemhe5p37ozwj3ifatx",
+      "sampled_event_count": 9676,
+      "observed_event_count": 9676,
+      "labelers": 4,
+      "distinct_label_values": 9,
+      "wall_ms": 3268.414,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:bb36qskq4t3s5tk2pgf6xlwp",
+      "sampled_event_count": 9667,
+      "observed_event_count": 9667,
+      "labelers": 2,
+      "distinct_label_values": 6,
+      "wall_ms": 7931.225,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:z22iojvb45xno3nblfy6fcwg",
+      "sampled_event_count": 9637,
+      "observed_event_count": 9637,
+      "labelers": 6,
+      "distinct_label_values": 8,
+      "wall_ms": 5347.888,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:mybak52h5b2aobvn6vvgvzep",
+      "sampled_event_count": 9602,
+      "observed_event_count": 9602,
+      "labelers": 1,
+      "distinct_label_values": 1,
+      "wall_ms": 910.54,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:olmsqkbvkxoyhyft6hmmtwew",
+      "sampled_event_count": 9520,
+      "observed_event_count": 9520,
+      "labelers": 1,
+      "distinct_label_values": 1,
+      "wall_ms": 1371.816,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:gl6wuu2hxd2uhsknpbd37ai7",
+      "sampled_event_count": 9423,
+      "observed_event_count": 9423,
+      "labelers": 5,
+      "distinct_label_values": 7,
+      "wall_ms": 3991.371,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:bjfrvzgwle4kjydumgxt2s7z",
+      "sampled_event_count": 9278,
+      "observed_event_count": 9278,
+      "labelers": 4,
+      "distinct_label_values": 7,
+      "wall_ms": 7214.268,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:pom4pdsxoxzgnpijs2747wbo",
+      "sampled_event_count": 9254,
+      "observed_event_count": 9254,
+      "labelers": 8,
+      "distinct_label_values": 13,
+      "wall_ms": 4002.522,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:mpqyj4hyl7bfv53cmprqimor",
+      "sampled_event_count": 9246,
+      "observed_event_count": 9246,
+      "labelers": 7,
+      "distinct_label_values": 7,
+      "wall_ms": 3268.675,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:4h7zaghpkwuw5tr2rxy7imb4",
+      "sampled_event_count": 9200,
+      "observed_event_count": 9200,
+      "labelers": 8,
+      "distinct_label_values": 16,
+      "wall_ms": 6267.814,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:t44345nyd7jmxfs5hxs4doch",
+      "sampled_event_count": 9189,
+      "observed_event_count": 9189,
+      "labelers": 2,
+      "distinct_label_values": 2,
+      "wall_ms": 5520.679,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:gah53sed4iuwuxcyt2dzcbi4",
+      "sampled_event_count": 9178,
+      "observed_event_count": 9178,
+      "labelers": 10,
+      "distinct_label_values": 12,
+      "wall_ms": 4353.161,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:e4n6wbc6mwhyjxqfyhob56bh",
+      "sampled_event_count": 9155,
+      "observed_event_count": 9155,
+      "labelers": 5,
+      "distinct_label_values": 11,
+      "wall_ms": 3485.922,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:rykdttqe5iqmoa33udmb2dp6",
+      "sampled_event_count": 9146,
+      "observed_event_count": 9146,
+      "labelers": 5,
+      "distinct_label_values": 10,
+      "wall_ms": 3735.712,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:vrps533rrs2nbq636qbwn2vd",
+      "sampled_event_count": 9129,
+      "observed_event_count": 9129,
+      "labelers": 11,
+      "distinct_label_values": 13,
+      "wall_ms": 4344.633,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:aj7l6nr2x44arw6xjkabz26a",
+      "sampled_event_count": 8987,
+      "observed_event_count": 8987,
+      "labelers": 2,
+      "distinct_label_values": 5,
+      "wall_ms": 6519.624,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:4v6zlrai5yyyszzmqtkwxi67",
+      "sampled_event_count": 8931,
+      "observed_event_count": 8931,
+      "labelers": 4,
+      "distinct_label_values": 8,
+      "wall_ms": 1960.051,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:x4lsudwmcbbvygwavdi7qssk",
+      "sampled_event_count": 8836,
+      "observed_event_count": 8836,
+      "labelers": 9,
+      "distinct_label_values": 13,
+      "wall_ms": 2683.236,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:3ahe76545xgywzkegtfvp6ms",
+      "sampled_event_count": 8756,
+      "observed_event_count": 8756,
+      "labelers": 2,
+      "distinct_label_values": 2,
+      "wall_ms": 847.702,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:cvqppn7mcyrsw2plghezyjx7",
+      "sampled_event_count": 8751,
+      "observed_event_count": 8751,
+      "labelers": 11,
+      "distinct_label_values": 18,
+      "wall_ms": 2390.83,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:nrrca37nce4mcn3thgxucrbj",
+      "sampled_event_count": 8743,
+      "observed_event_count": 8743,
+      "labelers": 2,
+      "distinct_label_values": 5,
+      "wall_ms": 4870.708,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:5t7mfoqwvsxnjqi2hjanyonb",
+      "sampled_event_count": 8672,
+      "observed_event_count": 8672,
+      "labelers": 10,
+      "distinct_label_values": 11,
+      "wall_ms": 3616.84,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:7e26xld7etkt7a2nqkqgfch7",
+      "sampled_event_count": 8455,
+      "observed_event_count": 8455,
+      "labelers": 5,
+      "distinct_label_values": 6,
+      "wall_ms": 4162.343,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:mhqnbglrgmwiuz3kgexbi7uf",
+      "sampled_event_count": 8420,
+      "observed_event_count": 8420,
+      "labelers": 12,
+      "distinct_label_values": 24,
+      "wall_ms": 4000.529,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:qmmag2og5lciojyoa46co6ne",
+      "sampled_event_count": 8406,
+      "observed_event_count": 8406,
+      "labelers": 9,
+      "distinct_label_values": 13,
+      "wall_ms": 5186.706,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:nrp74hvi7irqemmacziikzoo",
+      "sampled_event_count": 8378,
+      "observed_event_count": 8378,
+      "labelers": 5,
+      "distinct_label_values": 8,
+      "wall_ms": 1878.118,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:4x2n25hyaykkxz37qchwmhqc",
+      "sampled_event_count": 8366,
+      "observed_event_count": 8366,
+      "labelers": 9,
+      "distinct_label_values": 11,
+      "wall_ms": 4331.703,
+      "refusal": null
+    },
+    {
+      "did": "did:plc:mthjktmwwijbd44y2br4mtol",
+      "sampled_event_count": 8363,
+      "observed_event_count": 8363,
+      "labelers": 6,
+      "distinct_label_values": 8,
+      "wall_ms": 2476.398,
+      "refusal": null
+    }
+  ],
+  "verdict": "refused_unbounded",
+  "rationale": "p99 wall time 28315.4ms exceeds 5000ms \u2014 gate the surface until remediation lands",
+  "receipt_hash": "aa686c01a9cbb30d2ce47fd5bbe66e5538179fcb51f8ac32413e95e2ead2bac9"
+}
