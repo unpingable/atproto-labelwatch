@@ -88,6 +88,6 @@ This record was sharpened across two Claude sessions. Those are the **same model
 - **independence** — shipped in spirit: `boundary.py` edges + JSD orthogonality; the Driftwatch/Labelwatch topology overlap was an independence discovery before it had this name. *Naming, not building.*
 - **freshness** — scaffolded, paused: `label_state` sidecar + left-censor flagging + `lifetime.py` (not yet wired through the sidecar). This frame re-motivates the parked slice.
 - **scope** — raw material + two primitives shipped (above). Unbuilt piece is the population metric. Smallest real next step of the four — **scoped to build**: [`specs/gaps/gap-spec-scope-axis-v0.md`](../specs/gaps/gap-spec-scope-axis-v0.md) (`labelwatch.scope_presentation.v0`), not blocked on the AG root.
-- **warrant** — F-007 seed shipped; the open work is generalizing warrant-gap from "no defs at all" to "no checkable basis pointer."
+- **warrant** — F-007 seed shipped; the open work is generalizing warrant-gap from "no defs at all" to "no checkable basis pointer." **Candidate handle filed** (not ratified, not built): [`specs/gaps/gap-spec-warrant-axis-v0.md`](../specs/gaps/gap-spec-warrant-axis-v0.md). Forcing evidence: the scope-axis run measured the warrant-gap at **42% of active volume** — the standout empirical finding.
 
 A record is a handle for review, not authorization to build. Ratify lazily; implement only when a task or acceptance criterion justifies it.
