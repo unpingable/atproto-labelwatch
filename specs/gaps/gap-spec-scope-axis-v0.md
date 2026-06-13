@@ -73,6 +73,16 @@ A protocol-fallback **sensitivity line** (unset → `nudge`) is deferred until t
 measured on real data; add it only if the omitted share is material. Make the uncertainty
 visible first; legislate second.
 
+**Measured (2026-06-13, first 7d prod run on `de0606c`):** graded coverage 57.2% (headline
+published, not suppressed). Verdict-scope presentation share = **1.0%** (nudge 66.4%, weather
+32.5%). Ungraded warrant-gap = **857,741 events ≈ 42%** of active volume. Omitted-`defaultSetting`
+population: **4,993 of 10,542** declared values (~47%) omit it — yet those defs account for only
+**41 weather events** (≈0.003% of graded emission). **Verdict: the protocol-fallback sensitivity
+companion is NOT warranted for the emission cut** — immaterial by volume. Caveat retained and now
+quantified: the omitted share *is* material to the **declaration** cut (~47% of declared values),
+so the unset convention must be revisited there if the declaration-cut headline ever becomes
+load-bearing. The 42% warrant-gap is the standout finding and motivates the warrant-axis slice.
+
 ## Data & reuse (no new access paths)
 
 - **Definitions**: `discovery_events.record_json` → `$.policies.labelValueDefinitions[]`,
