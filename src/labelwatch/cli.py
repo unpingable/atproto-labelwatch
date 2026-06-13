@@ -920,6 +920,32 @@ def cmd_authority_effect_triage(args) -> None:
         print(authority_triage.render_text(index))
 
 
+def cmd_scope_presentation(args) -> None:
+    """Population verdict-scope presentation of active labels.
+
+    Measures labeler self-presentation (declared defaultSetting), not legitimacy.
+    Aggregate-first; no target DID, no ranked per-labeler output. See
+    specs/gaps/gap-spec-scope-axis-v0.md.
+    """
+    from . import scope_axis
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    if not os.path.exists(cfg.db_path):
+        raise SystemExit(f"Database not found: {cfg.db_path}")
+    conn = db.connect(cfg.db_path, readonly=True)
+    try:
+        metric = scope_axis.compute_scope_presentation(conn, window_days=args.window_days)
+    finally:
+        conn.close()
+    if args.format == "json":
+        print(json.dumps(metric, indent=2))
+    elif args.format == "html":
+        print(scope_axis.render_html_figure(metric))
+    else:
+        print(scope_axis.render_text(metric))
+
+
 def cmd_state_pilot(args) -> None:
     """Bounded pilot backfill into the sidecar label_state DB.
 
@@ -1198,6 +1224,24 @@ def main(argv: Optional[list] = None) -> None:
              "overlay file",
     )
     p_aepro.set_defaults(func=cmd_authority_effect_promote)
+
+    p_scope = sub.add_parser(
+        "scope-presentation",
+        help=(
+            "Population verdict-scope presentation of active labels "
+            "(labelwatch.scope_presentation.v0). Self-presentation, not legitimacy; "
+            "aggregate-first."
+        ),
+    )
+    p_scope.add_argument(
+        "--window", dest="window_days", type=int, default=7,
+        help="Window in days for active label volume (default 7)",
+    )
+    p_scope.add_argument(
+        "--format", choices=["text", "json", "html"], default="text",
+        help="Output format (default text)",
+    )
+    p_scope.set_defaults(func=cmd_scope_presentation)
 
     p_state = sub.add_parser(
         "state-pilot",
