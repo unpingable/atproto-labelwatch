@@ -39,7 +39,11 @@ log = logging.getLogger(__name__)
 
 
 RECEIPT_KIND = "labelwatch.weather_digest.v0"
-RECEIPT_SCHEMA_VERSION = 1
+#: v2 (Breakwater, 2026-08-28) — `weather.observation` added, carrying the
+#: observation adequacy behind the weather word. The digest is hash-sealed, so
+#: a content-shape change is a schema change even though the addition is
+#: backward-compatible for readers. No external consumer was found.
+RECEIPT_SCHEMA_VERSION = 2
 
 # Per-section caps. Digest is a digest, not a dump.
 MAX_NEW_LABELERS = 10
@@ -180,6 +184,11 @@ def build_digest(
             "emitting_this_week": weather["emitting_this_week"],
             "events_7d_total": weather["events_7d_total"],
             "unreachable": weather["unreachable"],
+            # The digest is a machine-readable artifact for external
+            # consumers, so it carries the standing behind its weather word
+            # rather than the word alone. Without this a consumer cannot tell
+            # observed quiet from an unobserved window.
+            "observation": weather.get("observation"),
         },
         "new_labelers": new_labelers(conn, since),
         "went_dark": went_dark(conn),

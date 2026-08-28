@@ -65,6 +65,8 @@ def _report_loop(
     interval: int,
     facts_path: str = "",
     wal_skip_mb: float = 80.0,
+    coverage_window_minutes: Optional[int] = None,
+    coverage_threshold: Optional[float] = None,
 ) -> None:
     """Dedicated report generation thread.
 
@@ -90,7 +92,17 @@ def _report_loop(
         try:
             conn = db.connect(db_path, readonly=True)
             try:
-                report_mod.generate_report(conn, report_out, now=now_utc(), facts_path=facts_path or None)
+                # Rebuild the coverage contract the scan pass is using, so the
+                # report's observation-adequacy verdict matches the rules'.
+                report_cfg = Config()
+                if coverage_window_minutes is not None:
+                    report_cfg.coverage_window_minutes = coverage_window_minutes
+                if coverage_threshold is not None:
+                    report_cfg.coverage_threshold = coverage_threshold
+                report_mod.generate_report(
+                    conn, report_out, now=now_utc(),
+                    facts_path=facts_path or None, config=report_cfg,
+                )
             finally:
                 conn.close()
             log.info("Report generated successfully (WAL=%.1fMB at start)", wal_mb)
@@ -135,7 +147,9 @@ def run_loop(
         wal_skip_mb = float(os.environ.get("LABELWATCH_REPORT_WAL_SKIP_MB", "80"))
         t = threading.Thread(
             target=_report_loop,
-            args=(cfg.db_path, report_out, eff_interval, cfg.driftwatch_facts_path, wal_skip_mb),
+            args=(cfg.db_path, report_out, eff_interval,
+                  cfg.driftwatch_facts_path, wal_skip_mb,
+                  cfg.coverage_window_minutes, cfg.coverage_threshold),
             daemon=True,
             name="report-gen",
         )

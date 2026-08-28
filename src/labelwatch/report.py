@@ -31,6 +31,7 @@ from .boundary import (
 )
 from .derive import burstiness_index
 from .label_family import classify_domain
+from .config import Config
 from .receipts import config_hash as config_hash_fn
 from .utils import format_ts, get_git_commit, parse_ts
 
@@ -1691,7 +1692,9 @@ def _alert_rollups(alerts_list, handles, display_names) -> str:
     return "".join(html_parts)
 
 
-def generate_report(conn, out_dir: str, now: Optional[datetime] = None, facts_path: Optional[str] = None) -> None:
+def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
+                    facts_path: Optional[str] = None,
+                    config: Optional["Config"] = None) -> None:
     real_now = datetime.now(timezone.utc)
     if now is None:
         now = real_now
@@ -1746,6 +1749,20 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None, facts_pa
         cfg_hash_latest = cfg_row["config_hash"]
     if cfg_hash_latest is None:
         cfg_hash_latest = config_hash_fn({"rules": ["label_rate_spike", "flip_flop"]})
+
+    # Observation adequacy: computed once, here, and reused by both the JSON
+    # artifact and the rendered weather strip below. Two renderings of the same
+    # question must not be able to reach different verdicts, which is the
+    # failure mode this campaign is repairing — so there is one computation,
+    # not two.
+    from .frontdoor import observation_adequacy, supports_negative_claim
+    _wx_cfg = config or Config()
+    observation = observation_adequacy(
+        conn, now=now,
+        window_minutes=_wx_cfg.coverage_window_minutes,
+        threshold=_wx_cfg.coverage_threshold,
+    )
+    weather_supports_negative = supports_negative_claim(observation)
 
     build_signature = {
         "package_version": _get_package_version(),
@@ -1824,10 +1841,26 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None, facts_pa
         "build_signature": build_signature,
         "census": census,
         "test_dev_count": test_dev_count,
+        # Machine/human parity. The page has always rendered a platform
+        # coverage card; the JSON carried the counts without it, so a machine
+        # consumer got a stronger claim than a human reader — counts stripped
+        # of the qualification that says whether they were observable at all.
+        #
+        # Coverage is carried per labeler and counted, never averaged into one
+        # estate-wide ratio: the underlying coverage is heterogeneous, and a
+        # mean, a minimum or a poll-weighted ratio would each be a different
+        # fabrication. `labelers_attempted` is the denominator for every count
+        # beside it.
+        "observation": observation,
+        # `network_weather` is attached below, once the verdict is computed.
+        # A consumer must not have to scrape HTML to learn whether "calm"
+        # meant observed quiet or an unobserved window.
     }
 
     tmp_dir = _prepare_out_dir(out_dir)
-    _write_json(os.path.join(tmp_dir, "overview.json"), overview)
+    # `overview.json` is written after the weather verdict is computed, so the
+    # artifact can carry the verdict and its standing together. See the
+    # `network_weather` assignment below.
 
     labeler_rows_json = []
     for row in labelers:
@@ -2895,11 +2928,34 @@ cell intensity scales with edge count.</p>
     if degraded_labelers > 5:
         weather_signals.append("degraded")
         weather_attributions.append(f"{degraded_labelers} labelers unreachable")
+    # The negative claim is gated on the adequacy computed once above, exactly
+    # as `frontdoor.network_weather` gates it. Positive signals stand on their
+    # own — an observed spike was observed — but "calm" claims something did
+    # *not* happen, and that needs standing.
     if not weather_signals:
-        weather_signals.append("calm")
-        weather_attributions.append("no triggers crossed")
+        if weather_supports_negative:
+            weather_signals.append("calm")
+            weather_attributions.append("no triggers crossed")
+        elif observation["adequacy"] == "unobserved":
+            weather_signals.append("unobserved")
+            weather_attributions.append(observation["reason"])
+        else:
+            weather_signals.append("under-observed")
+            weather_attributions.append(observation["reason"])
+    elif not weather_supports_negative:
+        weather_signals.append("under-observed")
+        weather_attributions.append(observation["reason"])
     network_weather = ", ".join(weather_signals)
     weather_attribution_text = " · ".join(weather_attributions)
+
+    # Machine/human parity: the artifact carries the verdict the page renders,
+    # together with the standing that licensed it.
+    overview["network_weather"] = {
+        "signals": list(weather_signals),
+        "attribution": weather_attribution_text,
+        "supports_negative_claim": weather_supports_negative,
+    }
+    _write_json(os.path.join(tmp_dir, "overview.json"), overview)
 
     # De-mixed: findings lead, health signals below. Alert-volume counts
     # (spikes, churn, flip-flops) live in System status & methodology — they
@@ -3584,9 +3640,17 @@ events per day, not active inventory.</p>
     try:
         from . import frontdoor as fd
         audit_receipt = fd.find_latest_audit_receipt()
-        # Network weather strip — same conn used for the rest of the report.
+        # Network weather strip — same conn, same clock and same coverage
+        # contract as the rest of the report. Passing `now` is load-bearing:
+        # observation adequacy is time-scoped, so a strip computed at wall
+        # clock while the report is rendered for `now` can disagree with
+        # `overview.json` about whether the window had standing.
         try:
-            weather = fd.network_weather(conn)
+            weather = fd.network_weather(
+                conn, now=now,
+                coverage_window_minutes=_wx_cfg.coverage_window_minutes,
+                coverage_threshold=_wx_cfg.coverage_threshold,
+            )
         except Exception:
             weather = None
         homepage_html = fd.render_homepage_html(

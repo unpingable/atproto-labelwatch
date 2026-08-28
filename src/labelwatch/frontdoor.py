@@ -29,7 +29,7 @@ import os
 import re
 import sqlite3
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional
 
 from .label_family import (
@@ -37,6 +37,7 @@ from .label_family import (
     classify_authority_effect,
     normalize_family,
 )
+from .config import Config
 from .utils import format_ts, now_utc
 
 log = logging.getLogger(__name__)
@@ -741,10 +742,185 @@ def lookup_subject(
 # path over label_events. Same detection rule as in chatty's spec: small
 # dimension/config tables can scan without panic.
 
+# ---------------------------------------------------------------------------
+# Observation adequacy
+# ---------------------------------------------------------------------------
+#
+# Failure to observe is not observation of failure.
+#
+# The coverage watermark was already wired to *suppress* positive findings:
+# `rules._build_coverage_cache` marks a labeler insufficient below
+# `config.coverage_threshold`, and every detection rule skips it. Nothing was
+# wired to *qualify* the negative finding. The result was that a total ingest
+# outage produced no alerts, and "no alerts" was read as "no triggers crossed",
+# so degraded observation manufactured the calm reading it should have blocked.
+#
+# This states adequacy from the same facts and the same threshold the rules
+# already use — `ingest_outcomes` over `coverage_window_minutes`, cut at
+# `coverage_threshold`. No new threshold is introduced. The denominator is the
+# set of labelers actually attempted in the window, because that is the set the
+# instrument tried to see; labelers it does not poll at all are already
+# reported separately by `endpoint_status` and the `unreachable` count, and
+# folding them in here would double-count them and make adequacy unreachable.
+
+#: Every attempted labeler cleared the existing per-labeler coverage cut.
+#: A universal negative claim is available.
+ADEQUACY_ADEQUATE = "adequate"
+
+#: Some labelers were observed, some were not. Positive findings still stand —
+#: an observed spike was observed — but no universal negative claim is
+#: available, because the unobserved labelers could have been doing anything.
+ADEQUACY_PARTIAL = "partial"
+
+#: Nothing was successfully observed in the window, either because no attempt
+#: was made or because every attempt failed. This needs no threshold: you
+#: cannot report that nothing happened when you saw nothing.
+ADEQUACY_UNOBSERVED = "unobserved"
+
+#: States that do not support a substantive negative conclusion.
+_NO_NEGATIVE_STANDING = (ADEQUACY_PARTIAL, ADEQUACY_UNOBSERVED)
+
+_COVERAGE_GOOD_OUTCOMES = ("success", "empty")
+
+#: The coverage contract has one owner: `Config`. These mirror it so a caller
+#: without a Config still gets the cut the detection rules apply, and so an
+#: operator who retunes `coverage_threshold` retunes both sides at once.
+_COVERAGE_DEFAULTS = Config()
+DEFAULT_COVERAGE_WINDOW_MINUTES = _COVERAGE_DEFAULTS.coverage_window_minutes
+DEFAULT_COVERAGE_THRESHOLD = _COVERAGE_DEFAULTS.coverage_threshold
+
+
+def observation_adequacy(
+    conn: sqlite3.Connection,
+    *,
+    now: Optional[datetime] = None,
+    window_minutes: int = DEFAULT_COVERAGE_WINDOW_MINUTES,
+    threshold: float = DEFAULT_COVERAGE_THRESHOLD,
+) -> dict:
+    """Whether the window has standing to support a negative claim.
+
+    Defaults match `Config.coverage_window_minutes` / `Config.coverage_threshold`
+    so a caller without a Config gets the same cut the detection rules apply.
+
+    Coverage here is deliberately *per labeler*, then counted. It is not
+    averaged into an estate-wide ratio: a mean would hide one dead labeler
+    among many healthy ones, a minimum would report the estate broken whenever
+    any single endpoint blinked, and a poll-weighted ratio would weight by
+    polling frequency rather than by anything a reader cares about. The counts
+    are reported with their denominator instead.
+    """
+    if now is None:
+        now = now_utc()
+    window_start = format_ts(now - timedelta(minutes=window_minutes))
+
+    try:
+        rows = conn.execute(
+            """SELECT labeler_did,
+                      COUNT(*) AS attempts,
+                      SUM(CASE WHEN outcome IN ('success','empty') THEN 1 ELSE 0 END)
+                          AS successes
+               FROM ingest_outcomes WHERE ts >= ? GROUP BY labeler_did""",
+            (window_start,),
+        ).fetchall()
+    except sqlite3.Error:
+        # Pre-migration database: the fact does not exist, so adequacy is not
+        # knowable. Refusing to answer is correct; claiming calm is not.
+        return {
+            "adequacy": ADEQUACY_UNOBSERVED,
+            "reason": "ingest_outcomes unavailable; observation adequacy unknown",
+            "window_minutes": window_minutes,
+            "coverage_threshold": threshold,
+            "labelers_attempted": 0,
+            "labelers_adequate": 0,
+            "labelers_degraded": 0,
+            "labelers_accessible": 0,
+            "labelers_unattempted": 0,
+            "attempts": 0,
+            "successes": 0,
+            "last_attempt_ts": None,
+            "last_success_ts": None,
+        }
+
+    attempted = len(rows)
+    attempts = sum(r["attempts"] for r in rows)
+    successes = sum(r["successes"] or 0 for r in rows)
+    adequate = sum(
+        1 for r in rows
+        if r["attempts"] and (r["successes"] or 0) / r["attempts"] >= threshold
+    )
+
+    try:
+        accessible = conn.execute(
+            "SELECT COUNT(*) AS c FROM labelers WHERE endpoint_status = 'accessible'"
+        ).fetchone()["c"] or 0
+    except sqlite3.Error:
+        accessible = 0
+    # An accessible labeler that should have been polled and was not is
+    # unobserved for this window, the same as one whose polls all failed.
+    unattempted = max(accessible - attempted, 0)
+
+    last_attempt = conn.execute(
+        "SELECT MAX(ts) AS ts FROM ingest_outcomes WHERE ts >= ?", (window_start,)
+    ).fetchone()["ts"]
+    last_success = conn.execute(
+        "SELECT MAX(ts) AS ts FROM ingest_outcomes "
+        "WHERE outcome IN ('success','empty')"
+    ).fetchone()["ts"]
+
+    if attempted == 0:
+        adequacy = ADEQUACY_UNOBSERVED
+        reason = f"no ingest attempts recorded in the last {window_minutes}m"
+    elif successes == 0:
+        adequacy = ADEQUACY_UNOBSERVED
+        reason = (
+            f"0 of {attempts} ingest attempts succeeded across "
+            f"{attempted} labeler{'s' if attempted != 1 else ''} "
+            f"in the last {window_minutes}m"
+        )
+    elif adequate < attempted or unattempted:
+        adequacy = ADEQUACY_PARTIAL
+        missing = attempted - adequate + unattempted
+        reason = (
+            f"{missing} of {attempted + unattempted} labelers below "
+            f"{threshold:.0%} ingest coverage in the last {window_minutes}m"
+        )
+    else:
+        adequacy = ADEQUACY_ADEQUATE
+        reason = (
+            f"{adequate} of {attempted} labelers at or above "
+            f"{threshold:.0%} ingest coverage in the last {window_minutes}m"
+        )
+
+    return {
+        "adequacy": adequacy,
+        "reason": reason,
+        "window_minutes": window_minutes,
+        "coverage_threshold": threshold,
+        "labelers_attempted": attempted,
+        "labelers_adequate": adequate,
+        "labelers_degraded": attempted - adequate,
+        "labelers_accessible": accessible,
+        "labelers_unattempted": unattempted,
+        "attempts": attempts,
+        "successes": successes,
+        "last_attempt_ts": last_attempt,
+        "last_success_ts": last_success,
+    }
+
+
+def supports_negative_claim(observation: Optional[dict]) -> bool:
+    """Whether a substantive negative finding may be emitted for this window."""
+    if not observation:
+        return False
+    return observation.get("adequacy") not in _NO_NEGATIVE_STANDING
+
+
 def network_weather(
     conn: sqlite3.Connection,
     *,
     now: Optional[datetime] = None,
+    coverage_window_minutes: int = DEFAULT_COVERAGE_WINDOW_MINUTES,
+    coverage_threshold: float = DEFAULT_COVERAGE_THRESHOLD,
 ) -> dict:
     """Compute the lookup-page network weather strip.
 
@@ -753,12 +929,25 @@ def network_weather(
         emitting_this_week
         events_7d_total
         unreachable
-        signals          # list of weather words: "noisy" / "churny" / "degraded" / "calm"
+        signals          # weather words: "noisy" / "churny" / "degraded" / "calm"
+                         #  or, without standing: "unobserved" / "under-observed"
         attribution      # one-line "what triggered each signal"
+        observation      # observation_adequacy() — the standing behind the above
         computed_at      # ISO ts
+
+    Positive signals ride on observed evidence and are emitted whenever their
+    trigger fires. The *negative* signal "calm" is gated on observation
+    adequacy: it is the only word here that claims something did **not**
+    happen, and that claim needs standing.
     """
     if now is None:
         now = now_utc()
+
+    observation = observation_adequacy(
+        conn, now=now,
+        window_minutes=coverage_window_minutes,
+        threshold=coverage_threshold,
+    )
 
     total = conn.execute("SELECT COUNT(*) AS c FROM labelers").fetchone()["c"] or 0
     emitting = conn.execute(
@@ -800,8 +989,23 @@ def network_weather(
         signals.append("degraded")
         attribution.append(f"{unreachable} labelers unreachable")
     if not signals:
-        signals.append("calm")
-        attribution.append("no triggers crossed")
+        # The negative branch. Reachable only with standing; otherwise the
+        # window says what it could not see rather than what did not happen.
+        if supports_negative_claim(observation):
+            signals.append("calm")
+            attribution.append("no triggers crossed")
+        elif observation["adequacy"] == ADEQUACY_UNOBSERVED:
+            signals.append("unobserved")
+            attribution.append(observation["reason"])
+        else:
+            signals.append("under-observed")
+            attribution.append(observation["reason"])
+    elif not supports_negative_claim(observation):
+        # Triggers fired, so something was observed — but the window still
+        # cannot support "and nothing else happened". Say so alongside them
+        # rather than letting the positive signals imply completeness.
+        signals.append("under-observed")
+        attribution.append(observation["reason"])
 
     return {
         "total_labelers": int(total),
@@ -810,6 +1014,7 @@ def network_weather(
         "unreachable": int(unreachable),
         "signals": signals,
         "attribution": " · ".join(attribution),
+        "observation": observation,
         "computed_at": format_ts(now),
     }
 
@@ -834,7 +1039,11 @@ def _render_weather_strip_html(weather: Optional[dict]) -> str:
     """Compact one-line strip linking to /methodology.html."""
     if not weather:
         return ""
-    signals_str = ", ".join(weather["signals"]) or "calm"
+    # An empty signal list is not calm. `network_weather` never returns one,
+    # but this renderer also takes caller-supplied dicts, and defaulting to a
+    # substantive negative claim here would reintroduce the same defect at the
+    # presentation layer.
+    signals_str = ", ".join(weather.get("signals") or ()) or "unobserved"
     return (
         "<aside class=\"weather-strip\">"
         f"<p class=\"weather-line\">"
