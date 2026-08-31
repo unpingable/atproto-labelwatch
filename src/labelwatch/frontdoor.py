@@ -32,6 +32,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional
 
+from .boundary import boundary_summary_for_report
 from .label_family import (
     LABELER_DEFAULT_EFFECT,
     classify_authority_effect,
@@ -790,6 +791,20 @@ DEFAULT_COVERAGE_WINDOW_MINUTES = _COVERAGE_DEFAULTS.coverage_window_minutes
 DEFAULT_COVERAGE_THRESHOLD = _COVERAGE_DEFAULTS.coverage_threshold
 
 
+#: Complete signal vocabulary emitted by :func:`network_weather`, in the
+#: canonical positive-signal order followed by the mutually exclusive
+#: observation-standing fallbacks.
+NETWORK_WEATHER_SIGNAL_VOCABULARY = (
+    "noisy",
+    "conflicted",
+    "churny",
+    "degraded",
+    "calm",
+    "unobserved",
+    "under-observed",
+)
+
+
 def observation_adequacy(
     conn: sqlite3.Connection,
     *,
@@ -929,7 +944,8 @@ def network_weather(
         emitting_this_week
         events_7d_total
         unreachable
-        signals          # weather words: "noisy" / "churny" / "degraded" / "calm"
+        signals          # weather words: "noisy" / "conflicted" / "churny" /
+                         #  "degraded" / "calm"
                          #  or, without standing: "unobserved" / "under-observed"
         attribution      # one-line "what triggered each signal"
         observation      # observation_adequacy() — the standing behind the above
@@ -976,12 +992,27 @@ def network_weather(
         ).fetchone()["c"] or 0
     except sqlite3.Error:
         churn_24h = 0
+    try:
+        boundary_summary = boundary_summary_for_report(
+            conn,
+            format_ts(now - timedelta(days=7)),
+            format_ts(now),
+        )
+        mod_conflicts = boundary_summary.get("moderation_edges", 0)
+    except Exception:
+        mod_conflicts = 0
 
     signals: list[str] = []
     attribution: list[str] = []
     if spike_24h > 10:
         signals.append("noisy")
         attribution.append(f"{spike_24h} rate-spike alerts (24h)")
+    if mod_conflicts > 0:
+        signals.append("conflicted")
+        attribution.append(
+            f"{mod_conflicts} surfaced moderation-conflict edge"
+            f"{'s' if mod_conflicts != 1 else ''} (7d)"
+        )
     if churn_24h > 50:
         signals.append("churny")
         attribution.append(f"{churn_24h} churn alerts (24h)")

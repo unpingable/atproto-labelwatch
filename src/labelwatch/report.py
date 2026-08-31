@@ -1750,19 +1750,17 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
     if cfg_hash_latest is None:
         cfg_hash_latest = config_hash_fn({"rules": ["label_rate_spike", "flip_flop"]})
 
-    # Observation adequacy: computed once, here, and reused by both the JSON
-    # artifact and the rendered weather strip below. Two renderings of the same
-    # question must not be able to reach different verdicts, which is the
-    # failure mode this campaign is repairing — so there is one computation,
-    # not two.
-    from .frontdoor import observation_adequacy, supports_negative_claim
+    # The canonical weather implementation supplies both the JSON verdict and
+    # the observation standing carried beside it.
+    from . import frontdoor as fd
     _wx_cfg = config or Config()
-    observation = observation_adequacy(
+    overview_weather = fd.network_weather(
         conn, now=now,
-        window_minutes=_wx_cfg.coverage_window_minutes,
-        threshold=_wx_cfg.coverage_threshold,
+        coverage_window_minutes=_wx_cfg.coverage_window_minutes,
+        coverage_threshold=_wx_cfg.coverage_threshold,
     )
-    weather_supports_negative = supports_negative_claim(observation)
+    observation = overview_weather["observation"]
+    weather_supports_negative = fd.supports_negative_claim(observation)
 
     build_signature = {
         "package_version": _get_package_version(),
@@ -2896,62 +2894,19 @@ cell intensity scales with edge count.</p>
     ).fetchone()["c"]
 
     # Compute fight count for "what changed" narrative
-    mod_conflicts = 0
     top_fight_count = 0
     try:
-        mod_conflicts = boundary_data.get("moderation_edges", 0) if boundary_data else 0
         top_fight_count = len(boundary_data.get("top_fight_pairs", [])) if boundary_data else 0
     except Exception:
         pass
 
-    churn_alerts_24h = alerts_24h.get("churn_index", 0)
-    spike_alerts_24h = alerts_24h.get("label_rate_spike", 0)
-    flipflop_alerts_24h = alerts_24h.get("flip_flop", 0)
-
-    # Network weather: derive from alert mix + boundary state.
-    # Each adjective rides with the count that triggered it so the strip
-    # ties to facts rather than vibes.
-    weather_signals: List[str] = []
-    weather_attributions: List[str] = []
-    if spike_alerts_24h > 10:
-        weather_signals.append("noisy")
-        weather_attributions.append(f"{spike_alerts_24h} rate-spike alerts (24h)")
-    if mod_conflicts > 0:
-        weather_signals.append("conflicted")
-        weather_attributions.append(
-            f"{mod_conflicts} surfaced moderation-conflict edge"
-            f"{'s' if mod_conflicts != 1 else ''} (7d)"
-        )
-    if churn_alerts_24h > 50:
-        weather_signals.append("churny")
-        weather_attributions.append(f"{churn_alerts_24h} churn alerts (24h)")
-    if degraded_labelers > 5:
-        weather_signals.append("degraded")
-        weather_attributions.append(f"{degraded_labelers} labelers unreachable")
-    # The negative claim is gated on the adequacy computed once above, exactly
-    # as `frontdoor.network_weather` gates it. Positive signals stand on their
-    # own — an observed spike was observed — but "calm" claims something did
-    # *not* happen, and that needs standing.
-    if not weather_signals:
-        if weather_supports_negative:
-            weather_signals.append("calm")
-            weather_attributions.append("no triggers crossed")
-        elif observation["adequacy"] == "unobserved":
-            weather_signals.append("unobserved")
-            weather_attributions.append(observation["reason"])
-        else:
-            weather_signals.append("under-observed")
-            weather_attributions.append(observation["reason"])
-    elif not weather_supports_negative:
-        weather_signals.append("under-observed")
-        weather_attributions.append(observation["reason"])
-    network_weather = ", ".join(weather_signals)
-    weather_attribution_text = " · ".join(weather_attributions)
+    network_weather = ", ".join(overview_weather["signals"])
+    weather_attribution_text = overview_weather["attribution"]
 
     # Machine/human parity: the artifact carries the verdict the page renders,
     # together with the standing that licensed it.
     overview["network_weather"] = {
-        "signals": list(weather_signals),
+        "signals": list(overview_weather["signals"]),
         "attribution": weather_attribution_text,
         "supports_negative_claim": weather_supports_negative,
     }
@@ -3638,27 +3593,23 @@ events per day, not active inventory.</p>
     # without proxying / to the HTTP API. The form posts to /v1/frontdoor
     # which Caddy already proxies to localhost:8423.
     try:
-        from . import frontdoor as fd
         audit_receipt = fd.find_latest_audit_receipt()
-        # Network weather strip — same conn, same clock and same coverage
-        # contract as the rest of the report. Passing `now` is load-bearing:
-        # observation adequacy is time-scoped, so a strip computed at wall
-        # clock while the report is rendered for `now` can disagree with
-        # `overview.json` about whether the window had standing.
+        # Use the same report clock and coverage contract as overview.json.
         try:
-            weather = fd.network_weather(
+            homepage_weather = fd.network_weather(
                 conn, now=now,
                 coverage_window_minutes=_wx_cfg.coverage_window_minutes,
                 coverage_threshold=_wx_cfg.coverage_threshold,
             )
         except Exception:
-            weather = None
+            homepage_weather = overview_weather
         homepage_html = fd.render_homepage_html(
-            audit_receipt=audit_receipt, weather=weather,
+            audit_receipt=audit_receipt, weather=homepage_weather,
         )
     except Exception:  # pragma: no cover — defensive; report should still ship
-        from . import frontdoor as fd
-        homepage_html = fd.render_homepage_html(audit_receipt=None, weather=None)
+        homepage_html = fd.render_homepage_html(
+            audit_receipt=None, weather=overview_weather,
+        )
     _write(os.path.join(tmp_dir, "index.html"), homepage_html)
 
     # --- Authority report page ---
