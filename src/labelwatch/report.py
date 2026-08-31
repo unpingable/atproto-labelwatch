@@ -3594,17 +3594,14 @@ events per day, not active inventory.</p>
     # which Caddy already proxies to localhost:8423.
     try:
         audit_receipt = fd.find_latest_audit_receipt()
-        # Use the same report clock and coverage contract as overview.json.
-        try:
-            homepage_weather = fd.network_weather(
-                conn, now=now,
-                coverage_window_minutes=_wx_cfg.coverage_window_minutes,
-                coverage_threshold=_wx_cfg.coverage_threshold,
-            )
-        except Exception:
-            homepage_weather = overview_weather
+        # The SAME verdict object overview.json carries — not a second call.
+        # Recomputing here would reopen the divergence this repair closes: the
+        # two call sites run minutes apart while ingest keeps writing alerts,
+        # so a threshold crossed in between would make the page and the
+        # artifact disagree again, on a narrower window but by the same
+        # mechanism. One computation, two renderings.
         homepage_html = fd.render_homepage_html(
-            audit_receipt=audit_receipt, weather=homepage_weather,
+            audit_receipt=audit_receipt, weather=overview_weather,
         )
     except Exception:  # pragma: no cover — defensive; report should still ship
         homepage_html = fd.render_homepage_html(

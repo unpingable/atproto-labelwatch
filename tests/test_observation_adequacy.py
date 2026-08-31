@@ -475,7 +475,16 @@ def test_overview_and_index_share_exact_weather_signals_for_all_states():
     assert seen == set(WEATHER_SIGNAL_ORDER)
 
 
-def test_report_delegates_both_weather_verdicts_to_frontdoor():
+def test_report_computes_the_weather_verdict_exactly_once():
+    """One computation, two renderings.
+
+    Delegating to frontdoor is necessary but not sufficient: two *separate*
+    calls to the canonical implementation can still disagree, because they run
+    minutes apart in a long report while ingest keeps writing alerts. A
+    threshold crossed in between would put a signal in overview.json that
+    index.html does not render — the original defect, on a narrower window.
+    So the verdict must be computed once and reused.
+    """
     source = inspect.getsource(report.generate_report)
 
     assert "weather_signals" not in source
@@ -483,12 +492,12 @@ def test_report_delegates_both_weather_verdicts_to_frontdoor():
     assert not set(re.findall(r'\.append\("([^"]+)"\)', source)) & set(
         WEATHER_SIGNAL_ORDER
     )
-    assert source.count("fd.network_weather(") == 2
-    assert source.count("conn, now=now,") == 2
-    assert source.count(
-        "coverage_window_minutes=_wx_cfg.coverage_window_minutes"
-    ) == 2
-    assert source.count("coverage_threshold=_wx_cfg.coverage_threshold") == 2
+    assert source.count("fd.network_weather(") == 1, (
+        "the weather verdict must be computed once and reused, not recomputed"
+    )
+    assert source.count("weather=overview_weather") == 2, (
+        "both the homepage strip and its fallback must render the one verdict"
+    )
 
 
 def test_full_canonical_vocabulary_is_renderable_by_the_weather_strip():
