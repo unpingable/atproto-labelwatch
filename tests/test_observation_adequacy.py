@@ -20,14 +20,18 @@ and its converse, which matters just as much:
 from __future__ import annotations
 
 import datetime as dt
+import html as html_lib
+import inspect
 import json
 import os
+import re
 import tempfile
 
 import pytest
 
 from labelwatch import db, frontdoor, report
 from labelwatch.config import Config
+from labelwatch.label_family import FAMILY_VERSION
 from labelwatch.utils import format_ts, now_utc
 
 NOW = dt.datetime(2026, 8, 28, 12, 0, 0, tzinfo=dt.timezone.utc)
@@ -364,3 +368,148 @@ def test_missing_ingest_outcomes_table_refuses_rather_than_assumes():
     obs = frontdoor.observation_adequacy(conn, now=NOW)
     assert obs["adequacy"] == "unobserved"
     assert not frontdoor.supports_negative_claim(obs)
+
+
+# ---------------------------------------------------------------------------
+# 8. One verdict implementation and one signal vocabulary
+# ---------------------------------------------------------------------------
+
+WEATHER_SIGNAL_ORDER = frontdoor.NETWORK_WEATHER_SIGNAL_VOCABULARY
+
+
+def _insert_alerts(conn, rule_id, count):
+    for i in range(count):
+        conn.execute(
+            "INSERT INTO alerts(rule_id, labeler_did, ts, inputs_json,"
+            " evidence_hashes_json, config_hash, receipt_hash)"
+            " VALUES (?,?,?,'{}','[]','c',?)",
+            (rule_id, "did:plc:lab000",
+             format_ts(NOW - dt.timedelta(hours=1)), f"{rule_id}-{i}"),
+        )
+
+
+def _insert_moderation_conflict(conn):
+    conn.execute(
+        "INSERT INTO boundary_edges("
+        " edge_type, target_uri, window_start, window_end, labeler_a, labeler_b,"
+        " top_family_a, top_family_b, family_version, config_hash, computed_at)"
+        " VALUES ('contradiction',?,?,?,?,?,?,?,?,?,?)",
+        (
+            "at://did:plc:target/app.bsky.feed.post/1",
+            format_ts(NOW - dt.timedelta(days=7)),
+            format_ts(NOW),
+            "did:plc:lab000",
+            "did:plc:lab001",
+            "spam",
+            "harassment",
+            FAMILY_VERSION,
+            "test",
+            format_ts(NOW),
+        ),
+    )
+
+
+def _weather_state(state):
+    conn = _conn()
+    if state == "unobserved":
+        _labelers(conn, 2)
+        return conn, ["unobserved"]
+    if state == "calm":
+        _labelers(conn, 2)
+        for i in range(2):
+            _polls(conn, f"did:plc:lab{i:03d}", ok=10, bad=0)
+        return conn, ["calm"]
+    if state == "under-observed":
+        _labelers(conn, 2)
+        _polls(conn, "did:plc:lab000", ok=10, bad=0)
+        return conn, ["under-observed"]
+
+    assert state == "all-positive"
+    _labelers(conn, 6, endpoint_status="down")
+    for i in range(6):
+        _polls(conn, f"did:plc:lab{i:03d}", ok=10, bad=0)
+    _insert_alerts(conn, "label_rate_spike", 11)
+    _insert_moderation_conflict(conn)
+    _insert_alerts(conn, "churn_index", 51)
+    conn.commit()
+    return conn, ["noisy", "conflicted", "churny", "degraded"]
+
+
+def _rendered_weather_signals(page):
+    match = re.search(
+        r'<span class="weather-label">Network weather:</span>\s*'
+        r'<strong>([^<]+)</strong>',
+        page,
+    )
+    assert match, "index.html did not render the canonical weather strip"
+    rendered = html_lib.unescape(match.group(1))
+    return set(rendered.split(", "))
+
+
+def test_overview_and_index_share_exact_weather_signals_for_all_states():
+    seen = set()
+    states = ("unobserved", "calm", "under-observed", "all-positive")
+    for state in states:
+        conn, expected = _weather_state(state)
+        try:
+            with tempfile.TemporaryDirectory() as out:
+                report.generate_report(conn, out, now=NOW, config=CFG)
+                with open(os.path.join(out, "overview.json"), encoding="utf-8") as fh:
+                    verdict = json.load(fh)["network_weather"]
+                with open(os.path.join(out, "index.html"), encoding="utf-8") as fh:
+                    page = fh.read()
+        finally:
+            conn.close()
+
+        assert verdict["signals"] == expected
+        assert set(verdict["signals"]) == _rendered_weather_signals(page)
+        seen.update(verdict["signals"])
+
+        if state == "all-positive":
+            assert verdict["attribution"] == (
+                "11 rate-spike alerts (24h) · "
+                "1 surfaced moderation-conflict edge (7d) · "
+                "51 churn alerts (24h) · 6 labelers unreachable"
+            )
+
+    assert seen == set(WEATHER_SIGNAL_ORDER)
+
+
+def test_report_computes_the_weather_verdict_exactly_once():
+    """One computation, two renderings.
+
+    Delegating to frontdoor is necessary but not sufficient: two *separate*
+    calls to the canonical implementation can still disagree, because they run
+    minutes apart in a long report while ingest keeps writing alerts. A
+    threshold crossed in between would put a signal in overview.json that
+    index.html does not render — the original defect, on a narrower window.
+    So the verdict must be computed once and reused.
+    """
+    source = inspect.getsource(report.generate_report)
+
+    assert "weather_signals" not in source
+    assert "weather_attributions" not in source
+    assert not set(re.findall(r'\.append\("([^"]+)"\)', source)) & set(
+        WEATHER_SIGNAL_ORDER
+    )
+    assert source.count("fd.network_weather(") == 1, (
+        "the weather verdict must be computed once and reused, not recomputed"
+    )
+    assert source.count("weather=overview_weather") == 2, (
+        "both the homepage strip and its fallback must render the one verdict"
+    )
+
+
+def test_full_canonical_vocabulary_is_renderable_by_the_weather_strip():
+    source = inspect.getsource(frontdoor.network_weather)
+    implemented = set(re.findall(r'signals\.append\("([^"]+)"\)', source))
+    assert implemented == set(WEATHER_SIGNAL_ORDER)
+
+    html = frontdoor._render_weather_strip_html({
+        "signals": WEATHER_SIGNAL_ORDER,
+        "total_labelers": 6,
+        "emitting_this_week": 6,
+        "events_7d_total": 1,
+        "unreachable": 6,
+    })
+    assert _rendered_weather_signals(html) == implemented
