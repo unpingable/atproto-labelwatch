@@ -899,24 +899,47 @@ def _compute_labeler_lag_7d(conn) -> None:
         )
 
 
+# Module-level so the plan-regression test asserts against the *shipped*
+# query rather than a copy that can drift away from it.
+#
+# `INDEXED BY idx_label_events_ts` is load-bearing. Without it the planner
+# serves the ORDER BY prefix from idx_label_events_state (labeler_did, uri,
+# val, ts); because ts is that index's *fourth* column, `ts >= ?` cannot
+# restrict the scan, so a nominal 7-day computation walks every entry of an
+# index spanning all history to return a few percent of it. Measured on prod
+# 2026-09-02: ~81.5M index entries / ~12GB read per pass for ~3.1M rows of
+# window, at ms=545908. Forcing idx_label_events_ts converts that into a
+# range seek over the window and pays for an explicit sort instead — sorting
+# the window is much cheaper than scanning the corpus, and unlike the corpus
+# scan its cost tracks the window rather than total history.
+#
+# The trailing `ts` in ORDER BY is a tiebreaker, not a reordering. ts_epoch is
+# a monotone function of ts (fixed-width ISO-8601 UTC, verified uniform in
+# prod), so (ts_epoch, ts) refines the original (ts_epoch) ordering instead of
+# changing it. It makes the apply→negate pairing below deterministic for
+# events sharing a whole second, which the old plan left to whatever order the
+# index happened to yield.
+_REVERSAL_STATS_7D_SQL = """
+        WITH e AS (
+            SELECT labeler_did, uri, val, neg, ts,
+                   CAST(strftime('%s', ts) AS INTEGER) AS ts_epoch
+            FROM label_events INDEXED BY idx_label_events_ts
+            WHERE uri LIKE 'at://%/app.bsky.feed.post/%'
+              AND ts >= ?
+        )
+        SELECT * FROM e
+        WHERE ts_epoch IS NOT NULL AND ts_epoch >= ?
+        ORDER BY labeler_did, uri, val, ts_epoch, ts
+"""
+
+
 def _compute_reversal_stats_7d(conn) -> None:
     """Compute per-labeler reversal (apply→negate) stats from label_events (last 7 days)."""
     cutoff_epoch = int(time.time()) - (7 * 86400)
     # ISO cutoff lets SQLite prune rows before expensive epoch conversion + sort
     cutoff_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(cutoff_epoch))
 
-    cursor = conn.execute("""
-        WITH e AS (
-            SELECT labeler_did, uri, val, neg,
-                   CAST(strftime('%s', ts) AS INTEGER) AS ts_epoch
-            FROM label_events
-            WHERE uri LIKE 'at://%/app.bsky.feed.post/%'
-              AND ts >= ?
-        )
-        SELECT * FROM e
-        WHERE ts_epoch IS NOT NULL AND ts_epoch >= ?
-        ORDER BY labeler_did, uri, val, ts_epoch
-    """, (cutoff_iso, cutoff_epoch))
+    cursor = conn.execute(_REVERSAL_STATS_7D_SQL, (cutoff_iso, cutoff_epoch))
 
     events_by_labeler: dict[str, int] = defaultdict(int)
     truncated_labelers: set[str] = set()
