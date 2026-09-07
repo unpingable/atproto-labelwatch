@@ -234,7 +234,7 @@ def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int =
             )
         else:
             db.insert_ingest_outcome(
-                conn, did, ts_now, attempt_id, "partial", 0,
+                conn, did, ts_now, attempt_id, "empty", 0,
                 None, latency_ms, None, None, "service",
             )
     conn.commit()

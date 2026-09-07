@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from datetime import datetime, timezone
 from typing import Iterable, List, Optional
 
 from .utils import get_git_commit
@@ -1068,7 +1069,12 @@ def get_cursor(conn: sqlite3.Connection, source: str) -> str | None:
 
 
 def set_cursor(conn: sqlite3.Connection, source: str, cursor: str) -> None:
+    previous = get_cursor(conn, source)
+    observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     set_meta(conn, f"ingest_cursor:{source}", cursor)
+    set_meta(conn, f"ops:cursor:observed_at:{source}", observed_at)
+    if previous != cursor:
+        set_meta(conn, f"ops:cursor:advanced_at:{source}", observed_at)
     conn.commit()
 
 

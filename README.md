@@ -5,6 +5,11 @@ over time and flags integrity-risk patterns (rate spikes, drift, synchronized
 activity, boundary instability). It does not judge content or truth; it produces
 inspectable receipts about governance infrastructure behavior.
 
+Operational supervisors can discover the neutral concern manifest at
+`.ops/concerns.toml`; `labelwatch ops-status` renders the corresponding
+machine-readable or human view. See
+[`docs/OPERATIONS_VISIBILITY.md`](docs/OPERATIONS_VISIBILITY.md).
+
 ## What it does
 
 **Discovers labelers** via batch enumeration (`listReposByCollection`), a
@@ -253,3 +258,15 @@ labeled targets are hosted, not who operates the infrastructure or why.
 
 Unless otherwise noted, this repository is licensed under MIT OR Apache-2.0,
 at your option. Contributions are accepted under the same terms.
+
+## Offline demonstration and contract pin
+
+Run `PYTHONPATH=src python3 scripts/demo_offline.py` to ingest the bounded
+synthetic stream, execute the real rule engine, assert the expected flip-flop
+finding, render a report, and generate the operations status. Temporary storage
+is used unless `--output` is supplied.
+
+The generic operations envelope under `.ops/` is pinned by
+`.ops/contract.lock.json` to local `atproto-ops` release candidate
+`v1.0.0-rc.1`. The binding uses the dependency-light
+`labelwatch.ops_status` entry point.

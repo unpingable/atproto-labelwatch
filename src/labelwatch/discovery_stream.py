@@ -27,6 +27,7 @@ import signal
 import sqlite3
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -81,6 +82,10 @@ class _Stats:
         self.identity_refreshes = 0
         self.deletes = 0
         self.errors = 0
+        self.parse_failures = 0
+        self.queue_dropped = 0
+        self.worker_failures = 0
+        self.reconnects = 0
         self.started_at = time.monotonic()
 
     def log(self, cursor: Optional[int]):
@@ -163,10 +168,12 @@ async def _worker(conn, queue: asyncio.Queue, known_labelers: set,
                         await asyncio.sleep(delay)
                         continue
                     log.critical("DB OperationalError in worker, forcing exit: %s", e)
+                    stats.worker_failures += 1
                     fatal_error.set()
                     return
                 except sqlite3.Error as e:
                     log.critical("DB error in worker, forcing exit: %s", e)
+                    stats.worker_failures += 1
                     fatal_error.set()
                     return
         except Exception:
@@ -259,7 +266,8 @@ async def _handle_identity_refresh(conn, item: dict, stats: _Stats):
 
 async def _stream_loop(conn, work_queue: asyncio.Queue,
                        known_labelers: set, stats: _Stats,
-                       last_refresh: dict, fatal_error: asyncio.Event):
+                       last_refresh: dict, fatal_error: asyncio.Event,
+                       runtime: dict | None = None):
     """Connect to Jetstream and process messages until disconnect."""
     cursor_val = db.get_meta(conn, "jetstream_discovery_cursor")
     cursor = int(cursor_val) if cursor_val else None
@@ -272,6 +280,8 @@ async def _stream_loop(conn, work_queue: asyncio.Queue,
     last_msg_time_us = cursor
 
     async with websockets.connect(url, ping_interval=30, ping_timeout=10) as ws:
+        if runtime is not None:
+            runtime["connected"] = True
         async for raw in ws:
             # Check fatal_error every message — don't keep consuming if
             # the worker died on a DB error.
@@ -282,6 +292,7 @@ async def _stream_loop(conn, work_queue: asyncio.Queue,
                 msg = json.loads(raw)
             except (json.JSONDecodeError, ValueError):
                 stats.errors += 1
+                stats.parse_failures += 1
                 log.debug("JSON parse error, skipping")
                 continue
 
@@ -351,6 +362,7 @@ async def _stream_loop(conn, work_queue: asyncio.Queue,
                     "time_us": msg_time_us,
                 })
             except asyncio.QueueFull:
+                stats.queue_dropped += 1
                 log.warning("Work queue full, dropping discovery event for %s", did[:40])
 
     # Save final cursor on clean disconnect
@@ -381,6 +393,36 @@ async def _wal_refresh_loop(conn, interval: int = WAL_REFRESH_INTERVAL):
             conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
         except Exception:
             log.exception("WAL refresh failed")
+
+
+def _persist_ops(conn, work_queue: asyncio.Queue, stats: _Stats, runtime: dict) -> None:
+    """Persist bounded producer facts; these are observations, not verdicts."""
+    observed_at = format_ts(now_utc())
+    values = {
+        "ops:discovery:observed_at": observed_at,
+        "ops:discovery:session_id": runtime["session_id"],
+        "ops:discovery:connected": "true" if runtime.get("connected") else "false",
+        "ops:discovery:messages": str(stats.msgs),
+        "ops:discovery:parse_failures": str(stats.parse_failures),
+        "ops:discovery:queue_dropped": str(stats.queue_dropped),
+        "ops:discovery:worker_failures": str(stats.worker_failures),
+        "ops:discovery:reconnects": str(stats.reconnects),
+        "ops:discovery:queue_depth": str(work_queue.qsize()),
+        "ops:discovery:queue_capacity": str(work_queue.maxsize),
+    }
+    for key, value in values.items():
+        db.set_meta(conn, key, value)
+    conn.commit()
+
+
+async def _ops_heartbeat_loop(conn, work_queue: asyncio.Queue, stats: _Stats,
+                              runtime: dict, interval: int = 30):
+    while True:
+        try:
+            _persist_ops(conn, work_queue, stats, runtime)
+        except Exception:
+            log.exception("Discovery ops heartbeat failed")
+        await asyncio.sleep(interval)
 
 
 async def _backstop_loop(conn, interval_hours: int, lock: asyncio.Lock):
@@ -438,6 +480,8 @@ async def run(db_path: str, backstop_interval_hours: int = 6):
 
     stats = _Stats()
     work_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+    runtime = {"session_id": uuid.uuid4().hex, "connected": False}
+    _persist_ops(conn, work_queue, stats, runtime)
     last_refresh: dict = {}  # did -> monotonic time of last refresh
     backstop_lock = asyncio.Lock()
 
@@ -461,6 +505,8 @@ async def run(db_path: str, backstop_interval_hours: int = 6):
     backstop_task = asyncio.create_task(
         _backstop_loop(conn, backstop_interval_hours, backstop_lock))
     wal_refresh_task = asyncio.create_task(_wal_refresh_loop(conn))
+    ops_heartbeat_task = asyncio.create_task(
+        _ops_heartbeat_loop(conn, work_queue, stats, runtime))
 
     def _check_task_health(task: asyncio.Task):
         """Callback: if worker or backstop dies unexpectedly, force exit."""
@@ -474,18 +520,26 @@ async def run(db_path: str, backstop_interval_hours: int = 6):
     worker_task.add_done_callback(_check_task_health)
     backstop_task.add_done_callback(_check_task_health)
     wal_refresh_task.add_done_callback(_check_task_health)
+    ops_heartbeat_task.add_done_callback(_check_task_health)
 
     try:
         while not shutdown_event.is_set() and not fatal_error.is_set():
             try:
                 await _stream_loop(conn, work_queue, known_labelers,
-                                   stats, last_refresh, fatal_error)
+                                   stats, last_refresh, fatal_error, runtime)
             except websockets.exceptions.ConnectionClosed:
                 log.warning("Jetstream disconnected, reconnecting in 5s")
             except OSError as e:
                 log.warning("Connection error: %s, reconnecting in 5s", e)
             except Exception:
                 log.exception("Unexpected error in stream loop")
+
+            runtime["connected"] = False
+            stats.reconnects += 1
+            try:
+                _persist_ops(conn, work_queue, stats, runtime)
+            except Exception:
+                log.exception("Failed to persist disconnected discovery state")
 
             if shutdown_event.is_set() or fatal_error.is_set():
                 break
@@ -494,6 +548,7 @@ async def run(db_path: str, backstop_interval_hours: int = 6):
         worker_task.cancel()
         backstop_task.cancel()
         wal_refresh_task.cancel()
+        ops_heartbeat_task.cancel()
 
         # Final cursor save
         cursor_val = db.get_meta(conn, "jetstream_discovery_cursor")
@@ -501,6 +556,11 @@ async def run(db_path: str, backstop_interval_hours: int = 6):
             log.info("Final cursor: %s", cursor_val)
 
         stats.log(int(cursor_val) if cursor_val else None)
+        runtime["connected"] = False
+        try:
+            _persist_ops(conn, work_queue, stats, runtime)
+        except Exception:
+            pass
         conn.close()
 
         if fatal_error.is_set():

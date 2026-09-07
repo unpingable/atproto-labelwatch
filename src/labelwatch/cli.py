@@ -47,6 +47,23 @@ def cmd_ingest(args) -> None:
     print(json.dumps({"ingested": total}))
 
 
+def cmd_ops_status(args) -> None:
+    """Render the repository-declared producer-local visibility surface."""
+    from . import ops_status
+
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    observed_now = parse_ts(args.now) if args.now else now_utc()
+    if observed_now.tzinfo is None:
+        observed_now = observed_now.replace(tzinfo=timezone.utc)
+    status = ops_status.build_status(cfg.db_path, now=observed_now)
+    if args.format == "json":
+        print(ops_status.dumps(status))
+    else:
+        print(ops_status.render_text(status))
+
+
 def _resolve_now(conn, now_arg: str | None, table: str = "label_events") -> datetime | None:
     if not now_arg:
         return None
@@ -993,6 +1010,14 @@ def main(argv: Optional[list] = None) -> None:
     p_ingest.add_argument("--pages", type=int, default=10, help="Max pages")
     p_ingest.add_argument("--fixture", help="Ingest from fixture JSONL")
     p_ingest.set_defaults(func=cmd_ingest)
+
+    p_ops = sub.add_parser(
+        "ops-status",
+        help="show repository-declared local visibility (JSON or concise text)",
+    )
+    p_ops.add_argument("--format", choices=["json", "text"], default="text")
+    p_ops.add_argument("--now", help="RFC3339 evaluation time (test/replay aid)")
+    p_ops.set_defaults(func=cmd_ops_status)
 
     p_scan = sub.add_parser("scan", help="Run rules scan")
     p_scan.add_argument("--now", help="ISO-8601 timestamp or 'max'")
