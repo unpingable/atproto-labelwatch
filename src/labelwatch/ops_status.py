@@ -190,10 +190,10 @@ def _cursor_continuity(
             "no active acquisition source is declared; inactive retained cursors cannot establish current acquisition",
             facts,
         )
-    if not active_durable:
+    if active_without_cursor:
         return _observation(
-            "ABSENT", None, CURSOR_MAX_AGE_S,
-            "no active acquisition source has a durable cursor; inactive retained cursors do not satisfy this concern",
+            "DEGRADED", None, CURSOR_MAX_AGE_S,
+            "one or more active acquisition sources lack a durable cursor; inactive retained cursors do not satisfy this concern",
             facts,
         )
     active_observed = {

@@ -188,6 +188,18 @@ def test_no_active_sources_cannot_be_satisfied_by_retained_cursor(tmp_path):
     assert observed["facts"]["inactive_retained_sources"] == ["did:plc:historical"]
 
 
+def test_active_source_without_cursor_is_degraded(tmp_path):
+    path, conn = _status(tmp_path)
+    _active(conn, "did:plc:cursorless")
+
+    observed = _by_id(ops_status.build_status(path, now=datetime.now(timezone.utc)))[
+        "labelwatch.ingest.cursor_continuity"
+    ]
+    assert observed["local_state"] == "DEGRADED"
+    assert observed["observation_present"] is True
+    assert observed["facts"]["active_without_cursor"] == ["did:plc:cursorless"]
+
+
 def test_cursor_concern_declares_v2_question(tmp_path):
     path, conn = _status(tmp_path)
     conn.close()
