@@ -1,0 +1,65 @@
+schema = "project.concerns/v1"
+project = "labelwatch"
+
+[[concerns]]
+id = "labelwatch.ingest.poll_coverage"
+question = "labelwatch.question.ingest_poll_coverage/v1"
+profile = "labelwatch.profile.local_status/v1"
+required = true
+description = "Recent configured label-source polls completed with enough per-source outcomes to support bounded acquisition coverage; an empty or partial response is not proof of source silence."
+
+[[concerns]]
+id = "labelwatch.discovery.stream_coverage"
+question = "labelwatch.question.discovery_stream_coverage/v1"
+profile = "labelwatch.profile.local_status/v1"
+required = true
+description = "The Jetstream discovery session is currently connected and its bounded observation window reports no known parse loss, queue shedding, or fatal worker failure."
+
+[[concerns]]
+id = "labelwatch.ingest.cursor_continuity"
+question = "labelwatch.question.ingest_cursor_continuity/v1"
+profile = "labelwatch.profile.local_status/v1"
+required = true
+description = "Durable ingest cursor positions have been observed recently; cursor age is reported separately from advancement and lack of advancement does not prove upstream silence."
+
+[[concerns]]
+id = "labelwatch.discovery.drain"
+question = "labelwatch.question.discovery_drain/v1"
+profile = "labelwatch.profile.local_status/v1"
+required = true
+description = "The discovery worker is consuming accepted work without known queue shedding or a fatal worker condition; stream acquisition alone does not support this proposition."
+
+[[concerns]]
+id = "labelwatch.processing.scan_freshness"
+question = "labelwatch.question.scan_freshness/v1"
+profile = "labelwatch.profile.local_status/v1"
+required = true
+description = "A scan completed recently enough to process the locally acquired Labelwatch state; a live ingest path is not evidence that scanning converged."
+
+[[concerns]]
+id = "labelwatch.persistence.sqlite_continuity"
+question = "labelwatch.question.sqlite_continuity/v1"
+profile = "labelwatch.profile.local_status/v1"
+required = true
+description = "The SQLite store used for event, cursor, and heartbeat continuity is locally readable, passes quick_check, and can acquire a write transaction."
+
+[[concerns]]
+id = "labelwatch.persistence.volume_capacity"
+question = "labelwatch.question.volume_capacity/v1"
+profile = "labelwatch.profile.local_status/v1"
+required = true
+description = "The filesystem containing Labelwatch durable state remains above the existing 14 GiB bounded-state work floor."
+
+[[concerns]]
+id = "labelwatch.persistence.sqlite_freelist"
+question = "labelwatch.question.sqlite_freelist_pathology/v1"
+profile = "labelwatch.profile.local_status/v1"
+required = true
+description = "SQLite free-page geometry remains below the existing NQ pathology predicate: both 20 percent of pages and 1 GiB of reclaimable pages."
+
+[[concerns]]
+id = "labelwatch.output.report_freshness"
+question = "labelwatch.question.report_freshness/v1"
+profile = "labelwatch.profile.local_status/v1"
+required = true
+description = "The observational report artifact completed recently; report freshness does not make its findings authoritative truth or prove complete source coverage."
