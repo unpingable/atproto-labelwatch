@@ -12,6 +12,7 @@ machine-readable or human view. See
 
 Recent operational history: [acquisition custody, fair scheduling, and homepage
 query budget (2026-09-08)](docs/findings/2026-09-08-acquisition-custody-and-homepage-budget.md).
+Follow-up: [cadence read work and honest derive outcomes](docs/findings/2026-09-08-cadence-read-work-and-derive-outcomes.md).
 
 ## What it does
 

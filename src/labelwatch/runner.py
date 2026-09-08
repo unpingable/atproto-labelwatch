@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import gc
+import json
 import logging
 import os
 import threading
@@ -94,6 +95,17 @@ def _record_derive_deferred(conn, reason: str) -> None:
     db.set_meta(conn, "ops:derive:deferred_count", str(count))
     conn.commit()
     log.warning("derive.deferred reason=memory_pressure detail=%s count=%d", reason, count)
+
+
+def _record_derive_outcome(conn, outcome: dict) -> bool:
+    """Retain completed/failed/pending/skipped work without a false success tick."""
+    db.set_meta(conn, 'ops:derive:last_attempt_at', format_ts(now_utc()))
+    db.set_meta(conn, 'ops:derive:last_outcome', json.dumps(outcome, sort_keys=True))
+    complete = outcome.get('state') == 'COMPLETE'
+    if complete:
+        db.set_meta(conn, 'last_derive_ok_ts', format_ts(now_utc()))
+    conn.commit()
+    return complete
 
 
 def _sleep_until(next_ingest: float, next_scan: float) -> None:
@@ -306,8 +318,8 @@ def run_loop(
                     if pressure_reason:
                         _record_derive_deferred(conn, pressure_reason)
                     else:
-                        scan.run_derive(conn, cfg, now=scan_time)
-                        _heartbeat(conn, "last_derive_ok_ts")
+                        outcome = scan.run_derive(conn, cfg, now=scan_time)
+                        _record_derive_outcome(conn, outcome)
                         last_derive = now_mono
                         _release_memory(conn)
             except Exception:

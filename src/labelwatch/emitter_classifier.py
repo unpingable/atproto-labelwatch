@@ -522,14 +522,60 @@ def enrich_top_vals_with_tier_classification(
     (default 50; bigger ledgers shouldn't burn report-thread time).
     """
     out: List[Dict[str, Any]] = []
+    definitions = _find_emitter_definitions(
+        conn, {v.get('value', '') for v in top_vals[:per_val_limit]})
     for v in top_vals[:per_val_limit]:
         label_value = v.get("value", "")
-        emitter_definition = _find_any_emitter_definition(conn, label_value)
+        emitter_definition = definitions.get(label_value)
         result = classify_one(label_value, emitter_definition)
         enriched = dict(v)
         enriched["tier_classification"] = result
         out.append(enriched)
     return out
+
+
+def _find_emitter_definitions(conn, requested: set[str], *, chunk_rows: int = 256) -> dict:
+    """Resolve requested definitions in one newest-first chunked traversal.
+
+    Historical records remain eligible. Equal timestamps use descending row id,
+    matching the existing timestamp-index traversal. Each fetched chunk finalizes
+    its SQLite cursor before parsing or continuing so readers release snapshots.
+    """
+    import json as _json
+    import time as _time
+    if not requested:
+        return {}
+    if chunk_rows < 1:
+        raise ValueError('chunk_rows must be positive')
+    ceiling = conn.execute('SELECT COALESCE(MAX(id),0) FROM discovery_events').fetchone()[0]
+    previous = None
+    found = {}
+    while True:
+        where = '' if previous is None else 'AND (discovered_at, id) < (?, ?)'
+        args = [ceiling]
+        if previous is not None:
+            args.extend(previous)
+        args.append(chunk_rows)
+        rows = conn.execute(f'''
+            SELECT id, discovered_at,
+                   json_extract(record_json,'$.policies.labelValueDefinitions') AS definitions
+            FROM discovery_events
+            WHERE id <= ? AND operation IN ('create','update') {where}
+            ORDER BY discovered_at DESC, id DESC LIMIT ?
+        ''', args).fetchall()
+        if not rows:
+            break
+        for row in rows:
+            definitions = _json.loads(row['definitions']) if row['definitions'] else []
+            for definition in definitions:
+                identifier = definition.get('identifier')
+                if identifier is not None and identifier in requested and identifier not in found:
+                    found[identifier] = definition
+            if requested <= found.keys():
+                return found
+        previous = (rows[-1]['discovered_at'], rows[-1]['id'])
+        _time.sleep(0.01)
+    return found
 
 
 def _find_any_emitter_definition(
