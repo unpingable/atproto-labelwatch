@@ -36,7 +36,7 @@ def _homepage_weather(db_path: str, budget_seconds: float = 2.0) -> dict:
         conn = db.connect(db_path, readonly=True)
         conn.execute('PRAGMA busy_timeout=250')
         conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
-        weather = fd.network_weather(conn)
+        weather = fd.network_weather(conn, strict_errors=True)
         # Some report helpers tolerate missing query results. A deadline must
         # never turn that tolerance into a successful zero-count observation.
         if time.monotonic() >= deadline:

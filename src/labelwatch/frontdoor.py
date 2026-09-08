@@ -811,6 +811,7 @@ def observation_adequacy(
     now: Optional[datetime] = None,
     window_minutes: int = DEFAULT_COVERAGE_WINDOW_MINUTES,
     threshold: float = DEFAULT_COVERAGE_THRESHOLD,
+    strict_errors: bool = False,
 ) -> dict:
     """Whether the window has standing to support a negative claim.
 
@@ -838,6 +839,8 @@ def observation_adequacy(
             (window_start,),
         ).fetchall()
     except sqlite3.Error:
+        if strict_errors:
+            raise
         # Pre-migration database: the fact does not exist, so adequacy is not
         # knowable. Refusing to answer is correct; claiming calm is not.
         return {
@@ -869,6 +872,8 @@ def observation_adequacy(
             "SELECT COUNT(*) AS c FROM labelers WHERE endpoint_status = 'accessible'"
         ).fetchone()["c"] or 0
     except sqlite3.Error:
+        if strict_errors:
+            raise
         accessible = 0
     # An accessible labeler that should have been polled and was not is
     # unobserved for this window, the same as one whose polls all failed.
@@ -936,6 +941,7 @@ def network_weather(
     now: Optional[datetime] = None,
     coverage_window_minutes: int = DEFAULT_COVERAGE_WINDOW_MINUTES,
     coverage_threshold: float = DEFAULT_COVERAGE_THRESHOLD,
+    strict_errors: bool = False,
 ) -> dict:
     """Compute the lookup-page network weather strip.
 
@@ -963,6 +969,7 @@ def network_weather(
         conn, now=now,
         window_minutes=coverage_window_minutes,
         threshold=coverage_threshold,
+        strict_errors=strict_errors,
     )
 
     total = conn.execute("SELECT COUNT(*) AS c FROM labelers").fetchone()["c"] or 0
@@ -984,6 +991,8 @@ def network_weather(
             (since_24h,),
         ).fetchone()["c"] or 0
     except sqlite3.Error:
+        if strict_errors:
+            raise
         spike_24h = 0
     try:
         churn_24h = conn.execute(
@@ -991,6 +1000,8 @@ def network_weather(
             (since_24h,),
         ).fetchone()["c"] or 0
     except sqlite3.Error:
+        if strict_errors:
+            raise
         churn_24h = 0
     try:
         mod_conflicts = moderation_edge_count(
@@ -999,6 +1010,8 @@ def network_weather(
             format_ts(now),
         )
     except Exception:
+        if strict_errors:
+            raise
         mod_conflicts = 0
 
     signals: list[str] = []

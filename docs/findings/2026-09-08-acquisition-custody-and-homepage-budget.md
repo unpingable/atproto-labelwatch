@@ -62,6 +62,13 @@ not turn missing computation into calm, zero, or healthy. The connection's
 progress handler is cleared and the connection closed. This SQLite budget is
 not a hard real-time bound on filesystem stalls or connection setup.
 
+Post-candidate review found that historical report helpers also catch individual
+SQL failures and substitute counts. The successor to rc.8 enables strict query
+errors for the live optional strip, including observation-adequacy queries;
+missing tables therefore render unavailable instead of partial weather. Existing
+report callers retain their previous compatibility behavior. The rc.8 tag is
+preserved and the final successor candidate carries this guard.
+
 The homepage remains useful when optional weather is unavailable; that outcome
 still leaves weather computation degraded. Production acceptance separately
 measures homepage latency (five-second target), weather availability, acquisition,

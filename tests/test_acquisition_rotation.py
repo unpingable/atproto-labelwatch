@@ -87,7 +87,7 @@ def test_homepage_weather_deadline_is_visible_and_connection_is_closed(tmp_path)
     path = tmp_path / 'state.db'
     setup(path).close()
     connections = []
-    def expensive(conn):
+    def expensive(conn, **kwargs):
         connections.append(conn)
         conn.execute('WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100000000) SELECT sum(x) FROM n').fetchone()
         return {'signals': ['calm']}
@@ -115,3 +115,10 @@ def test_homepage_weather_zero_and_failure_are_distinct(tmp_path):
     assert not result.get('unavailable')
     with patch.object(frontdoor, 'network_weather', side_effect=ValueError('fixture failure')):
         assert server._homepage_weather(str(path)) == {'unavailable': True}
+    conn = db.connect(str(path))
+    conn.execute('DROP TABLE boundary_edges')
+    conn.commit()
+    conn.close()
+    # Historical report helpers tolerate missing tables; the optional live
+    # strip must expose incomplete computation instead of treating it as zero.
+    assert server._homepage_weather(str(path)) == {'unavailable': True}
