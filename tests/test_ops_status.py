@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+import sqlite3
+import time
 
 from labelwatch import db, ops_status
 
@@ -164,6 +166,70 @@ def test_sqlite_and_capacity_are_narrow_independent_probes(tmp_path, monkeypatch
     assert items["labelwatch.persistence.sqlite_continuity"]["local_state"] == "PRESENT"
     assert items["labelwatch.persistence.volume_capacity"]["local_state"] == "DEGRADED"
     assert "freelist_count" in items["labelwatch.persistence.sqlite_freelist"]["facts"]
+
+
+def test_sqlite_continuity_is_bounded_and_does_not_run_integrity_scan(tmp_path, monkeypatch):
+    path, conn = _status(tmp_path)
+    conn.close()
+    statements = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(*args, **kwargs):
+        traced = real_connect(*args, **kwargs)
+        traced.set_trace_callback(statements.append)
+        return traced
+
+    monkeypatch.setattr(ops_status.sqlite3, "connect", traced_connect)
+    observed = _by_id(ops_status.build_status(path, now=NOW))[
+        "labelwatch.persistence.sqlite_continuity"
+    ]
+    facts = observed["facts"]
+    assert observed["local_state"] == "PRESENT"
+    assert facts["probe"] == "bounded_schema_and_write_intent/v1"
+    assert facts["integrity_check_performed"] is False
+    assert facts["missing_critical_objects"] == []
+    assert facts["bounded_read_tables"] == ["meta", "label_events", "labelers", "ingest_outcomes"]
+    assert facts["write_transaction_acquired"] is True
+    normalized = "\n".join(statements).lower()
+    assert "quick_check" not in normalized
+    assert "integrity_check" not in normalized
+    assert "begin immediate" in normalized
+    assert "rollback" in normalized
+
+
+def test_sqlite_continuity_bounds_write_intent_contention(tmp_path):
+    path, conn = _status(tmp_path)
+    conn.close()
+    blocker = sqlite3.connect(path)
+    blocker.execute("BEGIN IMMEDIATE")
+    started = time.monotonic()
+    try:
+        observed = _by_id(ops_status.build_status(path, now=NOW))[
+            "labelwatch.persistence.sqlite_continuity"
+        ]
+    finally:
+        blocker.rollback()
+        blocker.close()
+    elapsed = time.monotonic() - started
+    assert elapsed < 3
+    assert observed["local_state"] == "DEGRADED"
+    assert observed["facts"]["write_transaction_acquired"] is False
+    assert "locked" in observed["facts"]["error"].lower()
+    assert observed["facts"]["integrity_check_performed"] is False
+
+
+def test_sqlite_continuity_reports_missing_critical_object(tmp_path):
+    path, conn = _status(tmp_path)
+    conn.execute("DROP INDEX idx_label_events_state")
+    conn.commit()
+    conn.close()
+    observed = _by_id(ops_status.build_status(path, now=NOW))[
+        "labelwatch.persistence.sqlite_continuity"
+    ]
+    assert observed["local_state"] == "DEGRADED"
+    assert observed["facts"]["missing_critical_objects"] == ["index:idx_label_events_state"]
+    assert observed["facts"]["write_transaction_acquired"] is True
+    assert "no integrity check was performed" in observed["reason"]
 
 
 def test_freelist_pathology_requires_both_existing_gates():

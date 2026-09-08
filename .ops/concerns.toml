@@ -38,10 +38,10 @@ description = "A scan completed recently enough to process the locally acquired 
 
 [[concerns]]
 id = "labelwatch.persistence.sqlite_continuity"
-question = "labelwatch.question.sqlite_continuity/v1"
+question = "labelwatch.question.sqlite_continuity/v2"
 profile = "labelwatch.profile.local_status/v1"
 required = true
-description = "The SQLite store used for event, cursor, and heartbeat continuity is locally readable, passes quick_check, and can acquire a write transaction."
+description = "The SQLite store exposes the required schema and critical objects to bounded reads and can acquire and roll back a write-intent transaction. This probe is not an integrity check."
 
 [[concerns]]
 id = "labelwatch.persistence.volume_capacity"

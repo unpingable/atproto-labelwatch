@@ -34,6 +34,15 @@ REPORT_MAX_AGE_S = 60 * 60
 VOLUME_FREE_FLOOR = 14 * 1024**3
 FREELIST_RATIO = 0.20
 FREELIST_BYTES = 1024**3
+SQLITE_PROBE_KIND = "bounded_schema_and_write_intent/v1"
+SQLITE_CRITICAL_OBJECTS = (
+    ("table", "meta"),
+    ("table", "label_events"),
+    ("table", "labelers"),
+    ("table", "ingest_outcomes"),
+    ("index", "idx_label_events_state"),
+)
+SQLITE_BOUNDED_READ_TABLES = ("meta", "label_events", "labelers", "ingest_outcomes")
 
 
 def _freelist_pathological(page_size: int, page_count: int, freelist: int) -> bool:
@@ -193,18 +202,67 @@ def _sqlite_observations(db_path: Path, now: datetime) -> tuple[dict[str, Any], 
     if not db_path.exists():
         absent = _observation("ABSENT", None, None, "the configured SQLite file does not exist", {"path": str(db_path)})
         return absent, absent
-    facts: dict[str, Any] = {"path": str(db_path)}
+    facts: dict[str, Any] = {
+        "path": str(db_path),
+        "probe": SQLITE_PROBE_KIND,
+        "integrity_check_performed": False,
+    }
+    conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=rw", uri=True, timeout=1)
-        quick = conn.execute("PRAGMA quick_check(1)").fetchone()[0]
+        schema_cookie = int(conn.execute("PRAGMA schema_version").fetchone()[0])
+        names = tuple(name for _, name in SQLITE_CRITICAL_OBJECTS)
+        placeholders = ",".join("?" for _ in names)
+        found = {
+            (str(row[0]), str(row[1]))
+            for row in conn.execute(
+                f"SELECT type, name FROM sqlite_schema WHERE name IN ({placeholders})",
+                names,
+            )
+        }
+        missing = [f"{kind}:{name}" for kind, name in SQLITE_CRITICAL_OBJECTS if (kind, name) not in found]
+        readable: list[str] = []
+        for table in SQLITE_BOUNDED_READ_TABLES:
+            if ("table", table) in found:
+                # Constant, repository-owned identifiers only. LIMIT 1 touches
+                # at most the schema/root path plus one row; it is not a scan.
+                conn.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone()
+                readable.append(table)
+        schema_row = (
+            conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+            if ("table", "meta") in found
+            else None
+        )
         page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
         page_count = int(conn.execute("PRAGMA page_count").fetchone()[0])
         freelist = int(conn.execute("PRAGMA freelist_count").fetchone()[0])
         conn.execute("BEGIN IMMEDIATE")
         conn.rollback()
-        conn.close()
-        facts.update({"quick_check": quick, "write_transaction_acquired": True, "page_size": page_size, "page_count": page_count, "freelist_count": freelist})
-        continuity = _observation("PRESENT" if quick == "ok" else "DEGRADED", now.isoformat(), None, "SQLite is readable and can acquire a write transaction" if quick == "ok" else "SQLite quick_check did not return ok", facts)
+        facts.update({
+            "schema_cookie": schema_cookie,
+            "application_schema_version": str(schema_row[0]) if schema_row else None,
+            "critical_objects": [f"{kind}:{name}" for kind, name in SQLITE_CRITICAL_OBJECTS],
+            "missing_critical_objects": missing,
+            "bounded_read_tables": readable,
+            "write_transaction_acquired": True,
+            "page_size": page_size,
+            "page_count": page_count,
+            "freelist_count": freelist,
+        })
+        complete = not missing and schema_row is not None
+        continuity = _observation(
+            "PRESENT" if complete else "DEGRADED",
+            now.isoformat(),
+            None,
+            (
+                "the bounded schema/object reads succeeded and SQLite can acquire a write transaction; "
+                "no integrity check was performed"
+                if complete
+                else "the bounded SQLite probe found missing critical schema objects or schema metadata; "
+                "no integrity check was performed"
+            ),
+            facts,
+        )
         free_bytes = freelist * page_size
         ratio = freelist / page_count if page_count else 0.0
         ffacts = {"page_size": page_size, "page_count": page_count, "freelist_count": freelist, "freelist_bytes": free_bytes, "freelist_ratio": round(ratio, 6), "ratio_threshold": FREELIST_RATIO, "bytes_threshold": FREELIST_BYTES}
@@ -212,9 +270,18 @@ def _sqlite_observations(db_path: Path, now: datetime) -> tuple[dict[str, Any], 
         freelist_obs = _observation("DEGRADED" if pathological else "PRESENT", now.isoformat(), None, "both freelist pathology gates are met" if pathological else "the compound freelist pathology predicate is false", ffacts)
         return continuity, freelist_obs
     except sqlite3.Error as exc:
-        facts.update({"quick_check": None, "write_transaction_acquired": False, "error": str(exc)})
-        unknown = _observation("DEGRADED", now.isoformat(), None, "SQLite continuity probe failed", facts)
+        if conn is not None and conn.in_transaction:
+            conn.rollback()
+        facts.update({"write_transaction_acquired": False, "error": str(exc)})
+        unknown = _observation(
+            "DEGRADED", now.isoformat(), None,
+            "the bounded SQLite schema/read/write-intent probe failed; no integrity check was performed",
+            facts,
+        )
         return unknown, _observation("UNKNOWN", now.isoformat(), None, "freelist geometry is unavailable because the SQLite probe failed", facts)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _volume(db_path: Path, now: datetime) -> dict[str, Any]:

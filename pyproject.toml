@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "labelwatch"
-version = "0.1.0rc3"
+version = "0.1.0rc4"
 description = "Monitor ATProto labeler behavior and emit integrity-risk receipts."
 readme = "README.md"
 requires-python = ">=3.10"
