@@ -183,6 +183,7 @@ def _cursor_continuity(
         "active_durable_sources": active_durable,
         "inactive_retained_sources": inactive_retained,
         "active_without_cursor": active_without_cursor,
+        "all_active_sources_have_durable_cursor": not active_without_cursor,
     })
     if not active:
         return _observation(

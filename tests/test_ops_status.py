@@ -161,6 +161,7 @@ def test_inactive_retained_cursor_does_not_make_active_cursor_stale(tmp_path):
     assert observed["local_state"] == "PRESENT"
     assert observed["facts"]["active_durable_sources"] == ["did:plc:active"]
     assert observed["facts"]["inactive_retained_sources"] == ["did:plc:inactive"]
+    assert observed["facts"]["all_active_sources_have_durable_cursor"] is True
     assert observed["facts"]["stale_active_sources"] == []
 
 
@@ -199,6 +200,7 @@ def test_active_source_without_cursor_is_degraded(tmp_path):
     assert observed["observation_present"] is True
     assert observed["observed_at"] is not None
     assert observed["facts"]["active_without_cursor"] == ["did:plc:cursorless"]
+    assert observed["facts"]["all_active_sources_have_durable_cursor"] is False
 
 
 def test_cursor_concern_declares_v2_question(tmp_path):
