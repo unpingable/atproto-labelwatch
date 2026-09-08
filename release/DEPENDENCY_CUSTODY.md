@@ -11,7 +11,7 @@ From the repository root, after copying the reviewed wheelhouse to
 ```sh
 python3 -m venv /tmp/labelwatch-recovery-venv
 /tmp/labelwatch-recovery-venv/bin/python -m pip install \
-  --no-index --find-links WHEELHOUSE labelwatch==0.1.0rc3
+  --no-index --find-links WHEELHOUSE labelwatch==0.1.0rc6
 /tmp/labelwatch-recovery-venv/bin/python scripts/demo_offline.py \
   --output /tmp/labelwatch-demo
 /tmp/labelwatch-recovery-venv/bin/python scripts/recover_synthetic.py \

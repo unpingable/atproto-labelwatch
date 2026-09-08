@@ -1,4 +1,5 @@
 """Tests for multi-source ingest from discovered labeler endpoints."""
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 from labelwatch import db, ingest
@@ -82,6 +83,54 @@ def test_ingest_multi_per_did_cursors():
     # Cursor should be stored under the DID, not the service URL
     cursor = db.get_cursor(conn, "did:plc:a")
     assert cursor == "cursor_a_1"
+
+
+def test_successful_empty_poll_reobserves_cursor_without_advancing():
+    conn = _make_db()
+    cfg = Config()
+    did = "did:plc:a"
+    _insert_accessible_labeler(conn, did, "https://labeler-a.example.com")
+    db.set_cursor(conn, did, "cursor-a")
+    advanced = db.get_meta(conn, f"ops:cursor:advanced_at:{did}")
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    db.set_meta(conn, f"ops:cursor:observed_at:{did}", old)
+    conn.commit()
+
+    with patch.object(ingest, "fetch_labels", return_value={"labels": [], "cursor": None}):
+        ingest.ingest_multi(conn, cfg)
+
+    assert db.get_cursor(conn, did) == "cursor-a"
+    assert db.get_meta(conn, f"ops:cursor:observed_at:{did}") != old
+    assert db.get_meta(conn, f"ops:cursor:advanced_at:{did}") == advanced
+
+
+def test_failed_poll_does_not_reobserve_cursor():
+    conn = _make_db()
+    cfg = Config()
+    did = "did:plc:a"
+    _insert_accessible_labeler(conn, did, "https://labeler-a.example.com")
+    db.set_cursor(conn, did, "cursor-a")
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    db.set_meta(conn, f"ops:cursor:observed_at:{did}", old)
+    conn.commit()
+
+    with patch.object(ingest, "fetch_labels", side_effect=ConnectionError("offline")):
+        ingest.ingest_multi(conn, cfg)
+
+    assert db.get_meta(conn, f"ops:cursor:observed_at:{did}") == old
+
+
+def test_successful_cursorless_empty_poll_does_not_manufacture_cursor():
+    conn = _make_db()
+    cfg = Config()
+    did = "did:plc:a"
+    _insert_accessible_labeler(conn, did, "https://labeler-a.example.com")
+
+    with patch.object(ingest, "fetch_labels", return_value={"labels": [], "cursor": None}):
+        ingest.ingest_multi(conn, cfg)
+
+    assert db.get_cursor(conn, did) is None
+    assert db.get_meta(conn, f"ops:cursor:observed_at:{did}") is None
 
 
 def test_ingest_multi_failure_isolation():

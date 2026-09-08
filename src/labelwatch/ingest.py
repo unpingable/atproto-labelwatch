@@ -339,6 +339,12 @@ def ingest_multi(conn, config: Config, timeout: int | None = None,
 
             latency_ms = int((time.monotonic() - t0) * 1000)
             outcome = "success" if total > 0 else "empty"
+            # A successful response using an existing cursor re-observes that
+            # durable position even when the endpoint returns no new cursor.
+            # This must not update advanced_at, and a cursorless empty source
+            # must remain cursorless.
+            if cursor is not None:
+                db.observe_cursor(conn, cursor_key)
             db.insert_ingest_outcome(
                 conn, did, ts_now, attempt_id, outcome, total,
                 None, latency_ms, None, None, "multi",

@@ -17,10 +17,10 @@ description = "The Jetstream discovery session is currently connected and its bo
 
 [[concerns]]
 id = "labelwatch.ingest.cursor_continuity"
-question = "labelwatch.question.ingest_cursor_continuity/v1"
+question = "labelwatch.question.ingest_cursor_continuity/v2"
 profile = "labelwatch.profile.local_status/v1"
 required = true
-description = "Durable ingest cursor positions have been observed recently; cursor age is reported separately from advancement and lack of advancement does not prove upstream silence."
+description = "Durable cursor positions for active accessible acquisition sources have been observed recently; inactive retained cursors, observation, and advancement remain distinct."
 
 [[concerns]]
 id = "labelwatch.discovery.drain"

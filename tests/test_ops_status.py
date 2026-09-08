@@ -24,6 +24,15 @@ def _set(conn, key, value):
     conn.commit()
 
 
+def _active(conn, did="did:plc:a"):
+    conn.execute(
+        "INSERT INTO labelers(labeler_did, service_endpoint, endpoint_status, first_seen, last_seen) "
+        "VALUES(?, ?, 'accessible', ?, ?)",
+        (did, f"https://{did.removeprefix('did:plc:')}.example", NOW.isoformat(), NOW.isoformat()),
+    )
+    conn.commit()
+
+
 def test_clean_repository_exposes_required_absence(tmp_path):
     path = tmp_path / "missing.sqlite"
     status = ops_status.build_status(path, now=NOW)
@@ -105,6 +114,7 @@ def test_malformed_stream_input_is_visible_loss(tmp_path):
 
 def test_historical_cursor_and_output_become_stale(tmp_path):
     path, conn = _status(tmp_path)
+    _active(conn)
     old = (NOW - timedelta(hours=2)).isoformat()
     _set(conn, "ingest_cursor:did:plc:a", "cursor-a")
     _set(conn, "ops:cursor:observed_at:did:plc:a", old)
@@ -127,6 +137,7 @@ def test_cursor_observation_and_advancement_are_distinct(tmp_path):
 
 def test_cursor_reobservation_does_not_manufacture_advancement(tmp_path):
     path, conn = _status(tmp_path)
+    _active(conn)
     db.set_cursor(conn, "did:plc:a", "same")
     first_advance = db.get_meta(conn, "ops:cursor:advanced_at:did:plc:a")
     db.set_cursor(conn, "did:plc:a", "same")
@@ -135,6 +146,57 @@ def test_cursor_reobservation_does_not_manufacture_advancement(tmp_path):
     ]
     assert observed["local_state"] == "PRESENT"
     assert observed["facts"]["advanced_at_by_source"]["did:plc:a"] == first_advance
+
+
+def test_inactive_retained_cursor_does_not_make_active_cursor_stale(tmp_path):
+    path, conn = _status(tmp_path)
+    _active(conn, "did:plc:active")
+    db.set_cursor(conn, "did:plc:active", "current")
+    _set(conn, "ingest_cursor:did:plc:inactive", "historical")
+    _set(conn, "ops:cursor:observed_at:did:plc:inactive", (NOW - timedelta(days=2)).isoformat())
+
+    observed = _by_id(ops_status.build_status(path, now=datetime.now(timezone.utc)))[
+        "labelwatch.ingest.cursor_continuity"
+    ]
+    assert observed["local_state"] == "PRESENT"
+    assert observed["facts"]["active_durable_sources"] == ["did:plc:active"]
+    assert observed["facts"]["inactive_retained_sources"] == ["did:plc:inactive"]
+    assert observed["facts"]["stale_active_sources"] == []
+
+
+def test_missing_active_scope_fails_closed(tmp_path):
+    path, conn = _status(tmp_path)
+    db.set_cursor(conn, "did:plc:historical", "cursor")
+    conn.execute("DROP TABLE labelers")
+    conn.commit()
+
+    observed = _by_id(ops_status.build_status(path, now=datetime.now(timezone.utc)))[
+        "labelwatch.ingest.cursor_continuity"
+    ]
+    assert observed["local_state"] == "UNKNOWN"
+    assert "unavailable" in observed["reason"]
+
+
+def test_no_active_sources_cannot_be_satisfied_by_retained_cursor(tmp_path):
+    path, conn = _status(tmp_path)
+    db.set_cursor(conn, "did:plc:historical", "cursor")
+
+    observed = _by_id(ops_status.build_status(path, now=datetime.now(timezone.utc)))[
+        "labelwatch.ingest.cursor_continuity"
+    ]
+    assert observed["local_state"] == "UNKNOWN"
+    assert observed["facts"]["inactive_retained_sources"] == ["did:plc:historical"]
+
+
+def test_cursor_concern_declares_v2_question(tmp_path):
+    path, conn = _status(tmp_path)
+    conn.close()
+    status = ops_status.build_status(path, now=NOW)
+    concern = next(
+        item for item in status["concerns"]
+        if item["id"] == "labelwatch.ingest.cursor_continuity"
+    )
+    assert concern["question"] == "labelwatch.question.ingest_cursor_continuity/v2"
 
 
 def test_unmapped_required_concern_is_explicitly_missing(tmp_path):

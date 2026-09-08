@@ -154,21 +154,75 @@ def _discovery_coverage(meta: dict[str, str], now: datetime) -> dict[str, Any]:
     return _observation("PRESENT", observed_at, DISCOVERY_MAX_AGE_S, "the current discovery session reports connected without known loss", facts)
 
 
-def _cursor_continuity(meta: dict[str, str], now: datetime) -> dict[str, Any]:
+def _cursor_continuity(
+    meta: dict[str, str],
+    active_sources: set[str] | None,
+    now: datetime,
+) -> dict[str, Any]:
     observed = {key.removeprefix("ops:cursor:observed_at:"): value for key, value in meta.items() if key.startswith("ops:cursor:observed_at:")}
     advanced = {key.removeprefix("ops:cursor:advanced_at:"): value for key, value in meta.items() if key.startswith("ops:cursor:advanced_at:")}
     durable = sorted(key.removeprefix("ingest_cursor:") for key in meta if key.startswith("ingest_cursor:"))
-    facts = {"durable_sources": durable, "observed_at_by_source": observed, "advanced_at_by_source": advanced}
-    if not durable:
-        return _observation("ABSENT", None, CURSOR_MAX_AGE_S, "no durable ingest cursor exists", facts)
-    if not observed:
-        return _observation("UNKNOWN", None, CURSOR_MAX_AGE_S, "durable cursors predate cursor-observation instrumentation", facts)
-    latest = max(observed.values(), key=lambda value: _parse_ts(value) or datetime.min.replace(tzinfo=timezone.utc))
-    stale = sorted(source for source in durable if _age(now, observed.get(source)) is None or (_age(now, observed.get(source)) or 0) > CURSOR_MAX_AGE_S)
-    facts["stale_sources"] = stale
+    facts: dict[str, Any] = {
+        "durable_sources": durable,
+        "observed_at_by_source": observed,
+        "advanced_at_by_source": advanced,
+        "scope": "active_accessible_sources_with_endpoints/v2",
+    }
+    if active_sources is None:
+        return _observation(
+            "UNKNOWN", None, CURSOR_MAX_AGE_S,
+            "the active acquisition source set is unavailable; retained cursors are not treated as current by default",
+            facts,
+        )
+    active = sorted(active_sources)
+    active_durable = sorted(active_sources.intersection(durable))
+    inactive_retained = sorted(set(durable).difference(active_sources))
+    active_without_cursor = sorted(active_sources.difference(durable))
+    facts.update({
+        "active_sources": active,
+        "active_durable_sources": active_durable,
+        "inactive_retained_sources": inactive_retained,
+        "active_without_cursor": active_without_cursor,
+    })
+    if not active:
+        return _observation(
+            "UNKNOWN", None, CURSOR_MAX_AGE_S,
+            "no active acquisition source is declared; inactive retained cursors cannot establish current acquisition",
+            facts,
+        )
+    if not active_durable:
+        return _observation(
+            "ABSENT", None, CURSOR_MAX_AGE_S,
+            "no active acquisition source has a durable cursor; inactive retained cursors do not satisfy this concern",
+            facts,
+        )
+    active_observed = {
+        source: observed[source] for source in active_durable if source in observed
+    }
+    if not active_observed:
+        return _observation(
+            "UNKNOWN", None, CURSOR_MAX_AGE_S,
+            "active durable cursors predate cursor-observation instrumentation",
+            facts,
+        )
+    latest = max(active_observed.values(), key=lambda value: _parse_ts(value) or datetime.min.replace(tzinfo=timezone.utc))
+    stale = sorted(
+        source for source in active_durable
+        if _age(now, observed.get(source)) is None
+        or (_age(now, observed.get(source)) or 0) > CURSOR_MAX_AGE_S
+    )
+    facts["stale_active_sources"] = stale
     if stale:
-        return _observation("STALE", latest, CURSOR_MAX_AGE_S, "one or more durable cursors have not been observed recently", facts)
-    return _observation("PRESENT", latest, CURSOR_MAX_AGE_S, "durable cursors were observed recently; advancement is reported but not inferred from silence", facts)
+        return _observation(
+            "STALE", latest, CURSOR_MAX_AGE_S,
+            "one or more active durable cursors have not been observed recently; inactive retained cursors are reported separately",
+            facts,
+        )
+    return _observation(
+        "PRESENT", latest, CURSOR_MAX_AGE_S,
+        "active durable cursors were observed recently; inactive retention and advancement are reported separately",
+        facts,
+    )
 
 
 def _discovery_drain(meta: dict[str, str], now: datetime) -> dict[str, Any]:
@@ -300,11 +354,22 @@ def build_status(db_path: str | os.PathLike[str], *, now: datetime | None = None
     path = Path(db_path).resolve()
     produced: dict[str, dict[str, Any]] = {}
     meta: dict[str, str] = {}
+    active_sources: set[str] | None = None
     if path.exists():
         try:
             conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
             meta = _meta(conn)
             produced["labelwatch.ingest.poll_coverage"] = _poll_coverage(conn, now)
+            try:
+                active_sources = {
+                    str(row[0]) for row in conn.execute(
+                        "SELECT labeler_did FROM labelers "
+                        "WHERE endpoint_status='accessible' "
+                        "AND service_endpoint IS NOT NULL AND service_endpoint <> ''"
+                    )
+                }
+            except sqlite3.Error:
+                active_sources = None
             conn.close()
         except sqlite3.Error as exc:
             produced["labelwatch.ingest.poll_coverage"] = _observation("UNKNOWN", now.isoformat(), POLL_WINDOW_S, "the local outcome store is unobservable", {"error": str(exc)})
@@ -312,7 +377,7 @@ def build_status(db_path: str | os.PathLike[str], *, now: datetime | None = None
         produced["labelwatch.ingest.poll_coverage"] = _observation("ABSENT", None, POLL_WINDOW_S, "the configured SQLite store does not exist", {"path": str(path)})
 
     produced["labelwatch.discovery.stream_coverage"] = _discovery_coverage(meta, now)
-    produced["labelwatch.ingest.cursor_continuity"] = _cursor_continuity(meta, now)
+    produced["labelwatch.ingest.cursor_continuity"] = _cursor_continuity(meta, active_sources, now)
     produced["labelwatch.discovery.drain"] = _discovery_drain(meta, now)
     produced["labelwatch.processing.scan_freshness"] = _heartbeat(meta, "last_scan_ok_ts", SCAN_MAX_AGE_S, now, "scan")
     produced["labelwatch.output.report_freshness"] = _heartbeat(meta, "last_report_ok_ts", REPORT_MAX_AGE_S, now, "report")

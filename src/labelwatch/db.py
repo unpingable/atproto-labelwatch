@@ -1078,6 +1078,20 @@ def set_cursor(conn: sqlite3.Connection, source: str, cursor: str) -> None:
     conn.commit()
 
 
+def observe_cursor(conn: sqlite3.Connection, source: str) -> bool:
+    """Record successful use of an unchanged durable cursor.
+
+    This is observation, not advancement.  A source without a durable cursor
+    remains unobserved so an empty response cannot manufacture continuity.
+    """
+    if get_cursor(conn, source) is None:
+        return False
+    observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    set_meta(conn, f"ops:cursor:observed_at:{source}", observed_at)
+    conn.commit()
+    return True
+
+
 def get_handle(conn: sqlite3.Connection, labeler_did: str) -> Optional[str]:
     row = conn.execute("SELECT handle FROM labelers WHERE labeler_did=?", (labeler_did,)).fetchone()
     if row and row["handle"]:
