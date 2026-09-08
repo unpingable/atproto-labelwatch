@@ -32,7 +32,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional
 
-from .boundary import boundary_summary_for_report
+from .boundary import moderation_edge_count
 from .label_family import (
     LABELER_DEFAULT_EFFECT,
     classify_authority_effect,
@@ -993,12 +993,11 @@ def network_weather(
     except sqlite3.Error:
         churn_24h = 0
     try:
-        boundary_summary = boundary_summary_for_report(
+        mod_conflicts = moderation_edge_count(
             conn,
             format_ts(now - timedelta(days=7)),
             format_ts(now),
         )
-        mod_conflicts = boundary_summary.get("moderation_edges", 0)
     except Exception:
         mod_conflicts = 0
 
@@ -1070,6 +1069,12 @@ def _render_weather_strip_html(weather: Optional[dict]) -> str:
     """Compact one-line strip linking to /methodology.html."""
     if not weather:
         return ""
+    if weather.get('unavailable'):
+        return ('<aside class="weather-strip"><p>Network weather: '
+                '<strong>temporarily unavailable</strong>. '
+                'No current weather conclusion is available.</p>'
+                '<p><a href="/methodology.html">Open system dashboard &amp; graphs</a>'
+                '</p></aside>')
     # An empty signal list is not calm. `network_weather` never returns one,
     # but this renderer also takes caller-supplied dicts, and defaulting to a
     # substantive negative claim here would reintroduce the same defect at the

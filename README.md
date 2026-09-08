@@ -10,6 +10,9 @@ Operational supervisors can discover the neutral concern manifest at
 machine-readable or human view. See
 [`docs/OPERATIONS_VISIBILITY.md`](docs/OPERATIONS_VISIBILITY.md).
 
+Recent operational history: [acquisition custody, fair scheduling, and homepage
+query budget (2026-09-08)](docs/findings/2026-09-08-acquisition-custody-and-homepage-budget.md).
+
 ## What it does
 
 **Discovers labelers** via batch enumeration (`listReposByCollection`), a
