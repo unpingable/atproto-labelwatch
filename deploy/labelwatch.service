@@ -15,7 +15,9 @@ ExecStart=/opt/labelwatch/.venv/bin/labelwatch \
     --report-out /var/www/labelwatch
 Restart=always
 RestartSec=5
-OOMPolicy=restart
+# Restart=always handles process/OOM exits. "restart" is not a valid
+# OOMPolicy value; explicit stop matches systemd's prior effective default.
+OOMPolicy=stop
 TimeoutStopSec=30
 
 # Resource limits

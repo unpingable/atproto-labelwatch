@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import urllib.error
+from pathlib import Path
 from typing import Optional
 
 from . import db, discover, ingest, report as report_mod, resolve, scan
@@ -14,6 +15,85 @@ from .config import Config
 from .utils import format_ts, now_utc
 
 log = logging.getLogger(__name__)
+
+_DERIVE_MEMORY_HIGH_RATIO = float(
+    os.environ.get("LABELWATCH_DERIVE_MEMORY_HIGH_RATIO", "0.90")
+)
+_DERIVE_MEMORY_HIGH_EVENT_DELTA = int(
+    os.environ.get("LABELWATCH_DERIVE_MEMORY_HIGH_EVENT_DELTA", "1000")
+)
+
+
+def _read_cgroup_memory_snapshot() -> dict[str, int] | None:
+    """Read this process's cgroup-v2 memory pressure counters.
+
+    Absence, cgroup v1, and an unlimited ``memory.high`` are all treated as
+    unavailable rather than as pressure. This is an operational guard, not a
+    reason to make Labelwatch Linux-only.
+    """
+    try:
+        cgroup_path = None
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+            hierarchy, controllers, path = line.split(":", 2)
+            if hierarchy == "0" and not controllers:
+                cgroup_path = path
+                break
+        if cgroup_path is None:
+            return None
+        memory_dir = Path("/sys/fs/cgroup") / cgroup_path.lstrip("/")
+        high_raw = (memory_dir / "memory.high").read_text(encoding="ascii").strip()
+        if high_raw == "max":
+            return None
+        events = {}
+        for line in (memory_dir / "memory.events").read_text(encoding="ascii").splitlines():
+            key, value = line.split()
+            events[key] = int(value)
+        return {
+            "current": int((memory_dir / "memory.current").read_text(encoding="ascii")),
+            "high": int(high_raw),
+            "high_events": events.get("high", 0),
+        }
+    except (OSError, ValueError):
+        return None
+
+
+def _derive_memory_pressure_reason(
+    snapshot: dict[str, int] | None,
+    previous_high_events: int | None,
+) -> str | None:
+    """Return a stable reason when derive should yield to primary work."""
+    if not snapshot or snapshot["high"] <= 0:
+        return None
+    ratio = snapshot["current"] / snapshot["high"]
+    event_delta = (
+        max(0, snapshot["high_events"] - previous_high_events)
+        if previous_high_events is not None
+        else 0
+    )
+    reasons = []
+    if ratio >= _DERIVE_MEMORY_HIGH_RATIO:
+        reasons.append(
+            f"current_ratio:{ratio:.3f}>={_DERIVE_MEMORY_HIGH_RATIO:.3f}"
+        )
+    if event_delta >= _DERIVE_MEMORY_HIGH_EVENT_DELTA:
+        reasons.append(
+            f"high_events_delta:{event_delta}>={_DERIVE_MEMORY_HIGH_EVENT_DELTA}"
+        )
+    return ",".join(reasons) or None
+
+
+def _record_derive_deferred(conn, reason: str) -> None:
+    observed_at = format_ts(now_utc())
+    previous = db.get_meta(conn, "ops:derive:deferred_count")
+    try:
+        count = int(previous or "0") + 1
+    except ValueError:
+        count = 1
+    db.set_meta(conn, "ops:derive:deferred_at", observed_at)
+    db.set_meta(conn, "ops:derive:deferred_reason", reason)
+    db.set_meta(conn, "ops:derive:deferred_count", str(count))
+    conn.commit()
+    log.warning("derive.deferred reason=memory_pressure detail=%s count=%d", reason, count)
 
 
 def _sleep_until(next_ingest: float, next_scan: float) -> None:
@@ -134,6 +214,10 @@ def run_loop(
     last_discovery = 0.0
     discovery_interval = cfg.discovery_interval_hours * 3600
     derive_interval = cfg.derive_interval_minutes * 60
+    derive_memory_snapshot = _read_cgroup_memory_snapshot()
+    derive_high_events = (
+        derive_memory_snapshot["high_events"] if derive_memory_snapshot else None
+    )
     primary_ingest_disabled = False
 
     # Start report generation on its own thread so it's never blocked by ingest.
@@ -213,10 +297,19 @@ def run_loop(
 
                 # Derive pass (expensive — runs on its own interval)
                 if now_mono - last_derive >= derive_interval:
-                    scan.run_derive(conn, cfg, now=scan_time)
-                    _heartbeat(conn, "last_derive_ok_ts")
-                    last_derive = now_mono
-                    _release_memory(conn)
+                    derive_memory_snapshot = _read_cgroup_memory_snapshot()
+                    pressure_reason = _derive_memory_pressure_reason(
+                        derive_memory_snapshot, derive_high_events
+                    )
+                    if derive_memory_snapshot:
+                        derive_high_events = derive_memory_snapshot["high_events"]
+                    if pressure_reason:
+                        _record_derive_deferred(conn, pressure_reason)
+                    else:
+                        scan.run_derive(conn, cfg, now=scan_time)
+                        _heartbeat(conn, "last_derive_ok_ts")
+                        last_derive = now_mono
+                        _release_memory(conn)
             except Exception:
                 log.error("Scan/derive failed", exc_info=True)
             _release_memory(conn)
