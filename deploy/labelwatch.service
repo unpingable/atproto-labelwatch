@@ -7,10 +7,10 @@ Type=simple
 User=labelwatch
 Group=labelwatch
 WorkingDirectory=/opt/labelwatch
-ExecStart=/opt/labelwatch/.venv/bin/labelwatch run \
+ExecStart=/opt/labelwatch/.venv/bin/labelwatch \
     --config /opt/labelwatch/config.toml \
     --db /var/lib/labelwatch/labelwatch.db \
-    --ingest-interval 120 \
+    run --ingest-interval 120 \
     --scan-interval 300 \
     --report-out /var/www/labelwatch
 Restart=always
