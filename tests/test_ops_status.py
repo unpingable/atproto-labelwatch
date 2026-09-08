@@ -197,6 +197,7 @@ def test_active_source_without_cursor_is_degraded(tmp_path):
     ]
     assert observed["local_state"] == "DEGRADED"
     assert observed["observation_present"] is True
+    assert observed["observed_at"] is not None
     assert observed["facts"]["active_without_cursor"] == ["did:plc:cursorless"]
 
 

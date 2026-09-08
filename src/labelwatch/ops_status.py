@@ -192,7 +192,7 @@ def _cursor_continuity(
         )
     if active_without_cursor:
         return _observation(
-            "DEGRADED", None, CURSOR_MAX_AGE_S,
+            "DEGRADED", now.isoformat(), CURSOR_MAX_AGE_S,
             "one or more active acquisition sources lack a durable cursor; inactive retained cursors do not satisfy this concern",
             facts,
         )
