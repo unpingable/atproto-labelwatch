@@ -58,8 +58,10 @@ acquisitions, and three errors. Two errors were persistent JSON parsing failures
 the third source had repeated HTTP 503 responses in its last eight attempts.
 Earlier classification had four successes and two errors, so the final change is
 visible rather than frozen into the initial narrative. Successful acquisition
-does not create cursor support that the source never provided. Cursor-v2 and
-poll-coverage concerns therefore remained degraded, without manufactured cursors.
+alone does not establish durable cursor support. The initial acquisition receipts
+did not retain response-cursor presence, so they do not establish why each
+successful cursorless source lacks one. Cursor-v2 and poll-coverage concerns
+therefore remained degraded, without manufactured cursors.
 
 ## The gate that remains incomplete
 
