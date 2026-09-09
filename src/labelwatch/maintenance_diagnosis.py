@@ -72,7 +72,38 @@ def diagnose(source: Path, *, minimum_freelist_pages: int, pressure_floor_bytes:
 
 
 def require_entry(record: dict, expected_source_identity: dict) -> None:
-    if (record.get('schema') != 'labelwatch.m3-entry-diagnosis/v1'
+    try:
+        facts, policy = record['facts'], record['policy']
+        pages, fs = facts['sqlite'], facts['filesystem']
+        threshold, floor = policy['minimum_freelist_pages'], policy['pressure_floor_bytes']
+        valid = (
+            set(facts) == {'main', 'wal', 'shm', 'sqlite', 'filesystem'}
+            and set(policy) == {'owner', 'minimum_freelist_pages', 'pressure_floor_bytes', 'admission_rule'}
+            and policy['owner'] == 'EXPLICIT_FIXTURE_CONFIGURATION'
+            and policy['admission_rule'] == 'freelist_bloat; pressure is separately reported, not sufficient alone'
+            and type(threshold) is int and threshold > 0
+            and type(floor) is int and floor >= 0
+            and facts['main']['state'] == 'OBSERVED_PRESENT'
+            and facts['main']['owner'] == 'OS_FILE_ACQUISITION'
+            and facts['main']['path'] == record['source']
+            and all(facts[role] == {'state': 'OBSERVED_ABSENT', 'owner': 'OS_FILE_ACQUISITION',
+                'path': record['source'] + suffix} for role, suffix in [('wal', '-wal'), ('shm', '-shm')])
+            and pages['state'] == 'OBSERVED' and pages['owner'] == 'SQLITE_READONLY_PRAGMA'
+            and all(type(pages[key]) is int and pages[key] >= 0
+                for key in ('page_count', 'page_size', 'freelist_count', 'freelist_bytes', 'user_version'))
+            and 0 < pages['page_size'] and threshold <= pages['freelist_count'] <= pages['page_count']
+            and pages['freelist_bytes'] == pages['freelist_count'] * pages['page_size']
+            and fs['state'] == 'OBSERVED' and fs['owner'] == 'OS_STATVFS'
+            and all(type(fs[key]) is int and fs[key] >= 0 for key in
+                ('device', 'fragment_bytes', 'available_bytes', 'free_bytes', 'capacity_bytes'))
+            and fs['fragment_bytes'] > 0
+            and fs['available_bytes'] <= fs['free_bytes'] <= fs['capacity_bytes']
+            and fs['device'] == expected_source_identity['device']
+            and record['freelist_bloat'] == 'ESTABLISHED'
+            and record['filesystem_pressure'] == ('ESTABLISHED' if fs['available_bytes'] < floor else 'NOT_NEEDED'))
+    except (KeyError, TypeError, ValueError):
+        valid = False
+    if (not valid or record.get('schema') != 'labelwatch.m3-entry-diagnosis/v1'
             or record.get('entry_disposition') != 'NEED_ESTABLISHED'
             or record.get('unknowns') != []
             or record.get('facts', {}).get('main', {}).get('identity') != expected_source_identity):

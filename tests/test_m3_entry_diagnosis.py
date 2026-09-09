@@ -1,4 +1,5 @@
 import sqlite3
+import copy
 
 import pytest
 
@@ -28,6 +29,27 @@ def test_actual_page_statistics_and_closed_need(tmp_path):
     assert absent_need['entry_disposition'] == 'NOT_NEEDED'
     with pytest.raises(VerificationRefused):
         require_entry(absent_need, before)
+    flipped = copy.deepcopy(absent_need)
+    flipped.update(entry_disposition='NEED_ESTABLISHED', freelist_bloat='ESTABLISHED')
+    with pytest.raises(VerificationRefused):
+        require_entry(flipped, before)
+    for section, key, value in [
+        ('sqlite', 'state', 'NOT_OBSERVABLE'),
+        ('sqlite', 'freelist_bytes', 0),
+        ('sqlite', 'freelist_count', True),
+        ('sqlite', 'page_count', 1),
+        ('wal', 'state', 'OBSERVED_PRESENT'),
+        ('filesystem', 'state', 'NOT_OBSERVABLE'),
+        ('filesystem', 'available_bytes', 2**63),
+    ]:
+        contradiction = copy.deepcopy(found)
+        contradiction['facts'][section][key] = value
+        with pytest.raises(VerificationRefused):
+            require_entry(contradiction, before)
+    contradictory_pressure = copy.deepcopy(found)
+    contradictory_pressure['filesystem_pressure'] = 'ESTABLISHED'
+    with pytest.raises(VerificationRefused):
+        require_entry(contradictory_pressure, before)
     # Observed pressure alone does not establish that compaction is warranted.
     pressure_only = diagnose(source, minimum_freelist_pages=100000, pressure_floor_bytes=2**63)
     assert pressure_only['filesystem_pressure'] == 'ESTABLISHED'

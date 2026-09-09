@@ -10,6 +10,29 @@ import pytest
 from labelwatch.maintenance_step import execute, read_record
 
 
+@pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
+def test_refused_initial_diagnosis_is_retained(tmp_path):
+    source = Path(__file__).resolve().parents[1]
+    module = runpy.run_path(str(source / 'scripts/m3_fixture_enrollment.py'))
+    initializer = module['initialize']
+    actual = initializer.__globals__['diagnose']
+    def unavailable(*args, **kwargs):
+        record = actual(*args, **kwargs)
+        record['entry_disposition'] = 'NOT_OBSERVABLE'
+        record['unknowns'].append({'slot': 'fixture_control', 'reason': 'unavailable'})
+        return record
+    initializer.__globals__['diagnose'] = unavailable
+    with tempfile.TemporaryDirectory(prefix='labelwatch-m3-entry-', dir=os.environ['M3_BACKUP_ROOT']) as temporary:
+        target = tmp_path / 'fixture'
+        with pytest.raises(module['VerificationRefused']):
+            initializer(target, Path(temporary), 'a' * 40)
+        record = json.loads((target / 'entry-diagnosis.json').read_bytes())
+        assert record['entry_disposition'] == 'NOT_OBSERVABLE'
+        assert record['facts']['sqlite']['freelist_count'] >= 64
+        assert list((target / 'journal').iterdir()) == []
+        assert list((target / 'enrollment-candidates').iterdir()) == []
+
+
 def test_fifteen_case_inventory_includes_every_closed_interruption_cut():
     source = Path(__file__).resolve().parents[1]
     cases = json.loads((source / 'qualification/m3-admission/cases.json').read_text())

@@ -68,8 +68,8 @@ def initialize(target, backup, revision):
         'operating_margin': 4096, 'predecessor': None, 'predecessor_sha256': None, 'ready_records': {}}
     retain(target / 'fixture-base.json', step)
     entry = diagnose(source, minimum_freelist_pages=64, pressure_floor_bytes=4096)
-    require_entry(entry, step['source_identity'])
     retain(target / 'entry-diagnosis.json', entry)
+    require_entry(entry, step['source_identity'])
     return {'fixture': str(target), 'operation': operation, 'status': 'PREPARED_NOT_AUTHORIZED',
             'production': 'NOT_RUN', 'backup_durability': 'FILESYSTEM_DEPENDENT_NOT_INFERRED'}
 
