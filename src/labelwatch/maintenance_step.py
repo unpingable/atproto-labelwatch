@@ -141,7 +141,8 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
         raise VerificationRefused('closed step schema differs')
     binding = digest({key: value for key, value in step.items()
                       if key not in {'action', 'predecessor', 'predecessor_sha256', 'ready_records'}})
-    if step['action'] not in {'stage', 'replace', 'verify-installed', 'verify-service', 'cleanup', 'release'}:
+    if step['action'] not in {'stage', 'replace', 'verify-installed', 'verify-service', 'cleanup', 'release',
+                              'rollback-pre-ingest', 'reconcile-cleanup'}:
         raise VerificationRefused('action is not implemented/admitted')
     paths = {name: _physical(step[name]) for name in
              ('source', 'backup', 'restore', 'staging', 'original', 'journal')}
@@ -183,6 +184,7 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
             raise VerificationRefused('stage must have no procedure predecessor')
         retain(started, {'schema': 'labelwatch.relief-started/v1',
                          'operation': step['operation'], 'step_sha256': expected_sha256,
+                         'binding_sha256': binding,
                          'action': step['action'], 'disposition': 'OUTCOME_UNKNOWN_UNTIL_RECONCILED'})
         source = paths['source']
         if step['action'] == 'stage':
@@ -214,6 +216,31 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
             detail = {'replacement': verify_closed(source, revision=step['revision'], expected=step['expected']),
                       'original': identity(paths['original'])}
             disposition = 'REPLACEMENT_ACCEPTED'
+        elif step['action'] == 'rollback-pre-ingest':
+            if predecessor.get('action') not in {'replace', 'verify-installed', 'verify-service'}:
+                raise VerificationRefused('rollback requires a pre-cleanup predecessor')
+            if identity(paths['original']) != step['source_identity']:
+                raise VerificationRefused('exact retained original unavailable for safe rollback')
+            verify_closed(paths['backup'], revision=step['revision'], expected=step['expected'])
+            verify_closed(paths['original'], revision=step['revision'], expected=step['expected'])
+            if source.exists() or source.is_symlink():
+                verify_closed(source, revision=step['revision'], expected=step['expected'])
+                rename_no_replace(source, paths['staging'])
+            rename_no_replace(paths['original'], source)
+            detail = {'original_restored': identity(source), 'write_hold': 'RETAINED'}
+            disposition = 'ORIGINAL_RESTORED_KEEP_HELD'
+        elif step['action'] == 'reconcile-cleanup':
+            if predecessor.get('action') != 'cleanup':
+                raise VerificationRefused('cleanup reconciliation requires exact cleanup predecessor')
+            if paths['original'].exists() or paths['original'].is_symlink():
+                raise VerificationRefused('original remains; no cleanup completion observed')
+            detail = {'replacement': verify_closed(source, revision=step['revision'], expected=step['expected']),
+                      'backup': verify_closed(paths['backup'], revision=step['revision'], expected=step['expected']),
+                      'restored': verify_closed(paths['restore'], revision=step['revision'], expected=step['expected']),
+                      'original': 'ABSENT', 'reconciled': True}
+            if detail['backup']['identity']['device'] == identity(source)['device']:
+                raise VerificationRefused('backup no longer separately held')
+            disposition = 'CLEANUP_COMPLETED_NOT_RELIEF'
         elif step['action'] == 'verify-installed':
             if predecessor.get('disposition') != 'REPLACEMENT_ACCEPTED':
                 raise VerificationRefused('installed verification requires exact replacement')

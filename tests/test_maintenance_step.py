@@ -160,3 +160,12 @@ def test_interruption_between_renames_preserves_both_and_refuses_repeat(tmp_path
         path = tmp_path / 'replace.json'
         with pytest.raises(VerificationRefused, match='OUTCOME_UNKNOWN'):
             execute(path, hashlib.sha256(path.read_bytes()).hexdigest())
+        # A distinct, separately authorized bounded recovery step can restore the
+        # exact original while the hold remains. This is not a retry of replace.
+        started = Path(step['journal']) / (hashlib.sha256(path.read_bytes()).hexdigest() + '.started.json')
+        step.update(action='rollback-pre-ingest', predecessor=str(started),
+                    predecessor_sha256=hashlib.sha256(started.read_bytes()).hexdigest())
+        recovered, _, _ = invoke(tmp_path, step, 'rollback')
+        assert recovered['disposition'] == 'ORIGINAL_RESTORED_KEEP_HELD'
+        assert identity(Path(step['source'])) == step['source_identity']
+        assert Path(step['staging']).exists()
