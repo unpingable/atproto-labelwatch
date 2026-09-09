@@ -2,6 +2,9 @@ import hashlib
 import os
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
+import time
 
 import pytest
 
@@ -18,7 +21,7 @@ def enrolled(tmp_path, backup_root):
     hold, _ = paths(str(source))
     hold.parent.mkdir()
     retain(hold, {'schema': 'labelwatch.maintenance-hold/v1', 'operation': 'fixture-relief',
-                  'database': str(source), 'manifest_sha256': digest(expected)})
+                  'database': str(source), 'manifest_sha256': digest(expected), 'application_revision': REV})
     journal = tmp_path / 'journal'
     journal.mkdir()
     return {'schema': 'labelwatch.sqlite-relief-step/v1', 'operation': 'fixture-relief',
@@ -26,7 +29,7 @@ def enrolled(tmp_path, backup_root):
         'restore': str(backup_root / 'restored.sqlite'), 'staging': str(tmp_path / 'staging.sqlite'),
         'original': str(tmp_path / 'original.sqlite'), 'journal': str(journal), 'revision': REV,
         'expected': expected, 'source_identity': identity(source), 'operating_margin': 4096,
-        'predecessor': None, 'predecessor_sha256': None}
+        'predecessor': None, 'predecessor_sha256': None, 'ready_records': {}}
 
 
 def invoke(tmp_path, step, name):
@@ -73,6 +76,62 @@ def test_real_separate_filesystem_stage_swap_and_duplicate(tmp_path):
         assert execute(replacement_path, replacement_hash) == replacement
         assert replacement['resource_relief'] == 'NOT_ESTABLISHED'
         assert Path(step['backup']).is_file()
+
+
+@pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
+def test_distinct_service_cleanup_release_and_post_cut_writes(tmp_path):
+    with tempfile.TemporaryDirectory(prefix='labelwatch-m3-', dir=os.environ['M3_BACKUP_ROOT']) as temporary:
+        step = enrolled(tmp_path, Path(temporary))
+        def transition(action):
+            step['action'] = action
+            result, step_hash, _ = invoke(tmp_path, step, action)
+            predecessor = Path(step['journal']) / (step_hash + '.completed.json')
+            step.update(predecessor=str(predecessor),
+                        predecessor_sha256=hashlib.sha256(predecessor.read_bytes()).hexdigest())
+            return result
+        transition('stage')
+        transition('replace')
+        ready_directory = paths(step['source'])[0].parent / 'ready'
+        ready_directory.mkdir()
+        code = '''import sys
+from labelwatch.maintenance_hold import wait_before_writer_start
+from labelwatch import db
+wait_before_writer_start(sys.argv[1], sys.argv[2])
+conn = db.connect(sys.argv[1])
+db.set_cursor(conn, sys.argv[2], 'post-cut-write')
+conn.commit()
+conn.close()
+'''
+        environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / 'src'))
+        processes = [subprocess.Popen([sys.executable, '-c', code, step['source'], role],
+                                      env=environment) for role in ('main', 'discovery')]
+        try:
+            deadline = time.monotonic() + 10
+            while len(list(ready_directory.glob('*.ready.json'))) != 2:
+                assert time.monotonic() < deadline
+                assert all(process.poll() is None for process in processes)
+                time.sleep(0.05)
+            step['ready_records'] = {role: str(next(ready_directory.glob(role + '-*.ready.json')))
+                                     for role in ('main', 'discovery')}
+            assert transition('verify-service')['disposition'] == 'SERVICE_ACCEPTED_PRE_INGEST'
+            assert Path(step['original']).exists()
+            assert transition('cleanup')['disposition'] == 'CLEANUP_COMPLETED_NOT_RELIEF'
+            assert not Path(step['original']).exists()
+            assert all(process.poll() is None for process in processes)
+            assert transition('release')['disposition'] == 'INGRESS_RELEASED_POSTCONDITION_PENDING'
+            for process in processes:
+                assert process.wait(timeout=5) == 0
+            assert reconcile(step)['disposition'] == 'INDETERMINATE_WRITE_RESUMPTION_KEEP_STOPPED'
+            # Actual post-cut progress is now in the replacement, not original.
+            from labelwatch.maintenance_artifacts import readonly
+            from labelwatch import db
+            with readonly(Path(step['source'])) as conn:
+                assert db.get_cursor(conn, 'main') == 'post-cut-write'
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=5)
 
 
 @pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')

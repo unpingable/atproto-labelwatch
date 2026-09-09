@@ -18,7 +18,7 @@ from .maintenance_artifacts import (
     identity, _sync, copy_restore_verify, compact_verified,
     verify_closed, space_prerequisites,
 )
-from .maintenance_hold import active_hold
+from .maintenance_hold import active_hold, process_start_ticks, paths as hold_paths
 from .maintenance_manifest import VerificationRefused
 
 
@@ -124,10 +124,12 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
         raise VerificationRefused('step differs from externally enrolled digest')
     fields = {'schema', 'operation', 'action', 'source', 'backup', 'restore', 'staging',
               'original', 'journal', 'revision', 'expected', 'source_identity',
-              'operating_margin', 'predecessor', 'predecessor_sha256'}
+              'operating_margin', 'predecessor', 'predecessor_sha256', 'ready_records'}
     if set(step) != fields or step['schema'] != 'labelwatch.sqlite-relief-step/v1':
         raise VerificationRefused('closed step schema differs')
-    if step['action'] not in {'stage', 'replace', 'verify-installed'}:
+    binding = digest({key: value for key, value in step.items()
+                      if key not in {'action', 'predecessor', 'predecessor_sha256', 'ready_records'}})
+    if step['action'] not in {'stage', 'replace', 'verify-installed', 'verify-service', 'cleanup', 'release'}:
         raise VerificationRefused('action is not implemented/admitted')
     paths = {name: _physical(step[name]) for name in
              ('source', 'backup', 'restore', 'staging', 'original', 'journal')}
@@ -162,7 +164,8 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
         if step['action'] != 'stage':
             predecessor, predecessor_raw = read_record(_physical(step['predecessor']))
             if (hashlib.sha256(predecessor_raw).hexdigest() != step['predecessor_sha256']
-                    or predecessor.get('operation') != step['operation']):
+                    or predecessor.get('operation') != step['operation']
+                    or predecessor.get('binding_sha256') != binding):
                 raise VerificationRefused('exact predecessor evidence differs')
         elif step['predecessor'] is not None or step['predecessor_sha256'] is not None:
             raise VerificationRefused('stage must have no procedure predecessor')
@@ -199,7 +202,7 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
             detail = {'replacement': verify_closed(source, revision=step['revision'], expected=step['expected']),
                       'original': identity(paths['original'])}
             disposition = 'REPLACEMENT_ACCEPTED'
-        else:
+        elif step['action'] == 'verify-installed':
             if predecessor.get('disposition') != 'REPLACEMENT_ACCEPTED':
                 raise VerificationRefused('installed verification requires exact replacement')
             original = identity(paths['original'])
@@ -208,7 +211,72 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
             detail = {'replacement': verify_closed(source, revision=step['revision'], expected=step['expected']),
                       'original': original}
             disposition = 'REPLACEMENT_ACCEPTED'
+        else:
+            required = {'verify-service': 'REPLACEMENT_ACCEPTED',
+                        'cleanup': 'SERVICE_ACCEPTED_PRE_INGEST',
+                        'release': 'CLEANUP_COMPLETED_NOT_RELIEF'}[step['action']]
+            if predecessor.get('disposition') != required:
+                raise VerificationRefused('step lacks exact required predecessor disposition')
+            replacement = verify_closed(source, revision=step['revision'], expected=step['expected'])
+            ready_records = step['ready_records']
+            if not isinstance(ready_records, dict) or set(ready_records) != {'main', 'discovery'}:
+                raise VerificationRefused('both enrolled held writer records required')
+            verified_ready = {}
+            for role, path in ready_records.items():
+                record, _ = read_record(_physical(path))
+                if (set(record) != {'schema', 'operation', 'role', 'pid', 'start_ticks',
+                                    'hold_sha256', 'verification_sha256'}
+                        or record['schema'] != 'labelwatch.held-writer-ready/v1'
+                        or record['operation'] != step['operation'] or record['role'] != role
+                        or type(record['pid']) is not int or record['pid'] <= 0
+                        or record['hold_sha256'] != digest(hold)
+                        or record['verification_sha256'] != digest(step['expected'])
+                        or process_start_ticks(record['pid']) != record['start_ticks']):
+                    raise VerificationRefused('held service identity/readiness differs')
+                verified_ready[role] = record
+            if step['action'] == 'verify-service':
+                if identity(paths['original']) != step['source_identity']:
+                    raise VerificationRefused('original no longer exact before service acceptance')
+                detail = {'replacement': replacement, 'held_writers': verified_ready}
+                disposition = 'SERVICE_ACCEPTED_PRE_INGEST'
+            elif step['action'] == 'cleanup':
+                # This exact cleanup action must itself be authorized externally.
+                # Reopen backup AND restore now; service acceptance alone is not
+                # sufficient custody for deleting the original.
+                backup = verify_closed(paths['backup'], revision=step['revision'], expected=step['expected'])
+                restored = verify_closed(paths['restore'], revision=step['revision'], expected=step['expected'])
+                if backup['identity']['device'] == identity(source)['device']:
+                    raise VerificationRefused('verified backup no longer on separate filesystem')
+                if identity(paths['original']) != step['source_identity']:
+                    raise VerificationRefused('cleanup target is not exact retained original')
+                retain(journal / (expected_sha256 + '.cleanup-authorized.json'),
+                       {'step_sha256': expected_sha256, 'stage': 'CLEANUP_AUTHORIZED',
+                        'authority': 'EXTERNAL_ENROLLED_UNIT_INVOCATION', 'original': step['source_identity'],
+                        'backup': backup, 'restored': restored})
+                paths['original'].unlink()
+                directory = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+                detail = {'original': 'ABSENT', 'backup': backup, 'restored': restored}
+                disposition = 'CLEANUP_COMPLETED_NOT_RELIEF'
+            else:
+                if paths['original'].exists() or paths['original'].is_symlink():
+                    raise VerificationRefused('original still present before relief verification')
+                filesystem = os.statvfs(source.parent)
+                free = filesystem.f_bavail * filesystem.f_frsize
+                if free < step['operating_margin']:
+                    raise VerificationRefused('resource margin still insufficient; ingestion remains held')
+                release = {'schema': 'labelwatch.maintenance-release/v1', 'operation': step['operation'],
+                           'hold_sha256': digest(hold), 'release_receipt': expected_sha256}
+                retain(hold_paths(str(source))[1], release)
+                detail = {'replacement_before_release': replacement,
+                          'fresh_pre_release_free_bytes': free, 'margin': step['operating_margin'],
+                          'rollback': 'INDETERMINATE_UNTIL_POST_RELEASE_GENERATION_OBSERVED'}
+                disposition = 'INGRESS_RELEASED_POSTCONDITION_PENDING'
         result = {'schema': 'labelwatch.relief-step-result/v1', 'operation': step['operation'],
+                  'binding_sha256': binding,
                   'step_sha256': expected_sha256, 'action': step['action'],
                   'disposition': disposition, 'detail': detail,
                   'authority': 'NOT_GRANTED_BY_THIS_RECORD', 'resource_relief': 'NOT_ESTABLISHED'}

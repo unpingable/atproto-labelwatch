@@ -11,7 +11,7 @@ def install(path):
     hold, release = paths(str(path))
     hold.parent.mkdir()
     value = {'schema': 'labelwatch.maintenance-hold/v1', 'operation': 'fixture-operation',
-             'database': str(path), 'manifest_sha256': 'a' * 64}
+             'database': str(path), 'manifest_sha256': 'a' * 64, 'application_revision': 'a' * 40}
     hold.write_text(json.dumps(value))
     return value, release
 

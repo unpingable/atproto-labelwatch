@@ -59,7 +59,7 @@ def active_hold(database: str) -> dict | None:
     if not hold_path.is_file():
         raise MaintenanceHeld('maintenance directory exists without complete hold')
     hold = _decode(hold_path)
-    if (set(hold) != {'schema', 'operation', 'database', 'manifest_sha256'}
+    if (set(hold) != {'schema', 'operation', 'database', 'manifest_sha256', 'application_revision'}
             or hold['schema'] != 'labelwatch.maintenance-hold/v1'
             or hold['database'] != str(Path(database).resolve())
             or not isinstance(hold['operation'], str) or not hold['operation']
@@ -67,6 +67,9 @@ def active_hold(database: str) -> dict | None:
             or len(hold['manifest_sha256']) != 64
             or any(c not in '0123456789abcdef' for c in hold['manifest_sha256'])):
         raise MaintenanceHeld('hold binding differs from enrolled database')
+    if (not isinstance(hold['application_revision'], str) or len(hold['application_revision']) != 40
+            or any(c not in '0123456789abcdef' for c in hold['application_revision'])):
+        raise MaintenanceHeld('exact application revision required by hold')
     if not release_path.exists() and not release_path.is_symlink():
         return hold
     release = _decode(release_path)
@@ -86,11 +89,46 @@ def require_writes_released(database: str) -> None:
         raise MaintenanceHeld('ingress/write hold active; writable connection refused')
 
 
-def wait_before_writer_start(database: str) -> None:
+def process_start_ticks(pid: int) -> int:
+    raw = Path(f'/proc/{pid}/stat').read_text()
+    fields = raw[raw.rfind(')') + 2:].split()
+    if fields[0] in {'Z', 'X'}:
+        raise MaintenanceHeld('service process is not live')
+    return int(fields[19])
+
+
+def wait_before_writer_start(database: str, role: str) -> None:
     """Start the real service behind its hold, before writable DB/bootstrap.
 
     Read-only functional acceptance is a separate controller check; mere presence
     of this waiting process is not SERVICE_ACCEPTED_PRE_INGEST.
     """
+    from .maintenance_artifacts import readonly, _sync
+    from .maintenance_manifest import offline_application_verify
+    if role not in {'main', 'discovery'}:
+        raise MaintenanceHeld('unknown enrolled writer role')
+    hold = active_hold(database)
+    if hold is None:
+        return
+    with readonly(Path(database).resolve()) as conn:
+        conn.execute('BEGIN')
+        verified = offline_application_verify(conn, application_revision=hold['application_revision'])
+    conn.close()
+    canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
+    if hashlib.sha256(canonical(verified)).hexdigest() != hold['manifest_sha256']:
+        raise MaintenanceHeld('held service read-only application verification differs')
+    ready_directory = paths(database)[0].parent / 'ready'
+    if ready_directory.resolve(strict=True) != ready_directory:
+        raise MaintenanceHeld('enrolled readiness directory must be physical')
+    ready = ready_directory / f'{role}-{os.getpid()}.ready.json'
+    record = {'schema': 'labelwatch.held-writer-ready/v1', 'operation': hold['operation'],
+              'role': role, 'pid': os.getpid(), 'start_ticks': process_start_ticks(os.getpid()),
+              'hold_sha256': hashlib.sha256(canonical(hold)).hexdigest(),
+              'verification_sha256': hold['manifest_sha256']}
+    with ready.open('xb') as stream:
+        stream.write(canonical(record) + b'\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    _sync(ready)
     while active_hold(database) is not None:
         time.sleep(0.25)
