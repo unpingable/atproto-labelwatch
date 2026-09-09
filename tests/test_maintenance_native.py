@@ -13,7 +13,7 @@ import time
 import pytest
 
 from labelwatch.maintenance_hold import paths
-from labelwatch.maintenance_observation import observe
+from labelwatch.maintenance_observation import observe, observe_cleanup
 from labelwatch.maintenance_step import digest, reconcile
 from test_maintenance_step import enrolled, invoke
 from test_maintenance_manifest import REV
@@ -32,7 +32,7 @@ def test_actual_observation_native_pre_and_post_qualification(tmp_path):
             previous = Path(step['journal']) / (step_hash + '.completed.json')
             step.update(predecessor=str(previous), predecessor_sha256=hashlib.sha256(previous.read_bytes()).hexdigest())
             return result
-        transition('stage')
+        staged = transition('stage')
         replacement = transition('replace')['detail']['replacement']['identity']
         ready_directory = paths(step['source'])[0].parent / 'ready'
         ready_directory.mkdir()
@@ -81,6 +81,23 @@ def test_actual_observation_native_pre_and_post_qualification(tmp_path):
                 return json.loads(result.stdout)
             pre = qualify('pre', request)
             assert pre['disposition'] == 'ESTABLISHED'
+            cleanup_source = observe_cleanup(backup=Path(step['backup']), restore=Path(step['restore']),
+                operation=step['operation'], source=Path(step['source']), original=Path(step['original']),
+                revision=REV, expected_verification_sha256=digest(step['expected']), writer_identities=identities)
+            cleanup_held = copy.deepcopy(request)
+            cleanup_held['evaluated_at'] = datetime.now(timezone.utc).isoformat()
+            cleanup_request = {'schema': 'nq.labelwatch-cleanup-request/v1', 'held_request': cleanup_held,
+                'backup': step['backup'], 'restore': step['restore'],
+                'backup_identity': staged['detail']['backup']['backup']['identity'],
+                'restore_identity': staged['detail']['backup']['restored']['identity']}
+            (tmp_path / 'cleanup-source.json').write_text(json.dumps(cleanup_source))
+            (tmp_path / 'cleanup-request.json').write_text(json.dumps(cleanup_request))
+            result = subprocess.run([str(binary), 'labelwatch-cleanup', '--source', str(tmp_path / 'cleanup-source.json'),
+                '--request', str(tmp_path / 'cleanup-request.json')], capture_output=True, text=True, timeout=10)
+            assert result.returncode == 0, result.stderr
+            cleanup_receipt = json.loads(result.stdout)
+            assert cleanup_receipt['disposition'] == 'ESTABLISHED'
+            (tmp_path / 'cleanup-receipt.json').write_text(result.stdout)
             transition('cleanup')
             transition('release')
             deadline = time.monotonic() + 5

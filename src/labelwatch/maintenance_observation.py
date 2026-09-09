@@ -17,6 +17,39 @@ from .maintenance_hold import active_hold, process_start_ticks
 from .maintenance_step import digest
 
 
+def observe_cleanup(*, backup: Path, restore: Path, **arguments) -> dict:
+    """Fresh backup and actual restored-application reads, not helper claims.
+
+    Separate filesystem identity does not establish power-loss durability or
+    off-host custody. Both copies are fully re-read under their enrolled paths.
+    """
+    started = datetime.now(timezone.utc).isoformat()
+    held = observe(**arguments)
+    unknowns = []
+    def copy(slot, path):
+        try:
+            before = identity(path)
+            with readonly(path) as conn:
+                conn.execute('BEGIN')
+                verified = offline_application_verify(conn, application_revision=arguments['revision'])
+            conn.close()
+            after = identity(path)
+            if before != after:
+                raise ValueError('copy changed during observation')
+            return {'state': 'OBSERVED', 'value': {'path': str(path), 'identity': after,
+                'verification_sha256': digest(verified), 'integrity': verified['integrity'],
+                'application_schema': verified['logical_manifest']['application_schema']}}
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            unknowns.append({'slot': slot, 'reason': type(exc).__name__})
+            return {'state': 'NOT_OBSERVABLE', 'value': None}
+    return {'schema': 'labelwatch.sqlite-cleanup-observation/v1',
+        'source_owner': 'Labelwatch read-only observer', 'started_at': started,
+        'held_source': held, 'backup': copy('backup', backup), 'restore': copy('restore', restore),
+        'unknowns': unknowns, 'completed_at': datetime.now(timezone.utc).isoformat(),
+        'limitations': ['separate filesystem identity, not independent power-loss or off-host custody',
+                       'bounded sequential reads under enrolled stable custody, not atomic global snapshot']}
+
+
 def observe(*, operation: str, source: Path, original: Path, revision: str,
             expected_verification_sha256: str, writer_identities: dict) -> dict:
     started = datetime.now(timezone.utc).isoformat()

@@ -8,7 +8,8 @@ use std::path::PathBuf;
 
 use ag_campaign::governed::*;
 use ag_primitives::Digest;
-use nq_core::labelwatch_relief::{self, Phase, Request, Source};
+use nq_core::labelwatch_cleanup::{self, CleanupSource, Request};
+use nq_core::labelwatch_relief::Phase;
 use serde_json::{Value, json};
 
 pub const RESOLVER_ID: &str = "labelwatch.m3-cleanup-native-prerequisite/v1";
@@ -55,7 +56,7 @@ impl NativeCleanupObservation {
         request: &ObservationResolutionRequestV1<'_>,
     ) -> Result<ObservationResolutionV2, String> {
         let enrolled = &self.enrolled;
-        if enrolled.expected_request.phase != Phase::PreIngest
+        if enrolled.expected_request.held_request.phase != Phase::PreIngest
             || enrolled.cleanup_step_sha256.len() != 64
             || !enrolled
                 .cleanup_step_sha256
@@ -72,12 +73,12 @@ impl NativeCleanupObservation {
             .map_err(|e| e.to_string())?;
         let receipt: Value =
             nq_protocol::decode_json_document(&raw, 2 * 1024 * 1024).map_err(|e| e.to_string())?;
-        labelwatch_relief::replay(&receipt)?;
-        if receipt["schema"] != "nq.labelwatch-relief-qualification/v1"
+        labelwatch_cleanup::replay(&receipt)?;
+        if receipt["schema"] != "nq.labelwatch-cleanup-qualification/v1"
             || receipt["receipt_id"] != enrolled.expected_receipt_id
             || receipt["request"]
                 != serde_json::to_value(&enrolled.expected_request).map_err(|e| e.to_string())?
-            || receipt["claim"] != "held_logical_cut_preserved"
+            || receipt["claim"] != "held_cut_and_recoverable_copy_prerequisites"
             || receipt["disposition"] != "ESTABLISHED"
             || receipt["refuted"] != json!([])
             || receipt["unknown"] != json!([])
@@ -85,7 +86,7 @@ impl NativeCleanupObservation {
             return Err("exact established native prerequisite absent".into());
         }
         let source_raw = receipt["source_utf8"].as_str().ok_or("source absent")?;
-        let source: Source = serde_json::from_value(
+        let source: CleanupSource = serde_json::from_value(
             nq_protocol::decode_json_document(source_raw.as_bytes(), 2 * 1024 * 1024)
                 .map_err(|e| e.to_string())?,
         )
@@ -94,10 +95,18 @@ impl NativeCleanupObservation {
             u64::try_from(source.started_at.timestamp_millis()).map_err(|e| e.to_string())?;
         let completed =
             u64::try_from(source.completed_at.timestamp_millis()).map_err(|e| e.to_string())?;
-        let evaluated = u64::try_from(enrolled.expected_request.evaluated_at.timestamp_millis())
-            .map_err(|e| e.to_string())?;
+        let evaluated = u64::try_from(
+            enrolled
+                .expected_request
+                .held_request
+                .evaluated_at
+                .timestamp_millis(),
+        )
+        .map_err(|e| e.to_string())?;
         let fresh_until = started
-            .checked_add(u64::from(enrolled.expected_request.maximum_age_seconds) * 1000)
+            .checked_add(
+                u64::from(enrolled.expected_request.held_request.maximum_age_seconds) * 1000,
+            )
             .ok_or("freshness overflow")?;
         if request.now_unix_ms < completed
             || request.now_unix_ms < evaluated
@@ -156,13 +165,13 @@ mod tests {
         let directory = PathBuf::from(
             std::env::var("M3_NATIVE_FIXTURE").expect("retained real observer fixture"),
         );
-        let source = fs::read(directory.join("pre-source.json")).unwrap();
+        let source = fs::read(directory.join("cleanup-source.json")).unwrap();
         let policy: Request = nq_protocol::decode_json_document(
-            &fs::read(directory.join("pre-request.json")).unwrap(),
+            &fs::read(directory.join("cleanup-request.json")).unwrap(),
             2 * 1024 * 1024,
         )
         .unwrap();
-        let receipt = labelwatch_relief::qualify(&source, &policy).unwrap();
+        let receipt = labelwatch_cleanup::qualify(&source, &policy).unwrap();
         assert_eq!(receipt["disposition"], "ESTABLISHED");
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("receipt.json");
@@ -184,7 +193,7 @@ mod tests {
             campaign: CampaignId::from_digest(subject.clone()),
             occurrence: OccurrenceId::from_uuid(Uuid::from_u128(1)),
         };
-        let now = u64::try_from(policy.evaluated_at.timestamp_millis()).unwrap();
+        let now = u64::try_from(policy.held_request.evaluated_at.timestamp_millis()).unwrap();
         let request = ObservationResolutionRequestV1 {
             key: &key,
             observation: &observation,
@@ -203,6 +212,7 @@ mod tests {
         resolver
             .enrolled
             .expected_request
+            .held_request
             .source
             .push_str("-substituted");
         assert!(resolver.resolve_observation(&request).is_err());
@@ -214,10 +224,10 @@ mod tests {
         // A genuinely replayable unknown receipt also cannot supply clean.
         let mut unknown_source: Value =
             nq_protocol::decode_json_document(&source, 2 * 1024 * 1024).unwrap();
-        unknown_source["write_hold"] = json!({"state":"NOT_OBSERVABLE","value":null});
-        unknown_source["unknowns"] = json!([{"slot":"write_hold","reason":"fixture unavailable"}]);
+        unknown_source["backup"] = json!({"state":"NOT_OBSERVABLE","value":null});
+        unknown_source["unknowns"] = json!([{"slot":"backup","reason":"fixture unavailable"}]);
         let unknown =
-            labelwatch_relief::qualify(&serde_json::to_vec(&unknown_source).unwrap(), &policy)
+            labelwatch_cleanup::qualify(&serde_json::to_vec(&unknown_source).unwrap(), &policy)
                 .unwrap();
         assert_eq!(unknown["disposition"], "NOT_OBSERVABLE");
         resolver.enrolled.expected_receipt_id = unknown["receipt_id"].as_str().unwrap().into();
