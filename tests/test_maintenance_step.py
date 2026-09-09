@@ -16,6 +16,32 @@ from test_maintenance_artifacts import source_cut
 from test_maintenance_manifest import REV
 
 
+@pytest.fixture(autouse=True)
+def deterministic_fixture_filesystem_availability(monkeypatch):
+    """Keep filesystem availability stable unless a case changes it explicitly.
+
+    These tests share their host filesystems with unrelated test/build activity.
+    Device identity, file effects, and separate-filesystem checks remain real;
+    only the statvfs availability value used by the relief contract is replaced
+    with a deterministic per-filesystem observation.
+    """
+    from labelwatch import maintenance_step as implementation
+
+    actual_statvfs = implementation.os.statvfs
+    observations = {}
+
+    def stable(path):
+        value = actual_statvfs(path)
+        device = Path(path).stat().st_dev
+        if device not in observations:
+            admitted = min(value.f_bavail, (256 * 1024 * 1024) // value.f_frsize)
+            observations[device] = os.statvfs_result(
+                tuple(value[:3]) + (max(value.f_bfree, admitted), admitted) + tuple(value[5:]))
+        return observations[device]
+
+    monkeypatch.setattr(implementation.os, 'statvfs', stable)
+
+
 def enrolled(tmp_path, backup_root):
     source, expected = source_cut(tmp_path)
     hold, _ = paths(str(source))
@@ -26,8 +52,9 @@ def enrolled(tmp_path, backup_root):
     journal.mkdir()
     filesystem = os.statvfs(tmp_path)
     baseline = filesystem.f_bavail * filesystem.f_frsize
-    # Retained enrollment overhead leaves a deterministic cushion between the
-    # exact observation and first execution on a shared local fixture volume.
+    # Retained enrollment overhead still exercises target allocation, while the
+    # qualification fixture above prevents unrelated shared-volume changes from
+    # changing the enrolled availability observation.
     (tmp_path / 'baseline-enrollment-overhead').write_bytes(b'0' * 4096)
     minimum_net_gain = 4096
     return {'schema': 'labelwatch.sqlite-relief-step/v2', 'operation': 'fixture-relief',
@@ -50,6 +77,14 @@ def invoke(tmp_path, step, name):
     retain(path, step)
     expected = hashlib.sha256(path.read_bytes()).hexdigest()
     return execute(path, expected), expected, path
+
+
+def test_fixture_availability_substitution_ignores_unrelated_host_allocation(tmp_path):
+    before = os.statvfs(tmp_path)
+    (tmp_path / 'fixture-owned-allocation').write_bytes(b'x' * 8192)
+    after = os.statvfs(tmp_path)
+    assert before.f_bavail == after.f_bavail
+    assert before.f_frsize == after.f_frsize
 
 
 def test_staging_prerequisite_failure_retains_source_and_refuses_retry(tmp_path):
