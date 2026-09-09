@@ -63,12 +63,19 @@ use `Restart=no`; the main fixture disables ingest/scan intervals and discovery
 uses only a refused loopback endpoint with backstop disabled. This demonstrates
 real startup/write resumption, not upstream acquisition.
 
-The existing composition driver's constant `clean_basis` is fixture admission,
-not proof of an NQ maintenance precondition. The showing must retain actual
-freshly acquired NQ pre/post receipts separately and must not label fixture
-admission as independently qualified application facts. Root integration review
-must check that join before launch. No additional controller/retry engine is
-introduced by this preparer.
+The existing composition driver's constant `clean_basis` is development fixture
+admission, not proof of an NQ maintenance precondition, and is not sufficient for
+the final cleanup witness. `qualification/m3-admission/observation_resolver.rs`
+provides the application-owned native receipt adapter. It requires the separately
+named `labelwatch-cleanup` profile: held cut plus independently reopened backup
+and restore facts. The expected observation reference binds the exact native
+request/receipt, AG subject/scope and cleanup input digest. Every resolver call
+reopens/replays the receipt and checks freshness at AG's clock cut. It does not
+grant authority. The exact enrolled driver must use this resolver before cleanup;
+missing/stale/indeterminate/substituted evidence refuses instead of supplying
+`condition.clean`. Native factual receipts and AG/Docket custody remain separate.
+This stronger integration is a candidate pending compilation, independent review
+and actual VM exercise. No additional controller/retry engine is introduced.
 
 ## Qualification remaining
 
