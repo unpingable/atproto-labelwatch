@@ -105,3 +105,79 @@ installation/recovery, adequate production staging/rollback and temporary space,
 and observation of completed day boundaries versus newly eligible work. Storage
 capacity remains a separate preflight decision; this slice does not add raw-event
 retention or authorize cleanup, index creation, or deletion of production data.
+
+## Production observation: progress, remaining work, and a disk gate
+
+Candidate source `941c8d62708c180f202ff9110630cbbeb81eb6e2` was qualified with
+two matching clean wheel builds and two matching source archives. Its exact
+target-platform dependencies installed with network access disabled; the installed
+instrument demonstration, synthetic application recovery, and previous rc10
+runtime reading candidate-written schema23 state passed. These do not establish
+reproducible rebuilding of every third-party dependency.
+
+The first deployment attempt exposed a readiness-check race, not an established
+instrument failure. Its automatic fallback retained the current database, but
+the same immediate process-directory assertion also rejected fallback readiness.
+Later read-only observations found the expected rc10 process identity. That
+failed receipt remains failed. The packet was repaired to require two stable
+successful identity samples within a bounded deadline, and the next coordinated
+cutover passed startup checks at 15:09:27 UTC. No database/schema, memory policy,
+WAL threshold or freshness profile was changed.
+
+Two observer invocation failures were separately retained: an output-directory
+guard refusal and a host journal timestamp-parser error. The repaired observer
+converted the cutover's timezone-aware timestamp to explicit epoch syntax and
+distinguished genuinely empty journal matches from capture errors. Neither
+failed capture was counted as a successful observation window.
+
+The subsequent finite observation collected 29 samples from 15:15:34 to 17:35:34
+UTC, ending after 140 minutes at the predeclared disk-space failure condition:
+available root bytes were 7,723,184,128, below the unchanged 8 GiB cutover floor.
+The observer recorded ROLLBACK_REQUIRED and performed no service changes itself.
+The larger existing 15 GiB operations floor remained unmet throughout; it was not
+waived. This was an early terminal, not a completed three-hour qualification.
+
+Within that window:
+
+- All three code-sharing units retained the exact candidate identity with no
+  reported restarts. The event high-water ID advanced 95,830; 173 acquisition cursor
+  records remained present, with 22 distinct aggregate cursor hashes observed.
+  This supports observed progression, not complete source coverage or gap-free
+  acquisition. Discovery reported no queue drops or worker failures.
+- One derive pass completed all 12 required steps at 15:40:04 UTC. It drained four
+  pending author days and completed a seven-day author-labeler refresh. The next
+  pass completed a further seven-day author-labeler refresh but was truthfully
+  INCOMPLETE: author-day refresh processed three days, then deferred four days
+  (September 3–6) when its observed 427 MiB WAL exceeded the unchanged 350 MiB guard.
+  The later derive admission deferred on memory-pressure evidence. The repaired
+  author-labeler step progressed, but a persistent-capacity claim did not pass.
+- Two reports completed at 16:22:16 and 17:27:57 UTC. Their 3940.185-second gap
+  improved on the preceding 95–104-minute observations but still exceeded the
+  unchanged 3600-second freshness profile. This is not a controlled performance
+  comparison, and faster completion does not make the freshness failure pass.
+- All 29 sampled homepages returned 200 within 2.016 seconds. The optional strip
+  explicitly remained unavailable in every sample; bounded page availability
+  did not establish successful optional computation.
+
+Available root space fell 3,872,509,952 bytes while the canonical instrument
+database grew 93,077,504 bytes. Those measurements do not attribute the remaining
+filesystem growth to this candidate. The smallest next investigation is to reconcile
+the disk-space trigger, then address the remaining
+author-day and report-throughput limits without raising their guards or silently
+discarding pending work. No second complete derive or clear final author-day
+backlog was demonstrated in this terminated window.
+
+Private campaign receipts retain the exact 29 samples, run identity, result and
+terminal, with remote-to-local SHA256 comparisons passing for all 32 receipt
+files. Service fallback execution has a separate integrator-owned receipt.
+
+The coordinating integrator completed fallback at 17:37:25 UTC to exact rc10
+`5ed0a00d132ac3ec9d912b5100baa113b545e954` in all three code-sharing units,
+active with zero reported restarts. The current database was retained; this was
+not a restoration of older observations. Root free space recovered from
+7,723,184,128 to 11,075,129,344 bytes after the coordinated process replacement.
+That recovery correlates with stopping the former processes and is consistent
+with release of temporary or open-file allocations, but no retained allocation
+identity proves their ownership or attributes a specific defect to rc11.
+Fallback service availability is established; a new full ingestion/capacity
+observation of the restored baseline is a separate, uncompleted claim here.
