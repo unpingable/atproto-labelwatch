@@ -121,7 +121,7 @@ conn.close()
             assert transition('release')['disposition'] == 'INGRESS_RELEASED_POSTCONDITION_PENDING'
             for process in processes:
                 assert process.wait(timeout=5) == 0
-            assert reconcile(step)['disposition'] == 'INDETERMINATE_WRITE_RESUMPTION_KEEP_STOPPED'
+            assert reconcile(step)['disposition'] == 'FORWARD_RECOVERY_ONLY'
             # Actual post-cut progress is now in the replacement, not original.
             from labelwatch.maintenance_artifacts import readonly
             from labelwatch import db

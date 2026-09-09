@@ -89,6 +89,24 @@ def require_writes_released(database: str) -> None:
         raise MaintenanceHeld('ingress/write hold active; writable connection refused')
 
 
+def record_write_resumption(conn, database: str) -> None:
+    """Commit the first post-release generation before admitting ordinary writes.
+
+    This is itself a real post-cut write. It deliberately makes subsequent
+    rollback to the original ineligible, even if ingestion has not yet advanced.
+    Existing databases without a maintenance enrollment are untouched.
+    """
+    hold_path, release_path = paths(database)
+    if not hold_path.parent.exists():
+        return
+    require_writes_released(database)
+    hold = _decode(hold_path)
+    release = _decode(release_path)
+    conn.execute('INSERT OR IGNORE INTO meta(key,value) VALUES (?,?)',
+                 ('maintenance_release:' + hold['operation'], release['release_receipt']))
+    conn.commit()
+
+
 def process_start_ticks(pid: int) -> int:
     raw = Path(f'/proc/{pid}/stat').read_text()
     fields = raw[raw.rfind(')') + 2:].split()

@@ -448,6 +448,9 @@ def connect(db_path: str, readonly: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA mmap_size=67108864")
     if readonly:
         conn.execute("PRAGMA query_only=ON")
+    else:
+        from .maintenance_hold import record_write_resumption
+        record_write_resumption(conn, db_path)
     return conn
 
 

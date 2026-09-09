@@ -12,10 +12,11 @@ import fcntl
 import hashlib
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 from .maintenance_artifacts import (
-    identity, _sync, copy_restore_verify, compact_verified,
+    identity, readonly, _sync, copy_restore_verify, compact_verified,
     verify_closed, space_prerequisites,
 )
 from .maintenance_hold import active_hold, process_start_ticks, paths as hold_paths
@@ -102,7 +103,18 @@ def reconcile(step: dict) -> dict:
         held = None
     original_exact = observed['original'].get('identity') == step['source_identity']
     source_exact = observed['source'].get('identity') == step['source_identity']
-    if held is not True:
+    resumed = False
+    if held is False and observed['source']['presence'] == 'PRESENT':
+        try:
+            with readonly(_physical(step['source'])) as conn:
+                resumed = conn.execute('SELECT value FROM meta WHERE key=?',
+                    ('maintenance_release:' + step['operation'],)).fetchone() is not None
+            conn.close()
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            pass
+    if resumed:
+        disposition = 'FORWARD_RECOVERY_ONLY'
+    elif held is not True:
         disposition = 'INDETERMINATE_WRITE_RESUMPTION_KEEP_STOPPED'
     elif source_exact:
         disposition = 'SOURCE_RETAINED_REOPEN_STAGING_CUSTODY'
@@ -114,7 +126,7 @@ def reconcile(step: dict) -> dict:
         disposition = 'IDENTITY_UNRESOLVED_KEEP_STOPPED'
     return {'schema': 'labelwatch.relief-recovery-observation/v1',
             'operation': step['operation'], 'disposition': disposition,
-            'write_hold': held, 'artifacts': observed,
+            'write_hold': held, 'post_release_generation_observed': resumed, 'artifacts': observed,
             'next': 'independent evidence qualification and exact new authorized step; no automatic replay'}
 
 
