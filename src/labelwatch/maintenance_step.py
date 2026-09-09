@@ -273,6 +273,8 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
                         or process_start_ticks(record['pid']) != record['start_ticks']):
                     raise VerificationRefused('held service identity/readiness differs')
                 verified_ready[role] = record
+            if len({record['pid'] for record in verified_ready.values()}) != 2:
+                raise VerificationRefused('distinct enrolled writer processes required')
             if step['action'] == 'verify-service':
                 if identity(paths['original']) != step['source_identity']:
                     raise VerificationRefused('original no longer exact before service acceptance')

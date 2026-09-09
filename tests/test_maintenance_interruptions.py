@@ -79,3 +79,27 @@ def test_service_acceptance_failure_keeps_original_and_ingress_hold(tmp_path, bo
         assert Path(step['backup']).exists()
         from labelwatch.maintenance_hold import active_hold
         assert active_hold(step['source']) is not None
+
+
+@pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
+def test_one_process_cannot_be_rebound_as_both_held_writers(tmp_path):
+    from labelwatch.maintenance_hold import active_hold, process_start_ticks
+    with tempfile.TemporaryDirectory(prefix='labelwatch-m3-roles-', dir=os.environ['M3_BACKUP_ROOT']) as temporary:
+        step = enrolled(tmp_path, Path(temporary))
+        for action in ('stage', 'replace'):
+            step['action'] = action
+            _, step_hash, _ = invoke(tmp_path, step, action)
+            previous = Path(step['journal']) / (step_hash + '.completed.json')
+            step.update(predecessor=str(previous), predecessor_sha256=hashlib.sha256(previous.read_bytes()).hexdigest())
+        hold = active_hold(step['source'])
+        for role in ('main', 'discovery'):
+            path = tmp_path / (role + '-rebound.json')
+            step_module.retain(path, {'schema': 'labelwatch.held-writer-ready/v1',
+                'operation': step['operation'], 'role': role, 'pid': os.getpid(),
+                'start_ticks': process_start_ticks(os.getpid()), 'hold_sha256': step_module.digest(hold),
+                'verification_sha256': step_module.digest(step['expected'])})
+            step['ready_records'][role] = str(path)
+        step['action'] = 'verify-service'
+        with pytest.raises(VerificationRefused, match='distinct enrolled writer'):
+            invoke(tmp_path, step, 'rebound-service')
+        assert Path(step['original']).exists()
