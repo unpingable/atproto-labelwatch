@@ -10,6 +10,24 @@ from labelwatch.maintenance_step import execute, read_record
 
 
 @pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
+def test_fixed_interruption_candidate_binds_cut_and_exact_input(tmp_path):
+    source = Path(__file__).resolve().parents[1]
+    module = runpy.run_path(str(source / 'scripts/m3_fixture_enrollment.py'))
+    wrapper = runpy.run_path(str(source / 'qualification/m3-admission/interrupted_step.py'))
+    assert tuple(module['INTERRUPTION_CUTS']) == tuple(wrapper['CUTS'])
+    with tempfile.TemporaryDirectory(prefix='labelwatch-m3-cut-enroll-', dir=os.environ['M3_BACKUP_ROOT']) as temporary:
+        target = tmp_path / 'fixture'
+        module['initialize'](target, Path(temporary), 'a' * 40)
+        candidate = module['seal'](target, 'stage', None, source, Path('/usr/bin/python3'), 'after_started')
+        unit = Path(candidate['step']).parent / candidate['unit']
+        assert candidate['qualification_interruption'] == 'after_started'
+        assert candidate['unit'].endswith('-q-after_started.service')
+        assert 'interrupted_step.py --step ' in unit.read_text()
+        assert '--cut after_started\n' in unit.read_text()
+        assert hashlib.sha256(unit.read_bytes()).hexdigest() == candidate['unit_sha256']
+
+
+@pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
 def test_sealed_fixture_candidate_is_not_authority_and_preserves_repeated_inputs(tmp_path):
     source = Path(__file__).resolve().parents[1]
     module = runpy.run_path(str(source / 'scripts/m3_fixture_enrollment.py'))

@@ -15,6 +15,11 @@ from labelwatch.maintenance_hold import paths
 from labelwatch.maintenance_manifest import offline_application_verify, VerificationRefused
 from labelwatch.maintenance_step import canonical, digest, read_record, retain
 
+INTERRUPTION_CUTS = ('before_started', 'after_started', 'before_terminal', 'after_terminal',
+    'after_original_rename', 'after_replacement_rename', 'after_backup_sync',
+    'after_restore_sync', 'after_staging_sync', 'before_cleanup_unlink',
+    'after_cleanup_unlink', 'after_cleanup_authorized', 'after_release_record')
+
 
 def path_argument(value):
     path = Path(value)
@@ -65,7 +70,9 @@ def initialize(target, backup, revision):
             'production': 'NOT_RUN', 'backup_durability': 'FILESYSTEM_DEPENDENT_NOT_INFERRED'}
 
 
-def seal(target, action, previous, source_root, python):
+def seal(target, action, previous, source_root, python, interruption_cut=None):
+    if interruption_cut is not None and interruption_cut not in INTERRUPTION_CUTS:
+        raise VerificationRefused('closed qualification interruption cut required')
     base, _ = read_record(target / 'fixture-base.json')
     base['action'] = action
     if action != 'stage':
@@ -88,12 +95,18 @@ def seal(target, action, previous, source_root, python):
     directory.mkdir(mode=0o700)
     step_path = directory / 'step.json'
     retain(step_path, base)
-    unit = 'labelwatch-relief-' + step_sha + '.service'
+    suffix = '' if interruption_cut is None else '-q-' + interruption_cut
+    unit = 'labelwatch-relief-' + step_sha + suffix + '.service'
+    command = str(python) + ' -m labelwatch.maintenance_step'
+    if interruption_cut is not None:
+        command = str(python) + ' ' + str(source_root / 'qualification/m3-admission/interrupted_step.py')
+    command += ' --step ' + str(step_path) + ' --expected-sha256 ' + step_sha
+    if interruption_cut is not None:
+        command += ' --cut ' + interruption_cut
     unit_text = ('[Unit]\nDescription=M3 exact enrolled fixture step\n'
         '[Service]\nType=oneshot\nUser=root\nGroup=root\nRestart=no\n'
         'TimeoutStartSec=25\nEnvironment=PYTHONPATH=' + str(source_root / 'src') + '\n'
-        'ExecStart=' + str(python) + ' -m labelwatch.maintenance_step --step ' + str(step_path)
-        + ' --expected-sha256 ' + step_sha + '\n[Install]\nWantedBy=multi-user.target\n')
+        'ExecStart=' + command + '\n[Install]\nWantedBy=multi-user.target\n')
     with (directory / unit).open('x') as output:
         output.write(unit_text)
     _sync(directory / unit)
@@ -102,6 +115,7 @@ def seal(target, action, previous, source_root, python):
         'unit_sha256': hashlib.sha256(unit_text.encode()).hexdigest(),
         'labelwatch_source': str(source_root), 'python': str(python),
         'source_revision': base['revision'], 'status': 'NOT_ENROLLED_NOT_AUTHORIZED',
+        'qualification_interruption': interruption_cut,
         'required_custody': 'root-owned immutable unit, interpreter/imports, input and containing directories',
         'measurement': 'AG binds unit name, not fragment bytes; enrollment is an explicit premise',
         'expected_result': str(Path(base['journal']) / (step_sha + '.completed.json'))}
@@ -123,6 +137,7 @@ def main():
     seal_parser.add_argument('--previous', type=path_argument)
     seal_parser.add_argument('--source-root', type=path_argument, required=True)
     seal_parser.add_argument('--python', type=path_argument, required=True)
+    seal_parser.add_argument('--interruption-cut', choices=INTERRUPTION_CUTS)
     arguments = vars(parser.parse_args())
     command = arguments.pop('command')
     print(canonical(initialize(**arguments) if command == 'initialize' else seal(**arguments)).decode(), end='')

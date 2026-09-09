@@ -14,6 +14,24 @@ from test_maintenance_step import enrolled
 
 
 @pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
+def test_actual_restore_row_substitution_refuses_before_compaction(tmp_path):
+    with tempfile.TemporaryDirectory(prefix='labelwatch-m3-restore-negative-', dir=os.environ['M3_BACKUP_ROOT']) as temporary:
+        step = enrolled(tmp_path, Path(temporary))
+        path = tmp_path / 'step.json'
+        retain(path, step)
+        step_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run([sys.executable, str(root / 'qualification/m3-admission/restore_substitution_step.py'),
+            '--step', str(path), '--expected-sha256', step_sha], env=dict(os.environ, PYTHONPATH=str(root / 'src')),
+            capture_output=True, text=True, timeout=10)
+        assert result.returncode == 78, result.stderr
+        assert 'actual_restore_before_application_verification' in result.stdout
+        assert Path(step['backup']).exists() and Path(step['restore']).exists()
+        assert not Path(step['staging']).exists() and not Path(step['original']).exists()
+        assert identity(Path(step['source'])) == step['source_identity']
+
+
+@pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
 @pytest.mark.parametrize('cut', ['before_started', 'after_started', 'after_backup_sync',
     'after_restore_sync', 'after_staging_sync', 'before_terminal', 'after_terminal'])
 def test_real_abrupt_stage_exit_preserves_cut_and_has_no_automatic_retry(tmp_path, cut):
