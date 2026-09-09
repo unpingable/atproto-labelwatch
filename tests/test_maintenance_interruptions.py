@@ -4,6 +4,10 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
+import subprocess
+import sys
+import time
+import fcntl
 
 import pytest
 
@@ -11,6 +15,92 @@ from labelwatch import maintenance_step as step_module
 from labelwatch import maintenance_artifacts as artifacts
 from labelwatch.maintenance_manifest import VerificationRefused
 from test_maintenance_step import enrolled, invoke
+
+
+def test_concurrent_step_custody_refuses_before_started_record(tmp_path):
+    step = enrolled(tmp_path, tmp_path)
+    with open(Path(step['journal']) / 'lock', 'wb') as owner:
+        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(VerificationRefused, match='another enrolled step'):
+            invoke(tmp_path, step, 'concurrent')
+    assert not list(Path(step['journal']).glob('*.started.json'))
+    assert artifacts.identity(Path(step['source'])) == step['source_identity']
+
+
+@pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
+@pytest.mark.parametrize('boundary', ['cleanup_completion', 'release_completion', 'resource_margin'])
+def test_cleanup_release_interruption_has_explicit_recovery(tmp_path, monkeypatch, boundary):
+    from labelwatch.maintenance_hold import paths, active_hold
+    with tempfile.TemporaryDirectory(prefix='labelwatch-m3-final-', dir=os.environ['M3_BACKUP_ROOT']) as temporary:
+        step = enrolled(tmp_path, Path(temporary))
+        def transition(action):
+            step['action'] = action
+            result, step_hash, _ = invoke(tmp_path, step, action)
+            previous = Path(step['journal']) / (step_hash + '.completed.json')
+            step.update(predecessor=str(previous), predecessor_sha256=hashlib.sha256(previous.read_bytes()).hexdigest())
+            return result
+        transition('stage')
+        transition('replace')
+        ready = paths(step['source'])[0].parent / 'ready'
+        ready.mkdir()
+        # Real independent processes prove readiness. They deliberately do not
+        # resume writes after release, so unknown resumption remains testable.
+        code = ('import sys,time; from labelwatch.maintenance_hold import wait_before_writer_start; '
+                'wait_before_writer_start(sys.argv[1],sys.argv[2]); time.sleep(20)')
+        environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / 'src'))
+        children = [subprocess.Popen([sys.executable, '-c', code, step['source'], role], env=environment)
+                    for role in ('main', 'discovery')]
+        try:
+            deadline = time.monotonic() + 10
+            while len(list(ready.glob('*.ready.json'))) != 2:
+                assert time.monotonic() < deadline and all(child.poll() is None for child in children)
+                time.sleep(.02)
+            step['ready_records'] = {role: str(next(ready.glob(role + '-*.ready.json')))
+                                     for role in ('main', 'discovery')}
+            transition('verify-service')
+            if boundary != 'cleanup_completion':
+                transition('cleanup')
+            action = 'cleanup' if boundary == 'cleanup_completion' else 'release'
+            step['action'] = action
+            if boundary == 'resource_margin':
+                actual_statvfs = step_module.os.statvfs
+                def no_margin(path):
+                    actual = actual_statvfs(path)
+                    return os.statvfs_result(tuple(actual[:4]) + (0,) + tuple(actual[5:]))
+                monkeypatch.setattr(step_module.os, 'statvfs', no_margin)
+            else:
+                original_retain = step_module.retain
+                def interrupted(path, value):
+                    if path.name.endswith('.completed.json'):
+                        raise VerificationRefused('fixture controller disappeared before terminal')
+                    original_retain(path, value)
+                monkeypatch.setattr(step_module, 'retain', interrupted)
+            with pytest.raises(VerificationRefused):
+                invoke(tmp_path, step, action)
+            assert not Path(step['original']).exists()
+            assert Path(step['backup']).exists() and Path(step['restore']).exists()
+            if boundary == 'release_completion':
+                assert active_hold(step['source']) is None
+                assert step_module.reconcile(step)['disposition'] == 'INDETERMINATE_WRITE_RESUMPTION_KEEP_STOPPED'
+                # A release record alone cannot license pre-ingest rollback.
+                step['action'] = 'rollback-pre-ingest'
+                with pytest.raises(VerificationRefused, match='hold absent'):
+                    invoke(tmp_path, step, 'rollback-after-release')
+            else:
+                assert active_hold(step['source']) is not None
+                path = tmp_path / (action + '.json')
+                with pytest.raises(VerificationRefused, match='OUTCOME_UNKNOWN'):
+                    step_module.execute(path, hashlib.sha256(path.read_bytes()).hexdigest())
+                if boundary == 'cleanup_completion':
+                    monkeypatch.setattr(step_module, 'retain', original_retain)
+                    started = Path(step['journal']) / (hashlib.sha256(path.read_bytes()).hexdigest() + '.started.json')
+                    step.update(predecessor=str(started), predecessor_sha256=hashlib.sha256(started.read_bytes()).hexdigest())
+                    assert transition('reconcile-cleanup')['disposition'] == 'CLEANUP_COMPLETED_NOT_RELIEF'
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.terminate()
+                child.wait(timeout=5)
 
 
 def test_changed_source_before_cut_retains_original_and_never_stages(tmp_path):
