@@ -124,6 +124,8 @@ def compact_verified(source: Path, staging: Path, *, revision: str, expected: di
         conn.execute('PRAGMA query_only=OFF')
         conn.execute('VACUUM INTO ?', (str(staging),))
     conn.close()
+    os.chown(staging, before['uid'], before['gid'])
+    os.chmod(staging, before['mode'])
     _sync(staging)
     verified = verify_closed(staging, revision=revision, expected=expected)
     if identity(source) != before:
