@@ -79,6 +79,30 @@ and actual VM exercise. No additional controller/retry engine is introduced.
 
 ## Qualification remaining
 
+### Entry diagnosis
+
+Initialization retains `entry-diagnosis.json`: real quiescent SQLite
+page_count/page_size/freelist_count/user_version; main, WAL and SHM identity or
+observed absence; filesystem device/capacity/free/available bytes; host and time
+cut. The sidecar-free immutable SQLite read requires already enrolled writer
+quiescence and protected paths. An unavailable probe is NOT_OBSERVABLE, not absent.
+
+The explicit **fixture-only** policy admits at least 64 free pages as freelist
+bloat; filesystem pressure is independently classified against a 4096-byte floor.
+Pressure alone does not establish that compaction is useful. A roomy fixture
+reports pressure NOT_NEEDED, not synthetic pressure. Page bytes are not promised
+net disk relief. Stage sealing refuses absent/unknown/not-needed entry evidence
+before creating an effect candidate and binds its original file identity.
+This retained acquisition cut is not a perpetual freshness assertion: intervening
+negative seeds are deliberate qualification substitutions and the helper still
+checks its exact source before work. The driver must retain the diagnostic/policy
+basis with its separate AG/Docket admission evidence.
+
+This app-owned diagnostic record is not an NQ receipt and grants no authority.
+Existing native fixed-predicate 5,000,000-page semantics are not changed to fit
+small fixtures. Current production diagnosis, thresholds, service enrollment and
+authority remain unqualified pending specifically approved host observation.
+
 ### App-owned acquisition interface
 
 `scripts/m3_fixture_capture.py --fixture ABSOLUTE_DIR --staged EXACT_STAGE_COMPLETED_JSON

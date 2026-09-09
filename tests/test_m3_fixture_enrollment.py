@@ -28,6 +28,18 @@ def test_fixed_interruption_candidate_binds_cut_and_exact_input(tmp_path):
     with tempfile.TemporaryDirectory(prefix='labelwatch-m3-cut-enroll-', dir=os.environ['M3_BACKUP_ROOT']) as temporary:
         target = tmp_path / 'fixture'
         module['initialize'](target, Path(temporary), 'a' * 40)
+        entry_path = target / 'entry-diagnosis.json'
+        entry_raw = entry_path.read_bytes()
+        entry = json.loads(entry_raw)
+        assert entry['facts']['sqlite']['freelist_count'] >= 64
+        for disposition in ('NOT_NEEDED', 'NOT_OBSERVABLE'):
+            entry['entry_disposition'] = disposition
+            entry_path.write_text(json.dumps(entry))
+            with pytest.raises(module['VerificationRefused']):
+                module['seal'](target, 'stage', None, source, Path('/usr/bin/python3'), 'after_started')
+            assert list((target / 'enrollment-candidates').iterdir()) == []
+            assert list((target / 'journal').iterdir()) == []
+        entry_path.write_bytes(entry_raw)
         candidate = module['seal'](target, 'stage', None, source, Path('/usr/bin/python3'), 'after_started')
         unit = Path(candidate['step']).parent / candidate['unit']
         assert candidate['qualification_interruption'] == 'after_started'

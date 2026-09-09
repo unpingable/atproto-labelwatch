@@ -14,6 +14,7 @@ from labelwatch.maintenance_artifacts import identity, _sync
 from labelwatch.maintenance_hold import paths
 from labelwatch.maintenance_manifest import offline_application_verify, VerificationRefused
 from labelwatch.maintenance_step import canonical, digest, read_record, retain
+from labelwatch.maintenance_diagnosis import diagnose, require_entry
 
 INTERRUPTION_CUTS = ('before_started', 'after_started', 'before_terminal', 'after_terminal',
     'after_original_rename', 'after_replacement_rename', 'after_backup_sync',
@@ -66,6 +67,9 @@ def initialize(target, backup, revision):
         'revision': revision, 'expected': expected, 'source_identity': identity(source),
         'operating_margin': 4096, 'predecessor': None, 'predecessor_sha256': None, 'ready_records': {}}
     retain(target / 'fixture-base.json', step)
+    entry = diagnose(source, minimum_freelist_pages=64, pressure_floor_bytes=4096)
+    require_entry(entry, step['source_identity'])
+    retain(target / 'entry-diagnosis.json', entry)
     return {'fixture': str(target), 'operation': operation, 'status': 'PREPARED_NOT_AUTHORIZED',
             'production': 'NOT_RUN', 'backup_durability': 'FILESYSTEM_DEPENDENT_NOT_INFERRED'}
 
@@ -76,6 +80,9 @@ def seal(target, action, previous, source_root, python, interruption_cut=None, q
     if qualification_restore_substitution and (action != 'stage' or interruption_cut is not None):
         raise VerificationRefused('restore substitution is a separate stage-only fixture')
     base, _ = read_record(target / 'fixture-base.json')
+    if action == 'stage':
+        entry, _ = read_record(target / 'entry-diagnosis.json')
+        require_entry(entry, base['source_identity'])
     base['action'] = action
     if action != 'stage':
         if previous is None:
