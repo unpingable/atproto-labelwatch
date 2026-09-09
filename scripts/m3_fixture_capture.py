@@ -12,12 +12,31 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 
 from labelwatch.maintenance_hold import paths
 from labelwatch.maintenance_observation import observe, observe_cleanup
 from labelwatch.maintenance_step import canonical, digest, read_record, retain
+
+
+def _request_time(value):
+    """Emit exact UTC spelling used by NQ's typed Chrono request serializer.
+
+    Only explicit-offset Python clock/observation timestamps are accepted.
+    Preserve every microsecond; never round or truncate finer input precision.
+    Raw observation evidence is unchanged.
+    """
+    if isinstance(value, str):
+        if re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})', value) is None:
+            raise ValueError('explicit-offset microsecond timestamp required')
+        value = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError('explicit timestamp offset required')
+    value = value.astimezone(timezone.utc)
+    precision = 'seconds' if value.microsecond == 0 else 'milliseconds' if value.microsecond % 1000 == 0 else 'microseconds'
+    return value.isoformat(timespec=precision).replace('+00:00', 'Z')
 
 
 def _acquire(arguments, backup, restore, budget, cleanup, destination):
@@ -122,7 +141,7 @@ def capture(args):
         'replacement_device': replacement['device'], 'replacement_inode': replacement['inode'],
         'writer_identities': identities, 'phase': 'post_release' if args.phase == 'post' else 'pre_ingest',
         'required_free_bytes': base['operating_margin'] if args.required_free_bytes is None else args.required_free_bytes,
-        'maximum_age_seconds': 30, 'evaluated_at': datetime.now(timezone.utc).isoformat(),
+        'maximum_age_seconds': 30, 'evaluated_at': _request_time(datetime.now(timezone.utc)),
         'pre_ingest_qualification': None}
     if args.phase == 'post':
         if args.pre_ingest_receipt is None:
@@ -132,13 +151,13 @@ def capture(args):
         raise ValueError('predecessor only belongs to post phase')
     if args.phase == 'cleanup':
         request.update(schema='nq.labelwatch-held-acquisition-request/v1',
-            evaluated_at=observed['completed_at'], maximum_age_seconds=args.acquisition_budget_seconds)
+            evaluated_at=_request_time(observed['completed_at']), maximum_age_seconds=args.acquisition_budget_seconds)
         request = {'schema': 'nq.labelwatch-cleanup-request/v2', 'held_request': request,
             'backup': base['backup'], 'restore': base['restore'],
             'backup_identity': staged['detail']['backup']['backup']['identity'],
             'restore_identity': staged['detail']['backup']['restored']['identity'],
             'expected_hold_sha256': hold_sha, 'acquisition_budget_seconds': args.acquisition_budget_seconds,
-            'maximum_currentness_age_seconds': 30, 'evaluated_at': datetime.now(timezone.utc).isoformat()}
+            'maximum_currentness_age_seconds': 30, 'evaluated_at': _request_time(datetime.now(timezone.utc))}
     request_path = args.output / (args.phase + '-request.json')
     retain(request_path, request)
     receipt = _native(args.nq, args.nq_sha256, 'labelwatch-cleanup' if args.phase == 'cleanup' else 'labelwatch-relief', source_path, request_path)
