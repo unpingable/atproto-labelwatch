@@ -448,6 +448,8 @@ async def _backstop_loop(conn, interval_hours: int, lock: asyncio.Lock):
 
 async def run(db_path: str, backstop_interval_hours: int = 6):
     """Main entry point for discovery stream daemon."""
+    from .maintenance_hold import wait_before_writer_start
+    await asyncio.to_thread(wait_before_writer_start, db_path)
     conn = db.connect(db_path)
     conn.execute("PRAGMA busy_timeout=120000")  # 120s — generous for sensor daemon
     # Skip full init_db on large DBs. The main process owns schema migrations;

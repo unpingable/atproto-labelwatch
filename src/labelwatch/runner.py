@@ -217,6 +217,8 @@ def run_loop(
     report_out: Optional[str] = None,
     report_interval: Optional[int] = None,
 ) -> None:
+    from .maintenance_hold import wait_before_writer_start
+    wait_before_writer_start(cfg.db_path)
     conn = db.connect(cfg.db_path)
     db.init_db(conn)
 

@@ -420,6 +420,9 @@ def _backfill_target_did(conn: sqlite3.Connection) -> None:
 
 
 def connect(db_path: str, readonly: bool = False) -> sqlite3.Connection:
+    if not readonly:
+        from .maintenance_hold import require_writes_released
+        require_writes_released(db_path)
     if readonly:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     else:
