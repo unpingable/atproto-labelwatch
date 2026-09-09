@@ -61,7 +61,7 @@ def test_same_counts_changed_row_refuses_reopen(tmp_path):
 def test_backup_same_filesystem_refuses_before_mutation(tmp_path):
     source, _ = source_cut(tmp_path)
     with pytest.raises(VerificationRefused, match='separately identified'):
-        space_prerequisites(source, tmp_path, operating_margin=4096)
+        space_prerequisites(source, tmp_path, temporary_operating_margin=4096)
 
 
 def test_symlink_and_duplicate_destination_refuse(tmp_path):

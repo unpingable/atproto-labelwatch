@@ -39,6 +39,13 @@ def _request_time(value):
     return value.isoformat(timespec=precision).replace('+00:00', 'Z')
 
 
+def _required_final_floor(base, requested):
+    enrolled = base['required_final_available']
+    if requested is not None and requested != enrolled:
+        raise ValueError('qualification threshold differs from enrolled final availability floor')
+    return enrolled
+
+
 def _acquire(arguments, backup, restore, budget, cleanup, destination):
     try:
         value = observe_cleanup(backup=backup, restore=restore, acquisition_budget_seconds=budget,
@@ -135,12 +142,13 @@ def capture(args):
         raise ValueError('independent acquisition incomplete')
     observed, _ = read_record(source_path)
     replacement = staged['detail']['compact']['staging']['identity']
+    required_final_floor = _required_final_floor(base, args.required_free_bytes)
     request = {'schema': 'nq.labelwatch-relief-request/v1', 'operation': base['operation'],
         'source': base['source'], 'original': base['original'], 'application_revision': base['revision'],
         'expected_cut_sha256': digest(base['expected']), 'original_identity': base['source_identity'],
         'replacement_device': replacement['device'], 'replacement_inode': replacement['inode'],
         'writer_identities': identities, 'phase': 'post_release' if args.phase == 'post' else 'pre_ingest',
-        'required_free_bytes': base['operating_margin'] if args.required_free_bytes is None else args.required_free_bytes,
+        'required_free_bytes': required_final_floor,
         'maximum_age_seconds': 30, 'evaluated_at': _request_time(datetime.now(timezone.utc)),
         'pre_ingest_qualification': None}
     if args.phase == 'post':

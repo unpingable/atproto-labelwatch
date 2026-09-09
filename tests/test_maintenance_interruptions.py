@@ -67,7 +67,7 @@ def test_reconciliation_refuses_same_bytes_under_replaced_original_pathname(tmp_
 
 
 @pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
-@pytest.mark.parametrize('boundary', ['cleanup_completion', 'release_completion', 'resource_margin'])
+@pytest.mark.parametrize('boundary', ['cleanup_completion', 'release_completion', 'final_floor'])
 def test_cleanup_release_interruption_has_explicit_recovery(tmp_path, monkeypatch, boundary):
     from labelwatch.maintenance_hold import paths, active_hold
     with tempfile.TemporaryDirectory(prefix='labelwatch-m3-final-', dir=os.environ['M3_BACKUP_ROOT']) as temporary:
@@ -101,7 +101,7 @@ def test_cleanup_release_interruption_has_explicit_recovery(tmp_path, monkeypatc
                 transition('cleanup')
             action = 'cleanup' if boundary == 'cleanup_completion' else 'release'
             step['action'] = action
-            if boundary == 'resource_margin':
+            if boundary == 'final_floor':
                 actual_statvfs = step_module.os.statvfs
                 def no_margin(path):
                     actual = actual_statvfs(path)

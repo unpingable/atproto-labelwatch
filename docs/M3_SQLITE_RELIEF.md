@@ -66,7 +66,15 @@ may be verified yet still fail the separately identified filesystem prerequisite
 `stage` → STAGED_NOT_INSTALLED; `replace` → REPLACEMENT_ACCEPTED;
 `verify-service` → SERVICE_ACCEPTED_PRE_INGEST; separately authorized `cleanup`
 records CLEANUP_AUTHORIZED before deletion and CLEANUP_COMPLETED_NOT_RELIEF after;
-`release` checks fresh margin then yields INGRESS_RELEASED_POSTCONDITION_PENDING.
+`release` checks a fresh final-availability floor then yields
+INGRESS_RELEASED_POSTCONDITION_PENDING. The v2 step keeps temporary workspace
+capacity (`temporary_operating_margin`) separate from an exact enrolled
+pre-operation filesystem/device/free-space observation. Its final floor is
+closed as `pre_operation_available + minimum_net_gain`; a stale, mismatched, or
+internally inconsistent baseline refuses before STARTED. The release record is
+not written unless fresh available bytes meet that exact floor. The same floor
+is the NQ post-release request threshold, so hold release and factual
+qualification cannot silently use different resource claims.
 Fresh independent NQ post-release qualification establishes only its exact
 `resource_relief_postcondition`; process exit/enactment alone never establishes it.
 
@@ -89,7 +97,9 @@ Actual native composition additionally requires `M3_NQ_BIN` and its exact
 Current tests cover typed contents/identical-count substitution, real restore,
 compaction, incomplete custody, duplicate/refused steps, interrupted swap with
 held rollback, held application startup, cleanup/release separation, post-cut
-writes, and fresh NQ resource-margin refusal despite successful enactment.
+writes, separate temporary/final space refusal, exact-threshold acceptance,
+stale/mismatched baselines, and fresh NQ final-floor refusal despite successful
+enactment.
 
 Still required before candidate acceptance: complete interruption/control matrix,
 independent review, exact real AG/Docket per-step unit qualification, retained

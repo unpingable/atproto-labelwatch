@@ -64,7 +64,8 @@ def test_actual_observation_native_pre_and_post_qualification(tmp_path):
                 'source': step['source'], 'original': step['original'], 'application_revision': REV,
                 'expected_cut_sha256': digest(step['expected']), 'original_identity': step['source_identity'],
                 'replacement_device': replacement['device'], 'replacement_inode': replacement['inode'],
-                'writer_identities': identities, 'phase': 'pre_ingest', 'required_free_bytes': 4096,
+                'writer_identities': identities, 'phase': 'pre_ingest',
+                'required_free_bytes': step['required_final_available'],
                 'maximum_age_seconds': 30, 'pre_ingest_qualification': None}
             def qualify(name, policy):
                 observed = observe(operation=step['operation'], source=Path(step['source']),

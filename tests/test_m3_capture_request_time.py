@@ -42,6 +42,15 @@ def test_live_clock_emission_matches_exact_microseconds():
     assert capture()['_request_time'](value) == '2026-09-09T08:27:13.123400Z'
 
 
+def test_required_final_floor_cannot_diverge_from_enrolled_release_gate():
+    helper = capture()['_required_final_floor']
+    base = {'required_final_available': 8192}
+    assert helper(base, None) == 8192
+    assert helper(base, 8192) == 8192
+    with pytest.raises(ValueError, match='differs from enrolled'):
+        helper(base, 4096)
+
+
 @pytest.mark.skipif(not os.environ.get('M3_CAPTURE_RETAINED_TAR') or not os.environ.get('M3_NQ_BIN'),
     reason='explicit retained qualification inputs and exact native binary required')
 def test_real_retained_cleanup_request_requalifies_with_exact_receipt(tmp_path):

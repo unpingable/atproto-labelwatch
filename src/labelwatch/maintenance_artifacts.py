@@ -142,14 +142,14 @@ def compact_verified(source: Path, staging: Path, *, revision: str, expected: di
     return {'source': before, 'staging': verified, 'replacement_accepted': False}
 
 
-def space_prerequisites(source: Path, backup_directory: Path, *, operating_margin: int) -> dict:
+def space_prerequisites(source: Path, backup_directory: Path, *, temporary_operating_margin: int) -> dict:
     """Conservative full-size backup + replacement + restore, no freelist guess.
 
     Original remains allocated and is not counted as already reclaimed. Backup
     and disposable restore require two full source sizes on the backup volume.
     """
-    if type(operating_margin) is not int or operating_margin < 0:
-        raise VerificationRefused('nonnegative explicit operating margin required')
+    if type(temporary_operating_margin) is not int or temporary_operating_margin < 0:
+        raise VerificationRefused('nonnegative explicit temporary operating margin required')
     source_id = identity(source)
     if not backup_directory.is_dir() or backup_directory.resolve() != backup_directory:
         raise VerificationRefused('exact backup directory required')
@@ -159,11 +159,11 @@ def space_prerequisites(source: Path, backup_directory: Path, *, operating_margi
     backup = os.statvfs(backup_directory)
     target_free = target.f_bavail * target.f_frsize
     backup_free = backup.f_bavail * backup.f_frsize
-    target_required = source_id['bytes'] + operating_margin
-    backup_required = 2 * source_id['bytes'] + operating_margin
+    target_required = source_id['bytes'] + temporary_operating_margin
+    backup_required = 2 * source_id['bytes'] + temporary_operating_margin
     if target_free < target_required or backup_free < backup_required:
         raise VerificationRefused('insufficient temporary space before mutation')
     return {'target_device': source_id['device'], 'backup_device': backup_directory.stat().st_dev,
             'target_free': target_free, 'backup_free': backup_free,
             'target_required': target_required, 'backup_required': backup_required,
-            'operating_margin': operating_margin}
+            'temporary_operating_margin': temporary_operating_margin}

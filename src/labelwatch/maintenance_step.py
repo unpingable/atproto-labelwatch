@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 from .maintenance_artifacts import (
@@ -85,6 +86,37 @@ def _physical(path: str) -> Path:
     return value
 
 
+def _validate_relief_contract(step: dict, source: Path) -> None:
+    """Validate the sealed baseline/final-floor contract without granting authority."""
+    integer_fields = ('temporary_operating_margin', 'pre_operation_device',
+                      'pre_operation_available', 'pre_operation_observed_at_unix_ns',
+                      'pre_operation_maximum_age_seconds', 'minimum_net_gain',
+                      'required_final_available')
+    if any(type(step[field]) is not int for field in integer_fields):
+        raise VerificationRefused('relief contract requires exact integer fields')
+    if (step['temporary_operating_margin'] < 0 or step['pre_operation_device'] < 0
+            or step['pre_operation_available'] < 0
+            or step['pre_operation_observed_at_unix_ns'] < 0
+            or not 1 <= step['pre_operation_maximum_age_seconds'] <= 86400
+            or step['minimum_net_gain'] <= 0):
+        raise VerificationRefused('relief contract bounds differ')
+    if step['required_final_available'] != (
+            step['pre_operation_available'] + step['minimum_net_gain']):
+        raise VerificationRefused('final availability is not bound to baseline plus required net gain')
+    if source.parent.stat().st_dev != step['pre_operation_device']:
+        raise VerificationRefused('pre-operation filesystem identity differs')
+    if step['action'] == 'stage':
+        age = time.time_ns() - step['pre_operation_observed_at_unix_ns']
+        if age < 0 or age > step['pre_operation_maximum_age_seconds'] * 1_000_000_000:
+            raise VerificationRefused('pre-operation availability baseline is stale or from the future')
+        filesystem = os.statvfs(source.parent)
+        current = filesystem.f_bavail * filesystem.f_frsize
+        # The sealed record and journal may consume blocks after the observation.
+        # A larger value, however, could make unrelated relief satisfy the gain.
+        if current > step['pre_operation_available']:
+            raise VerificationRefused('pre-operation availability baseline no longer bounds current state')
+
+
 def reconcile(step: dict) -> dict:
     """Read-only recovery disposition, never permission to replay an effect."""
     observed = {}
@@ -136,8 +168,11 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
         raise VerificationRefused('step differs from externally enrolled digest')
     fields = {'schema', 'operation', 'action', 'source', 'backup', 'restore', 'staging',
               'original', 'journal', 'revision', 'expected', 'source_identity',
-              'operating_margin', 'predecessor', 'predecessor_sha256', 'ready_records'}
-    if set(step) != fields or step['schema'] != 'labelwatch.sqlite-relief-step/v1':
+              'temporary_operating_margin', 'pre_operation_device',
+              'pre_operation_available', 'pre_operation_observed_at_unix_ns',
+              'pre_operation_maximum_age_seconds', 'minimum_net_gain',
+              'required_final_available', 'predecessor', 'predecessor_sha256', 'ready_records'}
+    if set(step) != fields or step['schema'] != 'labelwatch.sqlite-relief-step/v2':
         raise VerificationRefused('closed step schema differs')
     binding = digest({key: value for key, value in step.items()
                       if key not in {'action', 'predecessor', 'predecessor_sha256', 'ready_records'}})
@@ -152,9 +187,7 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
         raise VerificationRefused('swap artifacts must share exact target directory')
     if paths['restore'].parent != paths['backup'].parent:
         raise VerificationRefused('restore must use the separately budgeted backup directory')
-    hold = active_hold(str(paths['source']))
-    if hold is None or hold['operation'] != step['operation'] or hold['manifest_sha256'] != digest(step['expected']):
-        raise VerificationRefused('exact operation quiescence/startup hold absent')
+    _validate_relief_contract(step, paths['source'])
     journal = paths['journal']
     if not journal.is_dir() or journal.resolve() != journal:
         raise VerificationRefused('enrolled journal directory required')
@@ -171,6 +204,10 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
             if result.get('step_sha256') != expected_sha256:
                 raise VerificationRefused('terminal identity differs')
             return result
+        hold = active_hold(str(paths['source']))
+        if (hold is None or hold['operation'] != step['operation']
+                or hold['manifest_sha256'] != digest(step['expected'])):
+            raise VerificationRefused('exact operation quiescence/startup hold absent')
         if started.exists():
             raise VerificationRefused('OUTCOME_UNKNOWN: reopen artifacts; no automatic retry')
         predecessor = None
@@ -195,7 +232,9 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
                 if sidecar.exists() or sidecar.is_symlink():
                     raise VerificationRefused('source sidecar remains after declared quiescence')
             space = space_prerequisites(source, paths['backup'].parent,
-                                        operating_margin=step['operating_margin'])
+                                        temporary_operating_margin=step['temporary_operating_margin'])
+            if space['target_free'] > step['pre_operation_available']:
+                raise VerificationRefused('pre-operation availability baseline no longer bounds staging cut')
             backup = copy_restore_verify(source, paths['backup'], paths['restore'],
                 revision=step['revision'], expected=step['expected'])
             if not backup['separate_filesystem']:
@@ -311,13 +350,18 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
                     raise VerificationRefused('original still present before relief verification')
                 filesystem = os.statvfs(source.parent)
                 free = filesystem.f_bavail * filesystem.f_frsize
-                if free < step['operating_margin']:
-                    raise VerificationRefused('resource margin still insufficient; ingestion remains held')
+                if identity(source)['device'] != step['pre_operation_device']:
+                    raise VerificationRefused('replacement filesystem identity differs before release')
+                if free < step['required_final_available']:
+                    raise VerificationRefused('required final availability not established; ingestion remains held')
                 release = {'schema': 'labelwatch.maintenance-release/v1', 'operation': step['operation'],
                            'hold_sha256': digest(hold), 'release_receipt': expected_sha256}
                 retain(hold_paths(str(source))[1], release)
                 detail = {'replacement_before_release': replacement,
-                          'fresh_pre_release_free_bytes': free, 'margin': step['operating_margin'],
+                          'fresh_pre_release_free_bytes': free,
+                          'pre_operation_available': step['pre_operation_available'],
+                          'minimum_net_gain': step['minimum_net_gain'],
+                          'required_final_available': step['required_final_available'],
                           'rollback': 'INDETERMINATE_UNTIL_POST_RELEASE_GENERATION_OBSERVED'}
                 disposition = 'INGRESS_RELEASED_POSTCONDITION_PENDING'
         result = {'schema': 'labelwatch.relief-step-result/v1', 'operation': step['operation'],

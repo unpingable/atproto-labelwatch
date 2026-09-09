@@ -6,8 +6,10 @@ invocation. These local records do not grant authority. Not a production install
 """
 import argparse
 import hashlib
+import os
 from pathlib import Path
 import re
+import time
 
 from labelwatch import db
 from labelwatch.maintenance_artifacts import identity, _sync
@@ -60,12 +62,22 @@ def initialize(target, backup, revision):
         'database': str(source), 'manifest_sha256': digest(expected), 'application_revision': revision})
     (target / 'journal').mkdir(mode=0o700)
     (target / 'enrollment-candidates').mkdir(mode=0o700)
-    step = {'schema': 'labelwatch.sqlite-relief-step/v1', 'operation': operation,
+    filesystem = os.statvfs(target)
+    pre_operation_available = filesystem.f_bavail * filesystem.f_frsize
+    minimum_net_gain = 4096
+    step = {'schema': 'labelwatch.sqlite-relief-step/v2', 'operation': operation,
         'action': 'stage', 'source': str(source), 'backup': str(backup / 'backup.sqlite'),
         'restore': str(backup / 'restored.sqlite'), 'staging': str(target / 'staging.sqlite'),
         'original': str(target / 'original.sqlite'), 'journal': str(target / 'journal'),
         'revision': revision, 'expected': expected, 'source_identity': identity(source),
-        'operating_margin': 4096, 'predecessor': None, 'predecessor_sha256': None, 'ready_records': {}}
+        'temporary_operating_margin': 4096,
+        'pre_operation_device': target.stat().st_dev,
+        'pre_operation_available': pre_operation_available,
+        'pre_operation_observed_at_unix_ns': time.time_ns(),
+        'pre_operation_maximum_age_seconds': 3600,
+        'minimum_net_gain': minimum_net_gain,
+        'required_final_available': pre_operation_available + minimum_net_gain,
+        'predecessor': None, 'predecessor_sha256': None, 'ready_records': {}}
     retain(target / 'fixture-base.json', step)
     entry = diagnose(source, minimum_freelist_pages=64, pressure_floor_bytes=4096)
     retain(target / 'entry-diagnosis.json', entry)

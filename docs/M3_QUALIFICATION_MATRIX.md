@@ -23,7 +23,7 @@ These are source/test locations, not substitutes for exact run records.
 | 10 Post-start verification failure | I post_start_contents real mutation refuses service acceptance and retains original/hold | Integrated governed candidate rerun |
 | 11 Released writes/stale rollback | S real post-cut writes produce FORWARD_RECOVERY_ONLY; I released hold refuses rollback | Actual governed release + resulting generation and refusal record |
 | 12 Unknown resumption | I release record before terminal/no writes remains INDETERMINATE, not safe rollback | Actual interrupted release custody/reconciliation |
-| 13 Cleanup without sufficient margin | I resource_margin keeps hold; N fresh filesystem evidence refutes larger required margin | Cleanup-v2 and integrated final output must not infer success from effect completion |
+| 13 Cleanup without sufficient final relief | I final-floor case keeps hold; S accepts the exact threshold and refuses stale/mismatched baselines; N fresh filesystem evidence refutes an unmet required floor | Cleanup-v2 and integrated final output must not infer success from effect completion |
 | 14 Duplicates/concurrency | S exact duplicate returns prior result; I concurrent operation lock refuses before STARTED; distinct held process identities; no overwrite candidate generation | Real AG/Docket duplicate/no-retry path; direct non-enrolled writers remain excluded operational premise, not tested universal exclusion |
 | 15 NQ disagrees with enactment | N actual fresh insufficient-space observation REFUTED after completed cleanup; independent copy observer ignores helper claims | New cleanup-v2 native and AG refusal at exact freshness/identity/unknown boundaries |
 

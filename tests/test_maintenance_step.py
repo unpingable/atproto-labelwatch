@@ -24,11 +24,21 @@ def enrolled(tmp_path, backup_root):
                   'database': str(source), 'manifest_sha256': digest(expected), 'application_revision': REV})
     journal = tmp_path / 'journal'
     journal.mkdir()
-    return {'schema': 'labelwatch.sqlite-relief-step/v1', 'operation': 'fixture-relief',
+    filesystem = os.statvfs(tmp_path)
+    baseline = filesystem.f_bavail * filesystem.f_frsize
+    minimum_net_gain = 4096
+    return {'schema': 'labelwatch.sqlite-relief-step/v2', 'operation': 'fixture-relief',
         'action': 'stage', 'source': str(source), 'backup': str(backup_root / 'backup.sqlite'),
         'restore': str(backup_root / 'restored.sqlite'), 'staging': str(tmp_path / 'staging.sqlite'),
         'original': str(tmp_path / 'original.sqlite'), 'journal': str(journal), 'revision': REV,
-        'expected': expected, 'source_identity': identity(source), 'operating_margin': 4096,
+        'expected': expected, 'source_identity': identity(source),
+        'temporary_operating_margin': 4096,
+        'pre_operation_device': tmp_path.stat().st_dev,
+        'pre_operation_available': baseline,
+        'pre_operation_observed_at_unix_ns': time.time_ns(),
+        'pre_operation_maximum_age_seconds': 3600,
+        'minimum_net_gain': minimum_net_gain,
+        'required_final_available': baseline + minimum_net_gain,
         'predecessor': None, 'predecessor_sha256': None, 'ready_records': {}}
 
 
@@ -57,6 +67,23 @@ def test_wrong_enrolled_digest_never_starts(tmp_path):
     retain(path, step)
     with pytest.raises(VerificationRefused, match='enrolled digest'):
         execute(path, '0' * 64)
+    assert list(Path(step['journal']).iterdir()) == []
+
+
+@pytest.mark.parametrize('condition', ['stale', 'device', 'relation'])
+def test_invalid_pre_operation_baseline_refuses_before_started(tmp_path, condition):
+    step = enrolled(tmp_path, tmp_path)
+    if condition == 'stale':
+        step['pre_operation_observed_at_unix_ns'] -= 7200 * 1_000_000_000
+        message = 'stale or from the future'
+    elif condition == 'device':
+        step['pre_operation_device'] += 1
+        message = 'filesystem identity differs'
+    else:
+        step['required_final_available'] += 1
+        message = 'baseline plus required net gain'
+    with pytest.raises(VerificationRefused, match=message):
+        invoke(tmp_path, step, 'invalid-baseline-' + condition)
     assert list(Path(step['journal']).iterdir()) == []
 
 
@@ -118,7 +145,22 @@ conn.close()
             assert transition('cleanup')['disposition'] == 'CLEANUP_COMPLETED_NOT_RELIEF'
             assert not Path(step['original']).exists()
             assert all(process.poll() is None for process in processes)
-            assert transition('release')['disposition'] == 'INGRESS_RELEASED_POSTCONDITION_PENDING'
+            actual_statvfs = os.statvfs
+            def exact_final_floor(path):
+                current = actual_statvfs(path)
+                blocks = step['required_final_available'] // current.f_frsize
+                return os.statvfs_result(tuple(current[:4]) + (blocks,) + tuple(current[5:]))
+            step['action'] = 'release'
+            from labelwatch import maintenance_step as implementation
+            original_statvfs = implementation.os.statvfs
+            implementation.os.statvfs = exact_final_floor
+            try:
+                released, released_hash, released_path = invoke(tmp_path, step, 'release')
+            finally:
+                implementation.os.statvfs = original_statvfs
+            assert released['disposition'] == 'INGRESS_RELEASED_POSTCONDITION_PENDING'
+            assert released['detail']['fresh_pre_release_free_bytes'] == step['required_final_available']
+            assert execute(released_path, released_hash) == released
             for process in processes:
                 assert process.wait(timeout=5) == 0
             assert reconcile(step)['disposition'] == 'FORWARD_RECOVERY_ONLY'

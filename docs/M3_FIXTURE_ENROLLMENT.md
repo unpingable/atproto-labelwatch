@@ -116,6 +116,11 @@ It writes `<phase>-source.json`, `<phase>-request.json`, `<phase>-receipt.json`
 and `capture-result.json`. Cleanup uses the v2 held-acquisition/currentness contract;
 pre/post retain the v1 relief contract. Exit zero means capture completed, including
 REFUTED or NOT_OBSERVABLE receipts: consumers must inspect factual disposition.
+The fixture's v2 effect step seals the target filesystem identity, observation
+time, pre-operation available bytes, minimum net gain, and resulting final
+availability floor. Temporary backup/staging capacity remains a separate
+prerequisite. Capture refuses a caller-supplied NQ threshold that differs from
+the sealed final floor.
 An acquisition timeout terminates only its own observation child, reports whether
 that child remains, exits 2, and creates no native receipt. Reusing an output
 directory refuses without changing retained bytes. Protected fixture/source/input
