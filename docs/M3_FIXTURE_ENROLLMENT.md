@@ -1,0 +1,80 @@
+# M3 fixture enrollment candidate
+
+Future integration qualification, not production enrollment or deployment.
+`scripts/m3_fixture_enrollment.py` prepares a disposable database and per-step
+unit candidates. It does not install units, dispatch effects, grant permission,
+or decide that a successful systemd job establishes the maintenance condition.
+
+## Guest inputs and custody
+
+Use a fresh campaign-owned local VM and retain the existing reviewed VM lifecycle
+and teardown. Required inputs are the exact Labelwatch source revision (including
+the preparer), Python 3 with its actual resolved interpreter path and standard
+library, the pinned universal `websockets` wheel for actual main/discovery startup,
+the actual compatible NQ-ng binary including `labelwatch-relief`, and the existing
+AG-ng/Docket composition driver and runtime packages. Record package hashes and
+producer/checker revisions; host-built NQ compatibility with a Debian guest must
+not be assumed.
+
+The backup directory must be a separately mounted filesystem with room for backup
+and restore. A fixture tmpfs can demonstrate separate device identity and actual
+restore, but does **not** establish survival across guest/power loss. Production
+backup durability and custody remain separate enrollment requirements.
+
+All unit files, helper source/imports, interpreter, step inputs and their enclosing
+directories must be root-owned and immutable to application writers while each
+step is admitted/executed. AG binds the exact unit name; it does not measure the
+unit fragment. The generated unit digest is an enrollment check, not an AG claim.
+The bounded fixture can run both application roles as root; it does not qualify
+a restricted production service-account arrangement.
+
+## Preparation and execution shape
+
+With `PYTHONPATH` pointing to the enrolled source's `src`, run the preparer:
+
+```text
+python3 scripts/m3_fixture_enrollment.py initialize \
+  --target /var/lib/m3-fixture/run-001 --backup /mnt/m3-backup/run-001 \
+  --revision <exact Labelwatch commit>
+python3 scripts/m3_fixture_enrollment.py seal \
+  --target /var/lib/m3-fixture/run-001 --action stage \
+  --source-root /opt/labelwatch --python /usr/bin/python3.11
+```
+
+Parent and backup directories must already exist; the target must not exist.
+The preparer never reinitializes a prior fixture. Physical absolute paths use a
+deliberately restricted character vocabulary. Before enrolling each candidate,
+check its actual step and unit hashes and protect the complete source chain.
+Install only the exact digest-named unit in this disposable VM, without enabling
+it. Its fixed command has no mutable action arguments; `Restart=no` forbids retry.
+
+Invoke the existing AG/Docket driver with the candidate's exact unit name and
+appropriately bound subject/scope. Preserve each driver's authorizations,
+admission, Docket attempt and actual systemd evidence. Reopen the independent
+helper result at `expected_result`; transport/job completion is not that result.
+Seal the next candidate with `--previous <exact retained completed record>`.
+Never rerun a STARTED-without-completion step as recovery.
+
+Order: stage, replace, start both actual held application roles, verify-service,
+independent observation plus NQ pre-ingest qualification, cleanup, release,
+independent observation plus NQ post-release qualification. Each maintenance
+effect is a separately admitted digest-named unit. Both writer units must also
+use `Restart=no`; the main fixture disables ingest/scan intervals and discovery
+uses only a refused loopback endpoint with backstop disabled. This demonstrates
+real startup/write resumption, not upstream acquisition.
+
+The existing composition driver's constant `clean_basis` is fixture admission,
+not proof of an NQ maintenance precondition. The showing must retain actual
+freshly acquired NQ pre/post receipts separately and must not label fixture
+admission as independently qualified application facts. Root integration review
+must check that join before launch. No additional controller/retry engine is
+introduced by this preparer.
+
+## Qualification remaining
+
+The preparer test exercises real SQLite staging and replacement with a separate
+filesystem and verifies step/unit digests, fixed restart policy and no-overwrite
+behavior. This is **not** AG/Docket/systemd integration evidence. Final VM evidence
+must additionally cover the actual per-step custody path, refusal/interruption,
+retained application/NQ evidence, scoped teardown and exact source/package pins.
+Production dogfooding is not authorized by these fixture records.
