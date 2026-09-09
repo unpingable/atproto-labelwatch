@@ -26,6 +26,9 @@ def enrolled(tmp_path, backup_root):
     journal.mkdir()
     filesystem = os.statvfs(tmp_path)
     baseline = filesystem.f_bavail * filesystem.f_frsize
+    # Retained enrollment overhead leaves a deterministic cushion between the
+    # exact observation and first execution on a shared local fixture volume.
+    (tmp_path / 'baseline-enrollment-overhead').write_bytes(b'0' * 4096)
     minimum_net_gain = 4096
     return {'schema': 'labelwatch.sqlite-relief-step/v2', 'operation': 'fixture-relief',
         'action': 'stage', 'source': str(source), 'backup': str(backup_root / 'backup.sqlite'),
@@ -85,6 +88,30 @@ def test_invalid_pre_operation_baseline_refuses_before_started(tmp_path, conditi
     with pytest.raises(VerificationRefused, match=message):
         invoke(tmp_path, step, 'invalid-baseline-' + condition)
     assert not list(Path(step['journal']).glob('*.started.json'))
+
+
+def test_unrelated_relief_before_first_execution_refuses(tmp_path, monkeypatch):
+    from labelwatch import maintenance_step as implementation
+    step = enrolled(tmp_path, tmp_path)
+    actual = implementation.os.statvfs
+    def increased(path):
+        value = actual(path)
+        blocks = step['pre_operation_available'] // value.f_frsize + 1
+        return os.statvfs_result(tuple(value[:4]) + (blocks,) + tuple(value[5:]))
+    monkeypatch.setattr(implementation.os, 'statvfs', increased)
+    with pytest.raises(VerificationRefused, match='no longer bounds current state'):
+        invoke(tmp_path, step, 'unrelated-relief-before-stage')
+    assert not list(Path(step['journal']).glob('*.started.json'))
+
+
+def test_unrelated_relief_between_validation_and_staging_refuses(tmp_path, monkeypatch):
+    from labelwatch import maintenance_step as implementation
+    step = enrolled(tmp_path, tmp_path)
+    monkeypatch.setattr(implementation, 'space_prerequisites', lambda *args, **kwargs: {
+        'target_free': step['pre_operation_available'] + 4096})
+    with pytest.raises(VerificationRefused, match='no longer bounds staging cut'):
+        invoke(tmp_path, step, 'unrelated-relief-during-stage')
+    assert not Path(step['backup']).exists() and not Path(step['staging']).exists()
 
 
 @pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')

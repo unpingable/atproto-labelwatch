@@ -113,6 +113,10 @@ def _validate_first_execution_relief_cut(step: dict, source: Path) -> None:
         age = time.time_ns() - step['pre_operation_observed_at_unix_ns']
         if age < 0 or age > step['pre_operation_maximum_age_seconds'] * 1_000_000_000:
             raise VerificationRefused('pre-operation availability baseline is stale or from the future')
+        filesystem = os.statvfs(source.parent)
+        current = filesystem.f_bavail * filesystem.f_frsize
+        if current > step['pre_operation_available']:
+            raise VerificationRefused('pre-operation availability baseline no longer bounds current state')
 
 
 def reconcile(step: dict) -> dict:
@@ -235,6 +239,8 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
                     raise VerificationRefused('source sidecar remains after declared quiescence')
             space = space_prerequisites(source, paths['backup'].parent,
                                         temporary_operating_margin=step['temporary_operating_margin'])
+            if space['target_free'] > step['pre_operation_available']:
+                raise VerificationRefused('pre-operation availability baseline no longer bounds staging cut')
             backup = copy_restore_verify(source, paths['backup'], paths['restore'],
                 revision=step['revision'], expected=step['expected'])
             if not backup['separate_filesystem']:
