@@ -181,3 +181,23 @@ with release of temporary or open-file allocations, but no retained allocation
 identity proves their ownership or attributes a specific defect to rc11.
 Fallback service availability is established; a new full ingestion/capacity
 observation of the restored baseline is a separate, uncompleted claim here.
+
+A bounded post-fallback descriptor check at 18:12:18 UTC examined all 24 open
+descriptors across the three service processes, without reading contents. The
+rc10 main process held one deleted-open regular file with a SQLite-style temporary
+name on the root filesystem: 280,185,876 logical bytes and 280,190,976 allocated
+bytes. Discovery and API held no matching temporary/deleted-open files. There
+were no enumeration errors or truncated process/descriptor sets. Root free space
+was then 10,336,948,224 bytes. This establishes a temporary allocation on the
+restored baseline too; without its earlier allocation size or the former rc11
+process's descriptor identity, it does not explain the entire post-fallback
+decline or establish the cause of the earlier multi-gigabyte release.
+
+The final identical check at 18:30:55 UTC found the same three processes active
+but no matching temporary/deleted-open allocation among their 23 descriptors.
+The earlier temporary allocation was no longer held. Root free space was
+10,201,415,680 bytes: 135,532,544 fewer bytes than at 18:12, but still
+1,611,481,088 bytes above the 8 GiB cutover floor. These two snapshots do not
+demonstrate monotonically growing temporary allocation; the remaining filesystem
+decline is unattributed. The larger operations floor remained unmet, and no
+additional cleanup or pressure-policy change was performed by this diagnosis.
