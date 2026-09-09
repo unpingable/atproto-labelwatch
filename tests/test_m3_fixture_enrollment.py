@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 from pathlib import Path
 import runpy
@@ -7,6 +8,15 @@ import tempfile
 import pytest
 
 from labelwatch.maintenance_step import execute, read_record
+
+
+def test_fifteen_case_inventory_includes_every_closed_interruption_cut():
+    source = Path(__file__).resolve().parents[1]
+    cases = json.loads((source / 'qualification/m3-admission/cases.json').read_text())
+    wrapper = runpy.run_path(str(source / 'qualification/m3-admission/interrupted_step.py'))
+    assert [case['id'] for case in cases['cases']] == list(range(1, 16))
+    assert {cut for row in cases['controller_cuts'] for cut in row['cuts']} == set(wrapper['CUTS'])
+    assert {'rollback-pre-ingest', 'reconcile-cleanup'} <= {action for row in cases['controller_cuts'] for action in row['actions']}
 
 
 @pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')

@@ -21,6 +21,8 @@
   ],
   "controller_cuts": [
     {"actions": ["stage", "replace", "verify-installed", "verify-service", "cleanup", "release"], "cuts": ["before_started", "after_started", "before_terminal", "after_terminal"], "prerequisites": "normal lawful predecessors for that action; cleanup requires actual cleanup-v2 admission", "writers": "both held for verify-service/cleanup/release; absent for earlier actions"},
+    {"actions": ["rollback-pre-ingest"], "cuts": ["before_started", "after_started", "before_terminal", "after_terminal"], "prerequisites": ["stage", "replace"], "writers": "absent; rollback is separately admitted, never automatic retry"},
+    {"actions": ["reconcile-cleanup"], "cuts": ["before_started", "after_started", "before_terminal", "after_terminal"], "prerequisites": ["stage", "replace", "start-held-main-and-discovery", "verify-service", "qualify-cleanup-v2", "cleanup interrupted after_cleanup_unlink"], "writers": "both held; bind exact interrupted cleanup STARTED record; no repeat deletion"},
     {"actions": ["stage"], "cuts": ["after_backup_sync", "after_restore_sync", "after_staging_sync"], "prerequisites": [], "writers": "absent"},
     {"actions": ["replace"], "cuts": ["after_original_rename", "after_replacement_rename"], "prerequisites": ["stage"], "writers": "absent"},
     {"actions": ["cleanup"], "cuts": ["after_cleanup_authorized", "before_cleanup_unlink", "after_cleanup_unlink"], "prerequisites": ["stage", "replace", "start-held-main-and-discovery", "verify-service", "qualify-cleanup-v2"], "writers": "both held"},
