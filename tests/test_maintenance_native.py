@@ -36,19 +36,20 @@ def test_actual_observation_native_pre_and_post_qualification(tmp_path):
         replacement = transition('replace')['detail']['replacement']['identity']
         ready_directory = paths(step['source'])[0].parent / 'ready'
         ready_directory.mkdir()
-        code = '''import sys,time
-from labelwatch.maintenance_hold import wait_before_writer_start
-from labelwatch import db
-wait_before_writer_start(sys.argv[1], sys.argv[2])
-conn = db.connect(sys.argv[1])
-db.set_cursor(conn, sys.argv[2], 'post-cut-write')
-conn.commit()
-conn.close()
-while True: time.sleep(0.1)
-'''
-        environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / 'src'))
-        processes = [subprocess.Popen([sys.executable, '-c', code, step['source'], role], env=environment)
-                     for role in ('main', 'discovery')]
+        python_path = str(Path(__file__).resolve().parents[1] / 'src')
+        if os.environ.get('M3_WEBSOCKETS_WHEEL'):
+            wheel = Path(os.environ['M3_WEBSOCKETS_WHEEL'])
+            assert hashlib.sha256(wheel.read_bytes()).hexdigest() == os.environ['M3_WEBSOCKETS_SHA256']
+            python_path += os.pathsep + str(wheel)
+        environment = dict(os.environ, PYTHONPATH=python_path,
+                           JETSTREAM_URL='ws://127.0.0.1:9')
+        # Real application entrypoints. Acquisition is explicitly disabled or
+        # pointed at a refused loopback fixture; no external service is queried.
+        commands = [['run', '--ingest-interval', '0', '--scan-interval', '0'],
+                    ['discover-stream', '--backstop-interval', '0']]
+        logs = [(tmp_path / (role + '.log')).open('wb') for role in ('main', 'discovery')]
+        processes = [subprocess.Popen([sys.executable, '-m', 'labelwatch.cli', '--db', step['source'], *command],
+                     env=environment, stdout=log, stderr=subprocess.STDOUT) for command, log in zip(commands, logs)]
         try:
             deadline = time.monotonic() + 10
             while len(list(ready_directory.glob('*.ready.json'))) != 2:
@@ -101,4 +102,11 @@ while True: time.sleep(0.1)
             for process in processes:
                 if process.poll() is None:
                     process.terminate()
-                process.wait(timeout=5)
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+                    raise
+            for log in logs:
+                log.close()
