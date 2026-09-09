@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import tempfile
 import time
 
 
@@ -115,13 +116,45 @@ def process_start_ticks(pid: int) -> int:
     return int(fields[19])
 
 
+def _publish_ready(ready: Path, raw: bytes) -> None:
+    """Publish complete readiness bytes without replacing an existing record.
+
+    The enrolled parent is protected from unrelated pathname changes. A reader
+    may see the final name only after the file contents have been synced. Return
+    also requires directory sync. Interrupted private files are not readiness.
+    """
+    if ready.parent.resolve(strict=True) != ready.parent:
+        raise MaintenanceHeld('enrolled readiness directory must be physical')
+    descriptor, name = tempfile.mkstemp(prefix='.ready-pending-', dir=ready.parent)
+    pending = Path(name)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Same-directory hard-link creation is atomic and fails if the final
+        # pathname already exists. No overwrite/rename fallback is allowed.
+        os.link(pending, ready, follow_symlinks=False)
+        pending.unlink()
+        directory = os.open(ready.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        # Only this invocation's newly allocated private file is removed.
+        # Process loss may leave it behind; readers ignore its non-final name.
+        if pending.exists():
+            pending.unlink()
+
+
 def wait_before_writer_start(database: str, role: str) -> None:
     """Start the real service behind its hold, before writable DB/bootstrap.
 
     Read-only functional acceptance is a separate controller check; mere presence
     of this waiting process is not SERVICE_ACCEPTED_PRE_INGEST.
     """
-    from .maintenance_artifacts import readonly, _sync
+    from .maintenance_artifacts import readonly
     from .maintenance_manifest import offline_application_verify
     if role not in {'main', 'discovery'}:
         raise MaintenanceHeld('unknown enrolled writer role')
@@ -143,10 +176,6 @@ def wait_before_writer_start(database: str, role: str) -> None:
               'role': role, 'pid': os.getpid(), 'start_ticks': process_start_ticks(os.getpid()),
               'hold_sha256': hashlib.sha256(canonical(hold)).hexdigest(),
               'verification_sha256': hold['manifest_sha256']}
-    with ready.open('xb') as stream:
-        stream.write(canonical(record) + b'\n')
-        stream.flush()
-        os.fsync(stream.fileno())
-    _sync(ready)
+    _publish_ready(ready, canonical(record) + b'\n')
     while active_hold(database) is not None:
         time.sleep(0.25)
