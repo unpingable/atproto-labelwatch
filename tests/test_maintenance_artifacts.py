@@ -31,6 +31,10 @@ def test_real_restore_and_compaction_preserve_source_and_all_rows(tmp_path):
     assert result['separate_filesystem'] is False
     stage = compact_verified(source, tmp_path / 'stage.sqlite', revision=REV, expected=expected)
     assert stage['staging']['identity']['bytes'] < before['bytes']
+    # The exclusive staging owner, not two released writers, establishes WAL.
+    connection = sqlite3.connect(f"file:{tmp_path / 'stage.sqlite'}?mode=ro", uri=True)
+    assert connection.execute('PRAGMA journal_mode').fetchone()[0] == 'wal'
+    connection.close()
     assert identity(source) == before
     with pytest.raises(FileExistsError):
         compact_verified(source, tmp_path / 'stage.sqlite', revision=REV, expected=expected)

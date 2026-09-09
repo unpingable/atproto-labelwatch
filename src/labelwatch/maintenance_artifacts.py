@@ -124,6 +124,15 @@ def compact_verified(source: Path, staging: Path, *, revision: str, expected: di
         conn.execute('PRAGMA query_only=OFF')
         conn.execute('VACUUM INTO ?', (str(staging),))
     conn.close()
+    # VACUUM INTO produces a rollback-journal database even when the source is
+    # WAL. Establish the application's mode while this candidate has one owner,
+    # before two held writers resume and compete to change its journal mode.
+    staged_connection = sqlite3.connect(staging)
+    try:
+        if staged_connection.execute('PRAGMA journal_mode=WAL').fetchone()[0] != 'wal':
+            raise VerificationRefused('staged application WAL mode not established')
+    finally:
+        staged_connection.close()
     os.chown(staging, before['uid'], before['gid'])
     os.chmod(staging, before['mode'])
     _sync(staging)
