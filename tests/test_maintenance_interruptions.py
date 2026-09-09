@@ -28,6 +28,45 @@ def test_concurrent_step_custody_refuses_before_started_record(tmp_path):
 
 
 @pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
+def test_insufficient_actual_target_space_refuses_before_backup_or_staging(tmp_path, monkeypatch):
+    with tempfile.TemporaryDirectory(prefix='labelwatch-m3-space-', dir=os.environ['M3_BACKUP_ROOT']) as temporary:
+        step = enrolled(tmp_path, Path(temporary))
+        actual = artifacts.os.statvfs
+        def full_target(path):
+            value = actual(path)
+            if Path(path) == tmp_path:
+                return os.statvfs_result(tuple(value[:4]) + (0,) + tuple(value[5:]))
+            return value
+        monkeypatch.setattr(artifacts.os, 'statvfs', full_target)
+        with pytest.raises(VerificationRefused, match='space'):
+            invoke(tmp_path, step, 'full-target')
+        assert not Path(step['backup']).exists() and not Path(step['staging']).exists()
+        assert artifacts.identity(Path(step['source'])) == step['source_identity']
+
+
+@pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
+def test_reconciliation_refuses_same_bytes_under_replaced_original_pathname(tmp_path):
+    with tempfile.TemporaryDirectory(prefix='labelwatch-m3-path-', dir=os.environ['M3_BACKUP_ROOT']) as temporary:
+        step = enrolled(tmp_path, Path(temporary))
+        for action in ('stage', 'replace'):
+            step['action'] = action
+            _, step_hash, _ = invoke(tmp_path, step, action)
+            previous = Path(step['journal']) / (step_hash + '.completed.json')
+            step.update(predecessor=str(previous), predecessor_sha256=hashlib.sha256(previous.read_bytes()).hexdigest())
+        original = Path(step['original'])
+        retained = tmp_path / 'original-retained-not-enrolled.sqlite'
+        original.rename(retained)
+        original.write_bytes(retained.read_bytes())
+        assert artifacts.identity(original)['sha256'] == step['source_identity']['sha256']
+        assert artifacts.identity(original)['inode'] != step['source_identity']['inode']
+        assert step_module.reconcile(step)['disposition'] == 'IDENTITY_UNRESOLVED_KEEP_STOPPED'
+        step['action'] = 'rollback-pre-ingest'
+        with pytest.raises(VerificationRefused, match='exact retained original'):
+            invoke(tmp_path, step, 'wrong-path-rollback')
+        assert artifacts.identity(retained) == step['source_identity']
+
+
+@pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
 @pytest.mark.parametrize('boundary', ['cleanup_completion', 'release_completion', 'resource_margin'])
 def test_cleanup_release_interruption_has_explicit_recovery(tmp_path, monkeypatch, boundary):
     from labelwatch.maintenance_hold import paths, active_hold
