@@ -1366,18 +1366,31 @@ def _update_author_day(conn) -> None:
 
 
 def _rebuild_author_labeler_day(conn, day_epoch: int) -> None:
+    """Recompute exact day metrics, writing only changed/disappeared keys.
+
+    The normal connection uses temp_store=FILE. One day's staged aggregate
+    preserves late source changes and deletions without rewriting identical
+    historical rows. Acquire the same main-writer ownership that the previous
+    DELETE acquired before reading sources; do not introduce a read/upgrade race.
+    The caller retains per-day commit/rollback and WAL/budget admission.
+    """
     day_start_iso = time.strftime(
         "%Y-%m-%dT00:00:00.000000Z", time.gmtime(day_epoch)
     )
     day_end_iso = time.strftime(
         "%Y-%m-%dT00:00:00.000000Z", time.gmtime(day_epoch + 86400)
     )
-    conn.execute(
-        "DELETE FROM derived_author_labeler_day WHERE day_epoch = ?",
-        (day_epoch,),
-    )
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    conn.execute("""CREATE TEMP TABLE IF NOT EXISTS _author_labeler_day_stage (
+        author_did TEXT NOT NULL, day_epoch INTEGER NOT NULL,
+        labeler_did TEXT NOT NULL, events INTEGER NOT NULL,
+        applies INTEGER NOT NULL, removes INTEGER NOT NULL, targets INTEGER NOT NULL,
+        PRIMARY KEY(author_did, day_epoch, labeler_did)
+    )""")
+    conn.execute("DELETE FROM _author_labeler_day_stage")
     conn.execute("""
-        INSERT OR REPLACE INTO derived_author_labeler_day
+        INSERT INTO _author_labeler_day_stage
             (author_did, day_epoch, labeler_did, events, applies, removes, targets)
         SELECT  le.target_did AS author_did,
                 :day_epoch AS day_epoch,
@@ -1392,6 +1405,21 @@ def _rebuild_author_labeler_day(conn, day_epoch: int) -> None:
           AND le.ts >= :day_start AND le.ts < :day_end
         GROUP BY le.target_did, le.labeler_did
     """, {"day_epoch": day_epoch, "day_start": day_start_iso, "day_end": day_end_iso})
+    conn.execute("""DELETE FROM derived_author_labeler_day AS d
+        WHERE day_epoch = ? AND NOT EXISTS (
+            SELECT 1 FROM _author_labeler_day_stage AS s
+            WHERE s.author_did=d.author_did AND s.day_epoch=d.day_epoch
+              AND s.labeler_did=d.labeler_did)
+    """, (day_epoch,))
+    conn.execute("""INSERT INTO derived_author_labeler_day
+        SELECT * FROM _author_labeler_day_stage WHERE 1
+        ON CONFLICT(author_did, day_epoch, labeler_did) DO UPDATE SET
+            events=excluded.events, applies=excluded.applies,
+            removes=excluded.removes, targets=excluded.targets
+        WHERE events IS NOT excluded.events OR applies IS NOT excluded.applies
+           OR removes IS NOT excluded.removes OR targets IS NOT excluded.targets
+    """)
+    conn.execute("DELETE FROM _author_labeler_day_stage")
 
 
 def _prune_author_labeler_day(conn, retention_cutoff_day_epoch: int) -> None:

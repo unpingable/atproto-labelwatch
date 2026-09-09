@@ -83,7 +83,7 @@ def _derive_memory_pressure_reason(
     return ",".join(reasons) or None
 
 
-def _record_derive_deferred(conn, reason: str) -> None:
+def _record_derive_deferred(conn, reason: str, reason_kind: str = "memory_pressure") -> None:
     observed_at = format_ts(now_utc())
     previous = db.get_meta(conn, "ops:derive:deferred_count")
     try:
@@ -94,7 +94,7 @@ def _record_derive_deferred(conn, reason: str) -> None:
     db.set_meta(conn, "ops:derive:deferred_reason", reason)
     db.set_meta(conn, "ops:derive:deferred_count", str(count))
     conn.commit()
-    log.warning("derive.deferred reason=memory_pressure detail=%s count=%d", reason, count)
+    log.warning("derive.deferred reason=%s detail=%s count=%d", reason_kind, reason, count)
 
 
 def _record_derive_outcome(conn, outcome: dict) -> bool:
@@ -146,9 +146,50 @@ def _release_memory(conn) -> None:
 
 def _wal_size_mb(db_path: str) -> float:
     try:
-        return os.path.getsize(db_path + "-wal") / (1024 * 1024)
-    except OSError:
+        # SQLite places sidecars beside the resolved database, not beside a
+        # symlink used to open it. Otherwise an alias silently bypasses this
+        # existing report admission guard by appearing to have no WAL.
+        return os.path.getsize(os.path.realpath(db_path) + "-wal") / (1024 * 1024)
+    except FileNotFoundError:
         return 0.0
+
+
+class _HeavyWork:
+    """Process-local, nonblocking report/derive exclusion; never used by ingest."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.derive_due = threading.Event()
+
+    def acquire_report(self) -> str | None:
+        if self.derive_due.is_set():
+            return "derive_due"
+        if not self.lock.acquire(blocking=False):
+            return "heavy_work_busy"
+        if self.derive_due.is_set():
+            self.lock.release()
+            return "derive_due"
+        return None
+
+
+def _admit_derive(conn, cfg, scan_time, heavy: _HeavyWork, previous_high):
+    """Return (attempted, high baseline) without waiting for report or pressure."""
+    heavy.derive_due.set()
+    if not heavy.lock.acquire(blocking=False):
+        _record_derive_deferred(conn, "report_busy", "heavy_work")
+        return False, previous_high
+    try:
+        snapshot = _read_cgroup_memory_snapshot()
+        reason = _derive_memory_pressure_reason(snapshot, previous_high)
+        current_high = snapshot["high_events"] if snapshot else previous_high
+        if reason:
+            _record_derive_deferred(conn, reason)
+            return False, current_high
+        outcome = scan.run_derive(conn, cfg, now=scan_time)
+        _record_derive_outcome(conn, outcome)
+        heavy.derive_due.clear()
+        return True, current_high
+    finally:
+        heavy.lock.release()
 
 
 def _report_loop(
@@ -159,6 +200,7 @@ def _report_loop(
     wal_skip_mb: float = 80.0,
     coverage_window_minutes: Optional[int] = None,
     coverage_threshold: Optional[float] = None,
+    heavy: _HeavyWork | None = None,
 ) -> None:
     """Dedicated report generation thread.
 
@@ -172,15 +214,28 @@ def _report_loop(
         "Report thread started (interval=%ds, wal_skip=%.0fMB, out=%s)",
         interval, wal_skip_mb, report_out,
     )
+    heavy = heavy if heavy is not None else _HeavyWork()
     while True:
-        wal_mb = _wal_size_mb(db_path)
+        try:
+            wal_mb = _wal_size_mb(db_path)
+        except OSError as exc:
+            log.warning("report.deferred reason=wal_stat_failed error_type=%s", type(exc).__name__)
+            time.sleep(60)
+            continue
         if wal_mb > wal_skip_mb:
             log.warning(
                 "Report skipped: WAL=%.1fMB > %.0fMB (writer pressure, deferring)",
                 wal_mb, wal_skip_mb,
             )
-            time.sleep(interval)
+            time.sleep(60)
             continue
+        reason = heavy.acquire_report()
+        if reason:
+            log.info("report.deferred reason=%s", reason)
+            time.sleep(60)
+            continue
+        report_started = time.monotonic()
+        log.info("report.started")
         try:
             conn = db.connect(db_path, readonly=True)
             try:
@@ -207,7 +262,10 @@ def _report_loop(
                 pass  # non-critical
         except Exception:
             log.error("Report generation failed", exc_info=True)
-        time.sleep(interval)
+        finally:
+            heavy.lock.release()
+        # Start-to-start cadence; generation time is not another hidden delay.
+        time.sleep(max(0.0, interval - (time.monotonic() - report_started)))
 
 
 def run_loop(
@@ -231,6 +289,9 @@ def run_loop(
         derive_memory_snapshot["high_events"] if derive_memory_snapshot else None
     )
     primary_ingest_disabled = False
+    heavy = _HeavyWork()
+    if scan_interval > 0 and not scan._DERIVE_DISABLED:
+        heavy.derive_due.set()
 
     # Start report generation on its own thread so it's never blocked by ingest.
     # Report freshness is subordinate to discovery ingest (see gap-spec
@@ -245,7 +306,7 @@ def run_loop(
             target=_report_loop,
             args=(cfg.db_path, report_out, eff_interval,
                   cfg.driftwatch_facts_path, wal_skip_mb,
-                  cfg.coverage_window_minutes, cfg.coverage_threshold),
+                  cfg.coverage_window_minutes, cfg.coverage_threshold, heavy),
             daemon=True,
             name="report-gen",
         )
@@ -253,6 +314,8 @@ def run_loop(
 
     while True:
         now_mono = time.monotonic()
+        if scan_interval > 0 and not scan._DERIVE_DISABLED and now_mono - last_derive >= derive_interval:
+            heavy.derive_due.set()
 
         # Discovery pass
         if cfg.discovery_enabled and now_mono - last_discovery >= discovery_interval:
@@ -309,17 +372,10 @@ def run_loop(
 
                 # Derive pass (expensive — runs on its own interval)
                 if now_mono - last_derive >= derive_interval:
-                    derive_memory_snapshot = _read_cgroup_memory_snapshot()
-                    pressure_reason = _derive_memory_pressure_reason(
-                        derive_memory_snapshot, derive_high_events
+                    attempted, derive_high_events = _admit_derive(
+                        conn, cfg, scan_time, heavy, derive_high_events
                     )
-                    if derive_memory_snapshot:
-                        derive_high_events = derive_memory_snapshot["high_events"]
-                    if pressure_reason:
-                        _record_derive_deferred(conn, pressure_reason)
-                    else:
-                        outcome = scan.run_derive(conn, cfg, now=scan_time)
-                        _record_derive_outcome(conn, outcome)
+                    if attempted:
                         last_derive = now_mono
                         _release_memory(conn)
             except Exception:
