@@ -79,6 +79,30 @@ and actual VM exercise. No additional controller/retry engine is introduced.
 
 ## Qualification remaining
 
+### App-owned acquisition interface
+
+`scripts/m3_fixture_capture.py --fixture ABSOLUTE_DIR --staged EXACT_STAGE_COMPLETED_JSON
+--output ABSENT_DIR --nq EXACT_BINARY --nq-sha256 SHA256 --phase cleanup|pre|post
+--acquisition-budget-seconds N` acquires actual application observations and calls
+the descriptor-captured, digest-checked native binary. Post additionally requires
+`--pre-ingest-receipt EXACT_PRE_RECEIPT`. Use the enclosing durable campaign driver;
+this helper is not a supervisor or an authorization source.
+
+It writes `<phase>-source.json`, `<phase>-request.json`, `<phase>-receipt.json`
+and `capture-result.json`. Cleanup uses the v2 held-acquisition/currentness contract;
+pre/post retain the v1 relief contract. Exit zero means capture completed, including
+REFUTED or NOT_OBSERVABLE receipts: consumers must inspect factual disposition.
+An acquisition timeout terminates only its own observation child, reports whether
+that child remains, exits 2, and creates no native receipt. Reusing an output
+directory refuses without changing retained bytes. Protected fixture/source/input
+directories and enrolled interpreter/imports/runtime libraries remain explicit
+custody premises; a file alone grants no authority.
+
+Focused execution with the existing pinned v1 binary demonstrated real pre-ingest
+ESTABLISHED, actual changed-content REFUTED, preserved repeated-output bytes, and
+an actual SQLite-lock acquisition timeout. Cleanup v2 and post capture through
+this new helper remain NOT_RUN pending the new native build and integrated cases.
+
 The preparer test exercises real SQLite staging and replacement with a separate
 filesystem and verifies step/unit digests, fixed restart policy and no-overwrite
 behavior. This is **not** AG/Docket/systemd integration evidence. Final VM evidence
