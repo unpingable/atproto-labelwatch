@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from labelwatch.maintenance_hold import paths
+from labelwatch.maintenance_hold import paths, active_hold
 from labelwatch.maintenance_observation import observe, observe_cleanup
 from labelwatch.maintenance_step import digest, reconcile
 from test_maintenance_step import enrolled, invoke
@@ -85,11 +85,15 @@ def test_actual_observation_native_pre_and_post_qualification(tmp_path):
                 operation=step['operation'], source=Path(step['source']), original=Path(step['original']),
                 revision=REV, expected_verification_sha256=digest(step['expected']), writer_identities=identities)
             cleanup_held = copy.deepcopy(request)
-            cleanup_held['evaluated_at'] = datetime.now(timezone.utc).isoformat()
-            cleanup_request = {'schema': 'nq.labelwatch-cleanup-request/v1', 'held_request': cleanup_held,
+            cleanup_held['schema'] = 'nq.labelwatch-held-acquisition-request/v1'
+            cleanup_held['evaluated_at'] = cleanup_source['completed_at']
+            cleanup_request = {'schema': 'nq.labelwatch-cleanup-request/v2', 'held_request': cleanup_held,
                 'backup': step['backup'], 'restore': step['restore'],
                 'backup_identity': staged['detail']['backup']['backup']['identity'],
-                'restore_identity': staged['detail']['backup']['restored']['identity']}
+                'restore_identity': staged['detail']['backup']['restored']['identity'],
+                'expected_hold_sha256': digest(active_hold(step['source'])),
+                'acquisition_budget_seconds': 30, 'maximum_currentness_age_seconds': 30,
+                'evaluated_at': datetime.now(timezone.utc).isoformat()}
             (tmp_path / 'cleanup-source.json').write_text(json.dumps(cleanup_source))
             (tmp_path / 'cleanup-request.json').write_text(json.dumps(cleanup_request))
             result = subprocess.run([str(binary), 'labelwatch-cleanup', '--source', str(tmp_path / 'cleanup-source.json'),

@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sqlite3
+import stat
+import time
 
 from .maintenance_artifacts import identity, readonly
 from .maintenance_manifest import offline_application_verify
@@ -17,17 +19,46 @@ from .maintenance_hold import active_hold, process_start_ticks
 from .maintenance_step import digest
 
 
-def observe_cleanup(*, backup: Path, restore: Path, **arguments) -> dict:
+def observe_cleanup(*, backup: Path, restore: Path, acquisition_budget_seconds: int = 30, **arguments) -> dict:
     """Fresh backup and actual restored-application reads, not helper claims.
 
     Separate filesystem identity does not establish power-loss durability or
     off-host custody. Both copies are fully re-read under their enrolled paths.
     """
     started = datetime.now(timezone.utc).isoformat()
-    held = observe(**arguments)
+    monotonic_start = time.monotonic()
+    if type(acquisition_budget_seconds) is not int or not 1 <= acquisition_budget_seconds <= 7200:
+        raise ValueError('explicit finite acquisition budget required')
     unknowns = []
+    def custody(slot):
+        try:
+            hold = active_hold(str(arguments['source']))
+            if hold is None:
+                raise ValueError('enrolled hold absent')
+            files = {}
+            for name, path in {'source': arguments['source'], 'original': arguments['original'],
+                               'backup': backup, 'restore': restore}.items():
+                if path.resolve(strict=True) != path:
+                    raise ValueError('exact physical custody path required')
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ValueError('single-link regular custody file required')
+                files[name] = {'path': str(path), 'device': info.st_dev, 'inode': info.st_ino,
+                    'bytes': info.st_size, 'uid': info.st_uid, 'gid': info.st_gid,
+                    'mode': stat.S_IMODE(info.st_mode), 'mtime_ns': str(info.st_mtime_ns), 'ctime_ns': str(info.st_ctime_ns)}
+            writers = {role: {'pid': expected['pid'], 'start_ticks': process_start_ticks(expected['pid']),
+                             'active': process_start_ticks(expected['pid']) == expected['start_ticks']}
+                       for role, expected in arguments['writer_identities'].items()}
+            return {'state': 'OBSERVED', 'value': {'hold_sha256': digest(hold), 'files': files, 'writers': writers}}
+        except (OSError, ValueError, RuntimeError) as exc:
+            unknowns.append({'slot': slot, 'reason': type(exc).__name__})
+            return {'state': 'NOT_OBSERVABLE', 'value': None}
+    opening = custody('opening_custody')
+    held = observe(**arguments)
     def copy(slot, path):
         try:
+            if time.monotonic() - monotonic_start >= acquisition_budget_seconds:
+                raise TimeoutError('acquisition budget exhausted; no further full copy read')
             before = identity(path)
             with readonly(path) as conn:
                 conn.execute('BEGIN')
@@ -42,12 +73,25 @@ def observe_cleanup(*, backup: Path, restore: Path, **arguments) -> dict:
         except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
             unknowns.append({'slot': slot, 'reason': type(exc).__name__})
             return {'state': 'NOT_OBSERVABLE', 'value': None}
-    return {'schema': 'labelwatch.sqlite-cleanup-observation/v1',
+    backup_observation = copy('backup', backup)
+    restore_observation = copy('restore', restore)
+    completed = datetime.now(timezone.utc).isoformat()
+    duration_ms = int((time.monotonic() - monotonic_start) * 1000)
+    final_started = datetime.now(timezone.utc).isoformat()
+    final = custody('final_custody')
+    return {'schema': 'labelwatch.sqlite-cleanup-observation/v2',
         'source_owner': 'Labelwatch read-only observer', 'started_at': started,
-        'held_source': held, 'backup': copy('backup', backup), 'restore': copy('restore', restore),
-        'unknowns': unknowns, 'completed_at': datetime.now(timezone.utc).isoformat(),
+        'held_source': held, 'backup': backup_observation, 'restore': restore_observation,
+        'opening_custody': opening, 'final_custody': final,
+        'acquisition_budget_seconds': acquisition_budget_seconds, 'acquisition_duration_ms': duration_ms,
+        'acquisition_exclusions': ['direct writers excluded by external all-writer quiescence enrollment',
+                                 'power-loss/off-host backup durability not assessed'],
+        'unknowns': unknowns, 'completed_at': completed,
+        'currentness_started_at': final_started, 'currentness_completed_at': datetime.now(timezone.utc).isoformat(),
         'limitations': ['separate filesystem identity, not independent power-loss or off-host custody',
-                       'bounded sequential reads under enrolled stable custody, not atomic global snapshot']}
+                       'bounded sequential reads under enrolled stable custody, not atomic global snapshot',
+                       'metadata equality binds retained acquisition only under protected files and all-writer quiescence',
+                       'external capture timeout must enforce declared acquisition budget; over-budget observations refuse']}
 
 
 def observe(*, operation: str, source: Path, original: Path, revision: str,

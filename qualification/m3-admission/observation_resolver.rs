@@ -74,7 +74,7 @@ impl NativeCleanupObservation {
         let receipt: Value =
             nq_protocol::decode_json_document(&raw, 2 * 1024 * 1024).map_err(|e| e.to_string())?;
         labelwatch_cleanup::replay(&receipt)?;
-        if receipt["schema"] != "nq.labelwatch-cleanup-qualification/v1"
+        if receipt["schema"] != "nq.labelwatch-cleanup-qualification/v2"
             || receipt["receipt_id"] != enrolled.expected_receipt_id
             || receipt["request"]
                 != serde_json::to_value(&enrolled.expected_request).map_err(|e| e.to_string())?
@@ -91,21 +91,15 @@ impl NativeCleanupObservation {
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-        let started =
-            u64::try_from(source.started_at.timestamp_millis()).map_err(|e| e.to_string())?;
-        let completed =
-            u64::try_from(source.completed_at.timestamp_millis()).map_err(|e| e.to_string())?;
-        let evaluated = u64::try_from(
-            enrolled
-                .expected_request
-                .held_request
-                .evaluated_at
-                .timestamp_millis(),
-        )
-        .map_err(|e| e.to_string())?;
+        let started = u64::try_from(source.currentness_started_at.timestamp_millis())
+            .map_err(|e| e.to_string())?;
+        let completed = u64::try_from(source.currentness_completed_at.timestamp_millis())
+            .map_err(|e| e.to_string())?;
+        let evaluated = u64::try_from(enrolled.expected_request.evaluated_at.timestamp_millis())
+            .map_err(|e| e.to_string())?;
         let fresh_until = started
             .checked_add(
-                u64::from(enrolled.expected_request.held_request.maximum_age_seconds) * 1000,
+                u64::from(enrolled.expected_request.maximum_currentness_age_seconds) * 1000,
             )
             .ok_or("freshness overflow")?;
         if request.now_unix_ms < completed
@@ -193,7 +187,7 @@ mod tests {
             campaign: CampaignId::from_digest(subject.clone()),
             occurrence: OccurrenceId::from_uuid(Uuid::from_u128(1)),
         };
-        let now = u64::try_from(policy.held_request.evaluated_at.timestamp_millis()).unwrap();
+        let now = u64::try_from(policy.evaluated_at.timestamp_millis()).unwrap();
         let request = ObservationResolutionRequestV1 {
             key: &key,
             observation: &observation,

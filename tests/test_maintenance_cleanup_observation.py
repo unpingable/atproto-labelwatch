@@ -32,4 +32,4 @@ def test_independent_copy_observer_reads_real_changed_rows_and_missing_restore(t
         arguments['restore'] = Path(temporary) / 'not-present.sqlite'
         absent = observe_cleanup(**arguments)
         assert absent['restore'] == {'state': 'NOT_OBSERVABLE', 'value': None}
-        assert absent['unknowns'] == [{'slot': 'restore', 'reason': 'FileNotFoundError'}]
+        assert {'slot': 'restore', 'reason': 'FileNotFoundError'} in absent['unknowns']
