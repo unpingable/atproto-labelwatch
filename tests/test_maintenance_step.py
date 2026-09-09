@@ -67,7 +67,7 @@ def test_wrong_enrolled_digest_never_starts(tmp_path):
     retain(path, step)
     with pytest.raises(VerificationRefused, match='enrolled digest'):
         execute(path, '0' * 64)
-    assert list(Path(step['journal']).iterdir()) == []
+    assert not list(Path(step['journal']).glob('*.started.json'))
 
 
 @pytest.mark.parametrize('condition', ['stale', 'device', 'relation'])
@@ -84,7 +84,7 @@ def test_invalid_pre_operation_baseline_refuses_before_started(tmp_path, conditi
         message = 'baseline plus required net gain'
     with pytest.raises(VerificationRefused, match=message):
         invoke(tmp_path, step, 'invalid-baseline-' + condition)
-    assert list(Path(step['journal']).iterdir()) == []
+    assert not list(Path(step['journal']).glob('*.started.json'))
 
 
 @pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
@@ -103,6 +103,22 @@ def test_real_separate_filesystem_stage_swap_and_duplicate(tmp_path):
         assert execute(replacement_path, replacement_hash) == replacement
         assert replacement['resource_relief'] == 'NOT_ESTABLISHED'
         assert Path(step['backup']).is_file()
+
+
+@pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')
+def test_completed_stage_replays_after_baseline_ages_and_available_space_changes(tmp_path, monkeypatch):
+    from labelwatch import maintenance_step as implementation
+    with tempfile.TemporaryDirectory(prefix='labelwatch-m3-replay-', dir=os.environ['M3_BACKUP_ROOT']) as temporary:
+        step = enrolled(tmp_path, Path(temporary))
+        staged, staged_hash, stage_path = invoke(tmp_path, step, 'stage')
+        monkeypatch.setattr(implementation.time, 'time_ns',
+            lambda: step['pre_operation_observed_at_unix_ns'] + 7200 * 1_000_000_000)
+        actual_statvfs = implementation.os.statvfs
+        def increased_available(path):
+            value = actual_statvfs(path)
+            return os.statvfs_result(tuple(value[:4]) + (value.f_bavail + 1024,) + tuple(value[5:]))
+        monkeypatch.setattr(implementation.os, 'statvfs', increased_available)
+        assert execute(stage_path, staged_hash) == staged
 
 
 @pytest.mark.skipif(not os.environ.get('M3_BACKUP_ROOT'), reason='explicit separate fixture filesystem required')

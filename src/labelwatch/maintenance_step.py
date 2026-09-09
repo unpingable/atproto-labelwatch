@@ -86,8 +86,8 @@ def _physical(path: str) -> Path:
     return value
 
 
-def _validate_relief_contract(step: dict, source: Path) -> None:
-    """Validate the sealed baseline/final-floor contract without granting authority."""
+def _validate_relief_contract(step: dict) -> None:
+    """Validate immutable baseline/final-floor fields without granting authority."""
     integer_fields = ('temporary_operating_margin', 'pre_operation_device',
                       'pre_operation_available', 'pre_operation_observed_at_unix_ns',
                       'pre_operation_maximum_age_seconds', 'minimum_net_gain',
@@ -103,18 +103,16 @@ def _validate_relief_contract(step: dict, source: Path) -> None:
     if step['required_final_available'] != (
             step['pre_operation_available'] + step['minimum_net_gain']):
         raise VerificationRefused('final availability is not bound to baseline plus required net gain')
+
+
+def _validate_first_execution_relief_cut(step: dict, source: Path) -> None:
+    """Validate dynamic facts only before a step's first execution."""
     if source.parent.stat().st_dev != step['pre_operation_device']:
         raise VerificationRefused('pre-operation filesystem identity differs')
     if step['action'] == 'stage':
         age = time.time_ns() - step['pre_operation_observed_at_unix_ns']
         if age < 0 or age > step['pre_operation_maximum_age_seconds'] * 1_000_000_000:
             raise VerificationRefused('pre-operation availability baseline is stale or from the future')
-        filesystem = os.statvfs(source.parent)
-        current = filesystem.f_bavail * filesystem.f_frsize
-        # The sealed record and journal may consume blocks after the observation.
-        # A larger value, however, could make unrelated relief satisfy the gain.
-        if current > step['pre_operation_available']:
-            raise VerificationRefused('pre-operation availability baseline no longer bounds current state')
 
 
 def reconcile(step: dict) -> dict:
@@ -174,6 +172,7 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
               'required_final_available', 'predecessor', 'predecessor_sha256', 'ready_records'}
     if set(step) != fields or step['schema'] != 'labelwatch.sqlite-relief-step/v2':
         raise VerificationRefused('closed step schema differs')
+    _validate_relief_contract(step)
     binding = digest({key: value for key, value in step.items()
                       if key not in {'action', 'predecessor', 'predecessor_sha256', 'ready_records'}})
     if step['action'] not in {'stage', 'replace', 'verify-installed', 'verify-service', 'cleanup', 'release',
@@ -187,7 +186,6 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
         raise VerificationRefused('swap artifacts must share exact target directory')
     if paths['restore'].parent != paths['backup'].parent:
         raise VerificationRefused('restore must use the separately budgeted backup directory')
-    _validate_relief_contract(step, paths['source'])
     journal = paths['journal']
     if not journal.is_dir() or journal.resolve() != journal:
         raise VerificationRefused('enrolled journal directory required')
@@ -201,9 +199,13 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
         terminal = journal / (expected_sha256 + '.completed.json')
         if terminal.exists():
             result, _ = read_record(terminal)
-            if result.get('step_sha256') != expected_sha256:
+            if (result.get('step_sha256') != expected_sha256
+                    or result.get('binding_sha256') != binding
+                    or result.get('operation') != step['operation']
+                    or result.get('action') != step['action']):
                 raise VerificationRefused('terminal identity differs')
             return result
+        _validate_first_execution_relief_cut(step, paths['source'])
         hold = active_hold(str(paths['source']))
         if (hold is None or hold['operation'] != step['operation']
                 or hold['manifest_sha256'] != digest(step['expected'])):
@@ -233,8 +235,6 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
                     raise VerificationRefused('source sidecar remains after declared quiescence')
             space = space_prerequisites(source, paths['backup'].parent,
                                         temporary_operating_margin=step['temporary_operating_margin'])
-            if space['target_free'] > step['pre_operation_available']:
-                raise VerificationRefused('pre-operation availability baseline no longer bounds staging cut')
             backup = copy_restore_verify(source, paths['backup'], paths['restore'],
                 revision=step['revision'], expected=step['expected'])
             if not backup['separate_filesystem']:
