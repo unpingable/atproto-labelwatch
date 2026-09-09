@@ -195,6 +195,34 @@ mod tests {
             now_unix_ms: now,
         };
         assert!(resolver.resolve_observation(&request).is_ok());
+        let observed: CleanupSource =
+            nq_protocol::decode_json_document(&source, 2 * 1024 * 1024).unwrap();
+        let deadline = u64::try_from(observed.currentness_started_at.timestamp_millis()).unwrap()
+            + u64::from(policy.maximum_currentness_age_seconds) * 1000;
+        assert!(
+            resolver
+                .resolve_observation(&ObservationResolutionRequestV1 {
+                    now_unix_ms: deadline - 1,
+                    ..request.clone()
+                })
+                .is_ok()
+        );
+        assert!(
+            resolver
+                .resolve_observation(&ObservationResolutionRequestV1 {
+                    now_unix_ms: deadline,
+                    ..request.clone()
+                })
+                .is_err()
+        );
+        assert!(
+            resolver
+                .resolve_observation(&ObservationResolutionRequestV1 {
+                    now_unix_ms: 0,
+                    ..request.clone()
+                })
+                .is_err()
+        );
         let stale = ObservationResolutionRequestV1 {
             now_unix_ms: now + 31_000,
             ..request.clone()
