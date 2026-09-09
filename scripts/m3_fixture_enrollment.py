@@ -70,9 +70,11 @@ def initialize(target, backup, revision):
             'production': 'NOT_RUN', 'backup_durability': 'FILESYSTEM_DEPENDENT_NOT_INFERRED'}
 
 
-def seal(target, action, previous, source_root, python, interruption_cut=None):
+def seal(target, action, previous, source_root, python, interruption_cut=None, qualification_restore_substitution=False):
     if interruption_cut is not None and interruption_cut not in INTERRUPTION_CUTS:
         raise VerificationRefused('closed qualification interruption cut required')
+    if qualification_restore_substitution and (action != 'stage' or interruption_cut is not None):
+        raise VerificationRefused('restore substitution is a separate stage-only fixture')
     base, _ = read_record(target / 'fixture-base.json')
     base['action'] = action
     if action != 'stage':
@@ -96,10 +98,14 @@ def seal(target, action, previous, source_root, python, interruption_cut=None):
     step_path = directory / 'step.json'
     retain(step_path, base)
     suffix = '' if interruption_cut is None else '-q-' + interruption_cut
+    if qualification_restore_substitution:
+        suffix = '-q-restore-substitution'
     unit = 'labelwatch-relief-' + step_sha + suffix + '.service'
     command = str(python) + ' -m labelwatch.maintenance_step'
     if interruption_cut is not None:
         command = str(python) + ' ' + str(source_root / 'qualification/m3-admission/interrupted_step.py')
+    if qualification_restore_substitution:
+        command = str(python) + ' ' + str(source_root / 'qualification/m3-admission/restore_substitution_step.py')
     command += ' --step ' + str(step_path) + ' --expected-sha256 ' + step_sha
     if interruption_cut is not None:
         command += ' --cut ' + interruption_cut
@@ -116,6 +122,7 @@ def seal(target, action, previous, source_root, python, interruption_cut=None):
         'labelwatch_source': str(source_root), 'python': str(python),
         'source_revision': base['revision'], 'status': 'NOT_ENROLLED_NOT_AUTHORIZED',
         'qualification_interruption': interruption_cut,
+        'qualification_restore_substitution': qualification_restore_substitution,
         'required_custody': 'root-owned immutable unit, interpreter/imports, input and containing directories',
         'measurement': 'AG binds unit name, not fragment bytes; enrollment is an explicit premise',
         'expected_result': str(Path(base['journal']) / (step_sha + '.completed.json'))}
@@ -138,6 +145,7 @@ def main():
     seal_parser.add_argument('--source-root', type=path_argument, required=True)
     seal_parser.add_argument('--python', type=path_argument, required=True)
     seal_parser.add_argument('--interruption-cut', choices=INTERRUPTION_CUTS)
+    seal_parser.add_argument('--qualification-restore-substitution', action='store_true')
     arguments = vars(parser.parse_args())
     command = arguments.pop('command')
     print(canonical(initialize(**arguments) if command == 'initialize' else seal(**arguments)).decode(), end='')
