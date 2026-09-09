@@ -132,9 +132,16 @@ def test_cleanup_release_interruption_has_explicit_recovery(tmp_path, monkeypatc
                     step_module.execute(path, hashlib.sha256(path.read_bytes()).hexdigest())
                 if boundary == 'cleanup_completion':
                     monkeypatch.setattr(step_module, 'retain', original_retain)
+                    synced_paths = []
+                    original_sync = step_module._sync
+                    def tracked_sync(path):
+                        original_sync(path)
+                        synced_paths.append(path)
+                    monkeypatch.setattr(step_module, '_sync', tracked_sync)
                     started = Path(step['journal']) / (hashlib.sha256(path.read_bytes()).hexdigest() + '.started.json')
                     step.update(predecessor=str(started), predecessor_sha256=hashlib.sha256(started.read_bytes()).hexdigest())
                     assert transition('reconcile-cleanup')['disposition'] == 'CLEANUP_COMPLETED_NOT_RELIEF'
+                    assert Path(step['source']) in synced_paths
         finally:
             for child in children:
                 if child.poll() is None:

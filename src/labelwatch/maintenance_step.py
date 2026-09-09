@@ -240,6 +240,10 @@ def execute(step_path: Path, expected_sha256: str) -> dict:
                       'original': 'ABSENT', 'reconciled': True}
             if detail['backup']['identity']['device'] == identity(source)['device']:
                 raise VerificationRefused('backup no longer separately held')
+            # An interrupted cleanup may have unlinked the original before its
+            # directory fsync. This separately admitted reconciliation closes
+            # that durability boundary before retaining completion evidence.
+            _sync(source)
             disposition = 'CLEANUP_COMPLETED_NOT_RELIEF'
         elif step['action'] == 'verify-installed':
             if predecessor.get('disposition') != 'REPLACEMENT_ACCEPTED':
