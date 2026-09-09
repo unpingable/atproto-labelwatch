@@ -1412,7 +1412,9 @@ def _rebuild_author_labeler_day(conn, day_epoch: int) -> None:
               AND s.labeler_did=d.labeler_did)
     """, (day_epoch,))
     conn.execute("""INSERT INTO derived_author_labeler_day
-        SELECT * FROM _author_labeler_day_stage WHERE 1
+        (author_did, day_epoch, labeler_did, events, applies, removes, targets)
+        SELECT author_did, day_epoch, labeler_did, events, applies, removes, targets
+        FROM _author_labeler_day_stage WHERE 1
         ON CONFLICT(author_did, day_epoch, labeler_did) DO UPDATE SET
             events=excluded.events, applies=excluded.applies,
             removes=excluded.removes, targets=excluded.targets
