@@ -70,7 +70,8 @@ impl NativeCleanupObservation {
         // reading. It refuses links, devices, FIFOs and oversized input.
         let raw = nq_app::bounded_input::read(&enrolled.receipt, 2 * 1024 * 1024)
             .map_err(|e| e.to_string())?;
-        let receipt: Value = nq_protocol::decode_json_document(&raw).map_err(|e| e.to_string())?;
+        let receipt: Value =
+            nq_protocol::decode_json_document(&raw, 2 * 1024 * 1024).map_err(|e| e.to_string())?;
         labelwatch_relief::replay(&receipt)?;
         if receipt["schema"] != "nq.labelwatch-relief-qualification/v1"
             || receipt["receipt_id"] != enrolled.expected_receipt_id
@@ -85,7 +86,8 @@ impl NativeCleanupObservation {
         }
         let source_raw = receipt["source_utf8"].as_str().ok_or("source absent")?;
         let source: Source = serde_json::from_value(
-            nq_protocol::decode_json_document(source_raw.as_bytes()).map_err(|e| e.to_string())?,
+            nq_protocol::decode_json_document(source_raw.as_bytes(), 2 * 1024 * 1024)
+                .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
         let started =
@@ -157,6 +159,7 @@ mod tests {
         let source = fs::read(directory.join("pre-source.json")).unwrap();
         let policy: Request = nq_protocol::decode_json_document(
             &fs::read(directory.join("pre-request.json")).unwrap(),
+            2 * 1024 * 1024,
         )
         .unwrap();
         let receipt = labelwatch_relief::qualify(&source, &policy).unwrap();
@@ -209,7 +212,8 @@ mod tests {
         fs::write(&path, serde_json::to_vec(&altered).unwrap()).unwrap();
         assert!(resolver.resolve_observation(&request).is_err());
         // A genuinely replayable unknown receipt also cannot supply clean.
-        let mut unknown_source: Value = nq_protocol::decode_json_document(&source).unwrap();
+        let mut unknown_source: Value =
+            nq_protocol::decode_json_document(&source, 2 * 1024 * 1024).unwrap();
         unknown_source["write_hold"] = json!({"state":"NOT_OBSERVABLE","value":null});
         unknown_source["unknowns"] = json!([{"slot":"write_hold","reason":"fixture unavailable"}]);
         let unknown =
