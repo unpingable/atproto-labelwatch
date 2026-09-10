@@ -42,10 +42,11 @@ def _config(tmp_path: Path, **changes):
     return replace(base, **changes)
 
 
-def _cut(_config):
+def _cut(config):
+    identity = Path(config.database).stat() if config is not None else None
     return {
         "observed_monotonic_ns": 1,
-        "paths": {"database": {"device": 7, "inode": 8, "logical_bytes": 100}},
+        "paths": {"database": {"device": identity.st_dev if identity else 7, "inode": identity.st_ino if identity else 8, "logical_bytes": 100}},
         "filesystems": {"database": {"major_minor": "7:0", "available_bytes": 1000}},
         "device_chains": {"7:0": [{"kernel_name": "fixture"}]},
     }
@@ -195,6 +196,43 @@ def test_pathname_replacement_before_open_refuses(tmp_path, monkeypatch):
     assert result["reason"] == "PATH_IDENTITY_CHANGED_BEFORE_READ"
 
 
+def test_record_identity_is_from_the_file_that_was_hashed(tmp_path, monkeypatch):
+    path = tmp_path / "subject"
+    replacement = tmp_path / "replacement"
+    path.write_bytes(b"old")
+    replacement.write_bytes(b"new bytes")
+    replacement_inode = replacement.stat().st_ino
+    real_hash = observer._sha256_file
+
+    def replace_before_hash(*args, **kwargs):
+        replacement.replace(path)
+        return real_hash(*args, **kwargs)
+
+    monkeypatch.setattr(observer, "_sha256_file", replace_before_hash)
+    result = observer.observe_files([path], _limits())
+    assert result["disposition"] == "COMPLETE"
+    assert result["records"][0]["inode"] == replacement_inode
+    assert result["records"][0]["logical_bytes"] == len(b"new bytes")
+
+
+def test_refusal_content_count_is_added_to_prior_files(tmp_path, monkeypatch):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.write_bytes(b"12345")
+    second.write_bytes(b"123")
+    real_hash = observer._sha256_file
+
+    def fail_second(path, *args, **kwargs):
+        if path == second:
+            raise observer.SectionRefusal("CONTENT_MUTATED_DURING_READ", {"content_bytes_read": 3})
+        return real_hash(path, *args, **kwargs)
+
+    monkeypatch.setattr(observer, "_sha256_file", fail_second)
+    result = observer.observe_files([first, second], _limits())
+    assert result["disposition"] == "REFUSED"
+    assert result["counters"]["content_bytes_read"] == 8
+
+
 def test_changed_required_cut_refuses_and_retains_both_cuts(tmp_path):
     calls = 0
 
@@ -225,6 +263,23 @@ def test_required_failure_prevents_optional_reads(tmp_path):
         for name, section in result["sections"].items()
         if name != "required_capacity_topology"
     )
+
+
+def test_second_required_cut_failure_retains_first_and_partial_second(tmp_path):
+    calls = 0
+    config = _config(tmp_path)
+
+    def partial(config):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise observer.SectionRefusal("SECOND_CUT_UNAVAILABLE", {"paths": {"database": {"state": "PRESENT"}}})
+        return _cut(config)
+
+    result = observer.observe_required(config, partial)
+    assert result["disposition"] == "NOT_OBSERVED"
+    assert result["first_cut"] == _cut(config)
+    assert result["second_cut_partial"]["paths"]["database"]["state"] == "PRESENT"
 
 
 def test_optional_oserror_is_section_local_and_required_cut_survives(tmp_path, monkeypatch):
@@ -264,22 +319,27 @@ def test_output_bound_preserves_required_and_all_section_dispositions(tmp_path):
         "processes", "sqlite_header", "post_optional_corroboration",
     }
     assert result["output"]["bytes"] <= 3600
-    assert result["output"]["bytes"] == len(json.dumps(result, sort_keys=True, separators=(",", ":")).encode())
+    assert result["output"]["bytes"] == len(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()) + 1
 
 
 def test_impossibly_small_output_bound_emits_only_bounded_refusal(tmp_path):
     result = observer.run_observer(replace(_config(tmp_path), output_bytes=300), required_cut=_cut)
     encoded = json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
-    assert len(encoded) <= 300
+    assert len(encoded) + 1 <= 300
     assert result["output"]["disposition"] == "REFUSED"
     assert result["output"]["reason"] == "OVERALL_OUTPUT_LIMIT_TOO_SMALL_FOR_REQUIRED_FACTS"
+
+
+def test_unrepresentable_output_limit_is_rejected_before_observation(tmp_path):
+    with pytest.raises(ValueError, match="retain a disposition"):
+        replace(_config(tmp_path), output_bytes=1)
 
 
 def test_output_metadata_itself_is_included_in_limit():
     record = {"schema": "x", "sections": {"required_capacity_topology": {"disposition": "COMPLETE", "padding": "x" * 100}}}
     without_metadata = len(json.dumps(record, sort_keys=True, separators=(",", ":")).encode())
     result = observer._bound_output(record, without_metadata + 1)
-    assert len(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()) <= without_metadata + 1
+    assert len(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()) + 1 <= without_metadata + 1
 
 
 def test_tree_enumeration_stops_after_one_bounded_probe(tmp_path):
@@ -289,6 +349,88 @@ def test_tree_enumeration_stops_after_one_bounded_probe(tmp_path):
         (root / str(index)).write_bytes(b"")
     observed = list(observer._tree_paths(root, 2))
     assert len(observed) == 3  # two admitted entries plus one explicit refusal probe
+
+
+def test_release_refusal_accounts_for_probe_metadata(tmp_path):
+    config = _config(tmp_path)
+    root = Path(config.release_root)
+    (root / "first").write_bytes(b"")
+    (root / "second-probe").write_bytes(b"")
+    result = observer.observe_release(replace(config, release=replace(config.release, entries=2)))
+    assert result["reason"] == "ENTRY_LIMIT_EXCEEDED"
+    assert result["counters"]["entry_probes"] == 1
+    assert result["counters"]["probe_path_bytes"] > 0
+
+
+def test_directory_symlink_substitution_is_not_followed(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "content").write_text("must not be traversed")
+    moved = tmp_path / "moved"
+    real_open = observer.os.open
+    substituted = False
+
+    def replace_before_directory_open(path, flags):
+        nonlocal substituted
+        if Path(path) == root and not substituted:
+            substituted = True
+            root.rename(moved)
+            root.symlink_to(outside, target_is_directory=True)
+        return real_open(path, flags)
+
+    monkeypatch.setattr(observer.os, "open", replace_before_directory_open)
+    result = observer.observe_files(observer._tree_paths(root, 10), _limits(), relative_to=root)
+    assert result["disposition"] == "NOT_OBSERVED"
+    assert all(record.get("path") != "content" for record in result["records"])
+
+
+def test_metadata_only_records_enforce_section_output_limit(tmp_path):
+    paths = []
+    for index in range(10):
+        path = tmp_path / (("long-directory-name-" * 8) + str(index))
+        path.mkdir()
+        paths.append(path)
+    result = observer.observe_files(paths, _limits(output_bytes=512))
+    assert result["disposition"] == "REFUSED"
+    assert result["reason"] == "SECTION_OUTPUT_LIMIT_EXCEEDED"
+    assert len(json.dumps(result, separators=(",", ":")).encode()) <= 512
+
+
+def test_final_deadline_check_catches_expiry_after_last_read(tmp_path, monkeypatch):
+    path = tmp_path / "subject"
+    path.write_bytes(b"x")
+    ticks = iter((0, 0, 0, 2_000_000_000))
+    monkeypatch.setattr(observer.time, "monotonic_ns", lambda: next(ticks))
+    result = observer.observe_files([path], _limits(seconds=1))
+    assert result["disposition"] == "REFUSED"
+    assert result["reason"] == "TIME_LIMIT_EXCEEDED"
+    assert result["counters"]["content_bytes_read"] == 1
+
+
+def test_corroboration_oserror_is_section_local(tmp_path):
+    config = _config(tmp_path)
+    calls = 0
+
+    def cut(subject):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise OSError("fixture")
+        return _cut(subject)
+
+    result = observer.run_observer(config, required_cut=cut)
+    assert result["sections"]["required_capacity_topology"]["disposition"] == "COMPLETE"
+    assert result["sections"]["post_optional_corroboration"] == {"disposition": "NOT_OBSERVED", "reason": "OSError"}
+
+
+def test_sqlite_header_refuses_required_identity_mismatch(tmp_path):
+    config = _config(tmp_path)
+    actual = Path(config.database).stat()
+    result = observer.observe_sqlite_header(config, (actual.st_dev, actual.st_ino + 1))
+    assert result["disposition"] == "REFUSED"
+    assert result["reason"] == "SQLITE_HEADER_REQUIRED_IDENTITY_MISMATCH"
 
 
 def test_source_has_no_sql_or_service_mutation_path():
@@ -339,3 +481,16 @@ def test_process_descriptor_bound_refuses_with_partial_counts(tmp_path):
     assert result["disposition"] == "REFUSED"
     assert result["reason"] == "DESCRIPTOR_ENTRY_LIMIT_EXCEEDED"
     assert result["counters"]["descriptor_entries"] == 1
+
+
+def test_process_unavailable_after_stat_retains_read_count(tmp_path):
+    config = _config(tmp_path)
+    proc = tmp_path / "proc"
+    process = proc / "42"
+    process.mkdir(parents=True)
+    stat_bytes = _proc_stat(42, 5)
+    (process / "stat").write_bytes(stat_bytes)
+    result = observer.observe_processes(config, proc)
+    assert result["disposition"] == "COMPLETE"
+    assert result["counters"]["unavailable_processes"] == 1
+    assert result["counters"]["content_bytes_read"] == len(stat_bytes)

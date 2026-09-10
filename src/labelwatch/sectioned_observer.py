@@ -1,9 +1,10 @@
 """Bounded, sectioned, read-only Labelwatch operational observation.
 
 This module owns observation only.  It does not connect to SQLite, alter a
-service, authorize an effect, or retry an occurrence.  Raw file content is
-read only when a configured section requests a SHA-256 digest; it is never
-placed in the result.
+service, authorize an effect, or retry an occurrence.  Bounded file content is
+read for declared SHA-256 digests and for the explicitly declared mountinfo,
+sysfs, process, descriptor and SQLite-header observations.  Raw content is
+never placed in the result.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import os
 import stat
 import time
 import argparse
+import sys
+import signal
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
@@ -32,6 +35,10 @@ class SectionLimits:
     file_bytes: int
     output_bytes: int
     seconds: float
+
+    def __post_init__(self) -> None:
+        if self.output_bytes < 512:
+            raise ValueError("section output_bytes must be at least 512")
 
 
 @dataclass(frozen=True)
@@ -64,6 +71,11 @@ class ObserverConfig:
     process_content_bytes: int = 128 * 1024 * 1024
     argv_bytes_per_process: int = 32 * 1024
     maps_bytes_per_process: int = 1024 * 1024
+    header_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        if self.output_bytes < 128:
+            raise ValueError("output_bytes must be at least 128 to retain a disposition")
 
 
 class SectionRefusal(Exception):
@@ -82,11 +94,15 @@ class ReadBudget:
         allowance = min(maximum, self.limit - self.consumed)
         if allowance <= 0:
             raise SectionRefusal("CONTENT_BYTE_LIMIT_EXCEEDED", {"content_bytes_read": self.consumed})
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         try:
-            with path.open("rb") as stream:
-                content = stream.read(allowance)
+            descriptor = os.open(path, flags)
         except PermissionError as exc:
             raise SectionRefusal("PERMISSION_DENIED", {"content_bytes_read": self.consumed}) from exc
+        try:
+            content = os.read(descriptor, allowance)
+        finally:
+            os.close(descriptor)
         self.consumed += len(content)
         # No one-byte probe crosses the declared ceiling. Filling the complete
         # allowance is conservatively refused because EOF was not observed.
@@ -104,7 +120,16 @@ def _check_time(deadline_ns: int, observations: Mapping[str, object]) -> None:
         raise SectionRefusal("TIME_LIMIT_EXCEEDED", observations)
 
 
-def _sha256_file(path: Path, byte_limit: int, deadline_ns: int) -> tuple[str, int]:
+def _descriptor_within(fd: int, root: Path) -> bool:
+    try:
+        target = Path(f"/proc/self/fd/{fd}").resolve(strict=True)
+        target.relative_to(root)
+        return True
+    except (FileNotFoundError, OSError, ValueError):
+        return False
+
+
+def _sha256_file(path: Path, byte_limit: int, deadline_ns: int, physical_root: Path | None = None) -> tuple[str, int, os.stat_result]:
     before = path.stat(follow_symlinks=False)
     if not stat.S_ISREG(before.st_mode):
         raise SectionRefusal("NOT_A_REGULAR_FILE")
@@ -117,10 +142,17 @@ def _sha256_file(path: Path, byte_limit: int, deadline_ns: int) -> tuple[str, in
     fd = os.open(path, flags)
     try:
         opened = os.fstat(fd)
+        if physical_root is not None and not _descriptor_within(fd, physical_root):
+            raise SectionRefusal("OPENED_FILE_OUTSIDE_ENROLLED_ROOT")
         if (opened.st_dev, opened.st_ino, opened.st_size) != (
             before.st_dev, before.st_ino, before.st_size
         ):
             raise SectionRefusal("PATH_IDENTITY_CHANGED_BEFORE_READ")
+        if opened.st_size == 0 and byte_limit > 0:
+            probe = os.read(fd, 1)
+            consumed += len(probe)
+            if probe:
+                raise SectionRefusal("ZERO_SIZE_FILE_HAS_CONTENT", {"content_bytes_read": consumed})
         while consumed < opened.st_size:
             _check_time(deadline_ns, {"content_bytes_read": consumed})
             chunk = os.read(fd, min(1024 * 1024, opened.st_size - consumed))
@@ -131,6 +163,7 @@ def _sha256_file(path: Path, byte_limit: int, deadline_ns: int) -> tuple[str, in
         if consumed != opened.st_size:
             raise SectionRefusal("SHORT_CONTENT_READ", {"content_bytes_read": consumed})
         after = os.fstat(fd)
+        _check_time(deadline_ns, {"content_bytes_read": consumed})
         if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (
             opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns
         ):
@@ -139,7 +172,7 @@ def _sha256_file(path: Path, byte_limit: int, deadline_ns: int) -> tuple[str, in
             )
     finally:
         os.close(fd)
-    return digest.hexdigest(), consumed
+    return digest.hexdigest(), consumed, after
 
 
 def _path_record(path: Path) -> dict[str, object]:
@@ -212,22 +245,25 @@ def _statvfs(path: Path) -> dict[str, int]:
     }
 
 
-def _filesystem_uuid(mount_source: str, maximum_entries: int = 256) -> str:
+def _filesystem_uuid(mount_source: str, maximum_entries: int = 256) -> tuple[str, int]:
     try:
         source_stat = os.stat(mount_source)
         source_identity = source_stat.st_rdev
-        entries = sorted(Path("/dev/disk/by-uuid").iterdir(), key=lambda p: p.name)
+        entries = os.scandir("/dev/disk/by-uuid")
     except (FileNotFoundError, PermissionError, OSError):
-        return NOT_OBSERVED
-    if len(entries) > maximum_entries:
-        return NOT_OBSERVED
-    for entry in entries:
-        try:
-            if entry.stat().st_rdev == source_identity:
-                return entry.name
-        except (FileNotFoundError, PermissionError, OSError):
-            continue
-    return NOT_OBSERVED
+        return NOT_OBSERVED, 0
+    observed = 0
+    with entries:
+        for entry in entries:
+            observed += 1
+            if observed > maximum_entries:
+                return NOT_OBSERVED, observed
+            try:
+                if entry.stat().st_rdev == source_identity:
+                    return entry.name, observed
+            except (FileNotFoundError, PermissionError, OSError):
+                continue
+    return NOT_OBSERVED, observed
 
 
 def _read_small(path: Path, maximum: int = 4096, budget: ReadBudget | None = None) -> str | None:
@@ -307,36 +343,52 @@ def take_required_cut(config: ObserverConfig) -> dict[str, object]:
         "backup_destination": Path(config.backup_destination),
         "release_root": Path(config.release_root),
     }
-    try:
-        mountinfo = parse_mountinfo(read_budget.read(Path("/proc/self/mountinfo"), 1024 * 1024).decode("utf-8"))
-    except (OSError, UnicodeError, SectionRefusal) as exc:
-        raise SectionRefusal("MOUNTINFO_UNAVAILABLE", {"error_class": type(exc).__name__})
     records: dict[str, object] = {}
     mounts: dict[str, object] = {}
     devices: dict[str, object] = {}
-    for name, path in paths.items():
+    try:
+        mountinfo = parse_mountinfo(read_budget.read(Path("/proc/self/mountinfo"), 1024 * 1024).decode("utf-8"))
+        for name, path in paths.items():
+            _check_time(deadline_ns, {"completed_paths": len(records)})
+            record = _path_record(path)
+            records[name] = record
+            if record["state"] == "SYMLINK_REFUSED":
+                raise SectionRefusal("ENROLLED_PATH_IS_SYMLINK")
+            if record["state"] == "UNAVAILABLE":
+                raise SectionRefusal("ENROLLED_PATH_UNAVAILABLE")
+            if name not in ("wal", "shm") and record["state"] != "PRESENT":
+                raise SectionRefusal("REQUIRED_ENROLLED_PATH_ABSENT")
+            probe = path if record["state"] == "PRESENT" else path.parent
+            try:
+                mount = _mount_for(probe, mountinfo)
+                mount.update(_statvfs(probe))
+                mount["filesystem_uuid"], mount["uuid_entries_observed"] = _filesystem_uuid(mount["mount_source"])
+            except (OSError, SectionRefusal) as exc:
+                raise SectionRefusal("FILESYSTEM_TOPOLOGY_UNAVAILABLE", {"failed_path": str(path), "error_class": type(exc).__name__}) from exc
+            mounts[name] = mount
+            major_minor = mount["major_minor"]
+            if major_minor not in devices:
+                devices[major_minor] = _device_chain(major_minor, read_budget)
+                if any(item.get("state") == REFUSED for item in devices[major_minor]):
+                    raise SectionRefusal("DEVICE_LOCATOR_IDENTITY_MISMATCH")
         _check_time(deadline_ns, {"completed_paths": len(records)})
-        record = _path_record(path)
-        records[name] = record
-        if record["state"] == "SYMLINK_REFUSED":
-            raise SectionRefusal("ENROLLED_PATH_IS_SYMLINK", {"paths": records})
-        if record["state"] == "UNAVAILABLE":
-            raise SectionRefusal("ENROLLED_PATH_UNAVAILABLE", {"paths": records})
-        if name not in ("wal", "shm") and record["state"] != "PRESENT":
-            raise SectionRefusal("REQUIRED_ENROLLED_PATH_ABSENT", {"paths": records})
-        probe = path if record["state"] == "PRESENT" else path.parent
-        try:
-            mount = _mount_for(probe, mountinfo)
-            mount.update(_statvfs(probe))
-            mount["filesystem_uuid"] = _filesystem_uuid(mount["mount_source"])
-        except (OSError, SectionRefusal) as exc:
-            raise SectionRefusal("FILESYSTEM_TOPOLOGY_UNAVAILABLE", {"paths": records, "failed_path": str(path), "error_class": type(exc).__name__})
-        mounts[name] = mount
-        major_minor = mount["major_minor"]
-        if major_minor not in devices:
-            devices[major_minor] = _device_chain(major_minor, read_budget)
-            if any(record.get("state") == REFUSED for record in devices[major_minor]):
-                raise SectionRefusal("DEVICE_LOCATOR_IDENTITY_MISMATCH", {"paths": records, "filesystems": mounts, "device_chains": devices})
+    except KeyboardInterrupt as exc:
+        raise SectionRefusal("INTERRUPTED", {
+            "content_read_accounting": {"bytes": read_budget.consumed, "limit": read_budget.limit},
+            "paths": records,
+            "filesystems": mounts,
+            "device_chains": devices,
+        }) from exc
+    except (OSError, UnicodeError, SectionRefusal) as exc:
+        reason = exc.reason if isinstance(exc, SectionRefusal) else "REQUIRED_CUT_UNAVAILABLE"
+        prior = exc.observations if isinstance(exc, SectionRefusal) else {"error_class": type(exc).__name__}
+        raise SectionRefusal(reason, {
+            **prior,
+            "content_read_accounting": {"bytes": read_budget.consumed, "limit": read_budget.limit},
+            "paths": records,
+            "filesystems": mounts,
+            "device_chains": devices,
+        }) from exc
     return {
         "observed_monotonic_ns": time.monotonic_ns(),
         "content_read_accounting": {"bytes": read_budget.consumed, "limit": read_budget.limit},
@@ -357,30 +409,58 @@ def _stable_required(first: Mapping[str, object], second: Mapping[str, object]) 
 def observe_required(config: ObserverConfig, cut: Callable[[ObserverConfig], dict[str, object]] = take_required_cut) -> dict[str, object]:
     try:
         first = cut(config)
-        second = cut(config)
-        stable, changed = _stable_required(first, second)
-        return {
-            "disposition": COMPLETE if stable else REFUSED,
-            "reason": "STABLE_REQUIRED_CUT" if stable else "REQUIRED_CUT_CHANGED",
-            "limits": {"seconds_per_cut": config.required_seconds, "cuts": 2},
-            "first_cut": first,
-            "second_cut": second,
-            "changed_dimensions": changed,
-        }
+    except KeyboardInterrupt:
+        return {"disposition": NOT_OBSERVED, "reason": "INTERRUPTED", "first_cut_partial": {}, "limits": {"seconds_per_cut": config.required_seconds, "cuts": 2}}
     except SectionRefusal as exc:
         return {"disposition": NOT_OBSERVED, "reason": exc.reason, "observations": exc.observations, "limits": {"seconds_per_cut": config.required_seconds, "cuts": 2}}
+    try:
+        second = cut(config)
+    except KeyboardInterrupt:
+        return {"disposition": NOT_OBSERVED, "reason": "INTERRUPTED", "first_cut": first, "second_cut_partial": {}, "limits": {"seconds_per_cut": config.required_seconds, "cuts": 2}}
+    except SectionRefusal as exc:
+        return {"disposition": NOT_OBSERVED, "reason": exc.reason, "first_cut": first, "second_cut_partial": exc.observations, "limits": {"seconds_per_cut": config.required_seconds, "cuts": 2}}
+    stable, changed = _stable_required(first, second)
+    return {
+        "disposition": COMPLETE if stable else REFUSED,
+        "reason": "STABLE_REQUIRED_CUT" if stable else "REQUIRED_CUT_CHANGED",
+        "limits": {"seconds_per_cut": config.required_seconds, "cuts": 2},
+        "first_cut": first,
+        "second_cut": second,
+        "changed_dimensions": changed,
+    }
 
 
 def observe_files(paths: Iterable[Path], limits: SectionLimits, *, relative_to: Path | None = None) -> dict[str, object]:
     deadline_ns = _deadline(limits.seconds)
+    physical_root = relative_to.resolve(strict=True) if relative_to else None
     records: list[dict[str, object]] = []
     path_bytes = content_bytes = 0
-    counters = {"entries": 0, "path_bytes": 0, "content_bytes_read": 0}
+    counters = {"entries": 0, "entry_probes": 0, "path_bytes": 0, "probe_path_bytes": 0, "content_bytes_read": 0}
+
+    def result(disposition: str, reason: str) -> dict[str, object]:
+        value: dict[str, object] = {"disposition": disposition, "reason": reason, "limits": asdict(limits), "counters": counters, "records": records.copy()}
+        if len(json.dumps(value, separators=(",", ":")).encode()) > limits.output_bytes:
+            value["records"] = "OMITTED_TO_MEET_SECTION_OUTPUT_BOUND"
+            value["details_retained"] = False
+        return value
+
+    def check_record_budget() -> None:
+        _check_time(deadline_ns, counters)
+        if len(json.dumps(result(REFUSED, "SECTION_OUTPUT_LIMIT_EXCEEDED"), separators=(",", ":")).encode("utf-8")) > limits.output_bytes or result(REFUSED, "SECTION_OUTPUT_LIMIT_EXCEEDED").get("details_retained") is False:
+            records.pop()
+            raise SectionRefusal("SECTION_OUTPUT_LIMIT_EXCEEDED", counters)
+
     try:
         for path in paths:
             _check_time(deadline_ns, counters)
             counters["entries"] += 1
             if counters["entries"] > limits.entries:
+                counters["entry_probes"] = 1
+                try:
+                    probe_locator = str(path.relative_to(relative_to)) if relative_to else str(path)
+                except ValueError:
+                    probe_locator = str(path)
+                counters["probe_path_bytes"] = len(probe_locator.encode("utf-8"))
                 raise SectionRefusal("ENTRY_LIMIT_EXCEEDED", counters)
             try:
                 locator = str(path.relative_to(relative_to)) if relative_to else str(path)
@@ -393,39 +473,50 @@ def observe_files(paths: Iterable[Path], limits: SectionLimits, *, relative_to: 
             observed = path.lstat()
             if stat.S_ISLNK(observed.st_mode):
                 records.append({"path": locator, "state": "SYMLINK_EXCLUDED"})
+                check_record_budget()
                 continue
             if stat.S_ISDIR(observed.st_mode):
                 records.append({"path": locator, "state": "DIRECTORY_METADATA_ONLY"})
+                check_record_budget()
                 continue
             if not stat.S_ISREG(observed.st_mode):
                 records.append({"path": locator, "state": "NON_REGULAR_METADATA_ONLY"})
+                check_record_budget()
                 continue
             remaining = limits.content_bytes - content_bytes
             if observed.st_size > remaining:
                 raise SectionRefusal("CONTENT_BYTE_LIMIT_EXCEEDED", counters)
-            digest, consumed = _sha256_file(path, min(limits.file_bytes, remaining), deadline_ns)
+            try:
+                digest, consumed, hashed_stat = _sha256_file(path, min(limits.file_bytes, remaining), deadline_ns, physical_root)
+            except SectionRefusal as exc:
+                content_bytes += int(exc.observations.get("content_bytes_read", 0))
+                counters["content_bytes_read"] = content_bytes
+                raise SectionRefusal(exc.reason, counters) from exc
             content_bytes += consumed
             counters["content_bytes_read"] = content_bytes
             records.append({
                 "path": locator,
                 "state": "HASHED_CONTENT_NOT_RETAINED",
-                "logical_bytes": observed.st_size,
+                "logical_bytes": hashed_stat.st_size,
                 "content_bytes_read": consumed,
                 "sha256": digest,
-                "device": observed.st_dev,
-                "inode": observed.st_ino,
+                "device": hashed_stat.st_dev,
+                "inode": hashed_stat.st_ino,
             })
-            if len(json.dumps(records, separators=(",", ":")).encode("utf-8")) > limits.output_bytes:
-                raise SectionRefusal("SECTION_OUTPUT_LIMIT_EXCEEDED", counters)
+            check_record_budget()
+        _check_time(deadline_ns, counters)
     except KeyboardInterrupt:
-        return {"disposition": REFUSED, "reason": "INTERRUPTED", "limits": asdict(limits), "counters": counters, "records": records}
+        return result(REFUSED, "INTERRUPTED")
     except PermissionError:
-        return {"disposition": NOT_OBSERVED, "reason": "PERMISSION_DENIED", "limits": asdict(limits), "counters": counters, "records": records}
+        return result(NOT_OBSERVED, "PERMISSION_DENIED")
     except FileNotFoundError:
-        return {"disposition": NOT_OBSERVED, "reason": "PATH_DISAPPEARED", "limits": asdict(limits), "counters": counters, "records": records}
+        return result(NOT_OBSERVED, "PATH_DISAPPEARED")
+    except OSError as exc:
+        return result(NOT_OBSERVED, type(exc).__name__)
     except SectionRefusal as exc:
-        return {"disposition": REFUSED, "reason": exc.reason, "limits": asdict(limits), "counters": {**counters, **exc.observations}, "records": records}
-    return {"disposition": COMPLETE, "reason": "BOUNDED_HASH_CENSUS_COMPLETE", "limits": asdict(limits), "counters": counters, "records": records}
+        counters.update(exc.observations)
+        return result(REFUSED, exc.reason)
+    return result(COMPLETE, "BOUNDED_HASH_CENSUS_COMPLETE")
 
 
 def _tree_paths(root: Path, entry_limit: int) -> Iterable[Path]:
@@ -433,34 +524,71 @@ def _tree_paths(root: Path, entry_limit: int) -> Iterable[Path]:
     # the one extra entry needed to produce a bounded refusal.
     pending = [root]
     yielded = 0
+    discovered = 1
+    root_stat = root.lstat()
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        raise SectionRefusal("RELEASE_ROOT_DIRECTORY_REQUIRED")
+    root_resolved = root.resolve(strict=True)
     while pending:
         current = pending.pop()
         yield current
         yielded += 1
         if yielded > entry_limit:
             return
-        if current.is_symlink() or not current.is_dir():
+        current_stat = current.lstat()
+        if stat.S_ISLNK(current_stat.st_mode) or not stat.S_ISDIR(current_stat.st_mode):
             continue
-        with os.scandir(current) as entries:
-            for item in entries:
-                pending.append(Path(item.path))
-                if yielded + len(pending) > entry_limit:
-                    break
+        if discovered >= entry_limit + 1:
+            continue
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
+        descriptor = os.open(current, flags)
+        try:
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != (current_stat.st_dev, current_stat.st_ino):
+                raise SectionRefusal("DIRECTORY_IDENTITY_CHANGED_BEFORE_TRAVERSAL")
+            current_root = root.lstat()
+            if (current_root.st_dev, current_root.st_ino) != (root_stat.st_dev, root_stat.st_ino):
+                raise SectionRefusal("RELEASE_ROOT_IDENTITY_CHANGED")
+            if not _descriptor_within(descriptor, root_resolved):
+                raise SectionRefusal("DIRECTORY_OUTSIDE_ENROLLED_ROOT")
+            with os.scandir(descriptor) as entries:
+                for item in entries:
+                    pending.append(current / item.name)
+                    discovered += 1
+                    if discovered >= entry_limit + 1:
+                        break
+        finally:
+            os.close(descriptor)
 
 
 def observe_release(config: ObserverConfig) -> dict[str, object]:
     return observe_files(_tree_paths(Path(config.release_root), config.release.entries), config.release, relative_to=Path(config.release_root))
 
 
-def observe_sqlite_header(config: ObserverConfig) -> dict[str, object]:
+def observe_sqlite_header(config: ObserverConfig, expected_identity: tuple[int, int] | None = None) -> dict[str, object]:
     path = Path(config.database)
+    deadline_ns = _deadline(config.header_seconds)
     try:
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        path_stat = path.lstat()
+        if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
+            raise SectionRefusal("SQLITE_HEADER_REGULAR_FILE_REQUIRED")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         fd = os.open(path, flags)
         try:
+            before = os.fstat(fd)
+            if (before.st_dev, before.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+                raise SectionRefusal("SQLITE_HEADER_PATH_IDENTITY_CHANGED")
+            if expected_identity and (before.st_dev, before.st_ino) != expected_identity:
+                raise SectionRefusal("SQLITE_HEADER_REQUIRED_IDENTITY_MISMATCH")
             header = os.read(fd, 100)
+            after = os.fstat(fd)
+            _check_time(deadline_ns, {"content_bytes_read": len(header)})
+            if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns):
+                raise SectionRefusal("SQLITE_HEADER_CONTENT_MUTATED", {"content_bytes_read": len(header)})
         finally:
             os.close(fd)
+    except SectionRefusal as exc:
+        return {"disposition": REFUSED, "reason": exc.reason, "content_bytes_read": exc.observations.get("content_bytes_read", 0), "raw_content_retained": False}
     except (FileNotFoundError, PermissionError, OSError) as exc:
         return {"disposition": NOT_OBSERVED, "reason": type(exc).__name__, "content_bytes_read": 0, "raw_content_retained": False}
     if len(header) != 100:
@@ -471,6 +599,8 @@ def observe_sqlite_header(config: ObserverConfig) -> dict[str, object]:
         "content_bytes_read": 100,
         "raw_content_retained": False,
         "header_sha256": hashlib.sha256(header).hexdigest(),
+        "device": after.st_dev,
+        "inode": after.st_ino,
         "magic_matches_sqlite3": header[:16] == b"SQLite format 3\x00",
         "claim_limit": "HEADER_FIELDS_ONLY_NOT_INTEGRITY_OR_RECOVERABILITY",
     }
@@ -511,19 +641,15 @@ def observe_processes(config: ObserverConfig, proc_root: Path = Path("/proc")) -
     except (FileNotFoundError, PermissionError, OSError) as exc:
         return {"disposition": NOT_OBSERVED, "reason": type(exc).__name__, "counters": counters}
     try:
-        pids = sorted((p for p in proc_root.iterdir() if p.name.isdigit()), key=lambda p: int(p.name))
-        for process in pids:
+        for process in (p for p in proc_root.iterdir() if p.name.isdigit()):
             _check_time(deadline_ns, counters)
             counters["process_entries"] += 1
             if counters["process_entries"] > config.process_entries:
                 raise SectionRefusal("PROCESS_ENTRY_LIMIT_EXCEEDED", counters)
             try:
                 before = _proc_start_ticks(read_budget.read(process / "stat", 8192))
-                argv_hash, argv_bytes = _bounded_proc_digest(process / "cmdline", config.argv_bytes_per_process, read_budget)
-                maps_hash, maps_bytes = _bounded_proc_digest(process / "maps", config.maps_bytes_per_process, read_budget)
-                counters["content_bytes_read"] = read_budget.consumed
                 matches: list[dict[str, object]] = []
-                for descriptor in sorted((process / "fd").iterdir(), key=lambda p: int(p.name)):
+                for descriptor in (process / "fd").iterdir():
                     counters["descriptor_entries"] += 1
                     if counters["descriptor_entries"] > config.descriptor_entries:
                         raise SectionRefusal("DESCRIPTOR_ENTRY_LIMIT_EXCEEDED", counters)
@@ -547,6 +673,10 @@ def observe_processes(config: ObserverConfig, proc_root: Path = Path("/proc")) -
                                 except ValueError:
                                     pass
                     matches.append({"descriptor": descriptor.name, "access": access})
+                if not matches:
+                    continue
+                argv_hash, argv_bytes = _bounded_proc_digest(process / "cmdline", config.argv_bytes_per_process, read_budget)
+                maps_hash, maps_bytes = _bounded_proc_digest(process / "maps", config.maps_bytes_per_process, read_budget)
                 after = _proc_start_ticks(read_budget.read(process / "stat", 8192))
                 counters["content_bytes_read"] = read_budget.consumed
                 if before != after:
@@ -571,10 +701,14 @@ def observe_processes(config: ObserverConfig, proc_root: Path = Path("/proc")) -
                 counters["unavailable_processes"] += 1
             except (PermissionError, OSError, UnicodeError, ValueError):
                 counters["unavailable_processes"] += 1
+            finally:
+                counters["content_bytes_read"] = read_budget.consumed
     except KeyboardInterrupt:
         return {"disposition": REFUSED, "reason": "INTERRUPTED", "limits": _process_limits(config), "counters": counters, "records": records}
     except SectionRefusal as exc:
         return {"disposition": REFUSED, "reason": exc.reason, "limits": _process_limits(config), "counters": {**counters, **exc.observations}, "records": records}
+    except OSError as exc:
+        return {"disposition": NOT_OBSERVED, "reason": type(exc).__name__, "limits": _process_limits(config), "counters": counters, "records": records}
     return {"disposition": COMPLETE, "reason": "BOUNDED_PROCESS_CENSUS_COMPLETE", "limits": _process_limits(config), "counters": counters, "records": records}
 
 
@@ -598,8 +732,18 @@ def _not_observed(reason: str, limits: Mapping[str, object] | None = None) -> di
     return result
 
 
+def _required_database_identity(required: Mapping[str, object]) -> tuple[int, int] | None:
+    try:
+        database = required["second_cut"]["paths"]["database"]
+        return int(database["device"]), int(database["inode"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _bound_output(record: dict[str, object], maximum: int) -> dict[str, object]:
-    encoded = lambda: json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if maximum < 128:
+        raise ValueError("output limit cannot retain a disposition")
+    encoded = lambda: json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
     def finalize(extra: Mapping[str, object] | None = None) -> bool:
         record["output"] = {"disposition": COMPLETE, "bytes": 0, "limit": maximum, **dict(extra or {})}
         for _ in range(4):
@@ -641,11 +785,11 @@ def _bound_output(record: dict[str, object], maximum: int) -> dict[str, object]:
         ).hexdigest(),
     }
     for _ in range(4):
-        minimal["output"]["bytes"] = len(json.dumps(minimal, sort_keys=True, separators=(",", ":")).encode())
-    if len(json.dumps(minimal, sort_keys=True, separators=(",", ":")).encode()) > maximum:
+        minimal["output"]["bytes"] = len(json.dumps(minimal, sort_keys=True, separators=(",", ":")).encode()) + 1
+    if len(json.dumps(minimal, sort_keys=True, separators=(",", ":")).encode()) + 1 > maximum:
         minimal = {"output": {"disposition": REFUSED, "reason": "OUTPUT_LIMIT_TOO_SMALL", "limit": maximum}}
-        if len(json.dumps(minimal, sort_keys=True, separators=(",", ":")).encode()) > maximum:
-            return {}
+        if len(json.dumps(minimal, sort_keys=True, separators=(",", ":")).encode()) + 1 > maximum:
+            raise ValueError("output limit cannot retain a disposition")
     return minimal
 
 
@@ -675,7 +819,7 @@ def run_observer(config: ObserverConfig, *, required_cut: Callable[[ObserverConf
             ("configuration", lambda: observe_files((Path(p) for p in config.configuration_files), config.configuration)),
             ("unit_files", lambda: observe_files((Path(p) for p in config.unit_files), config.unit_files_limits)),
             ("processes", lambda: observe_processes(config)),
-            ("sqlite_header", lambda: observe_sqlite_header(config)),
+            ("sqlite_header", lambda: observe_sqlite_header(config, _required_database_identity(required))),
         ):
             try:
                 record["sections"][name] = operation()
@@ -689,8 +833,9 @@ def run_observer(config: ObserverConfig, *, required_cut: Callable[[ObserverConf
                 "cut": post,
                 "matches_closed_required_cut": _stable_required(required["second_cut"], post)[0],
             }
-        except SectionRefusal as exc:
-            record["sections"]["post_optional_corroboration"] = _not_observed(exc.reason)
+        except (SectionRefusal, OSError, KeyboardInterrupt) as exc:
+            reason = exc.reason if isinstance(exc, SectionRefusal) else ("INTERRUPTED" if isinstance(exc, KeyboardInterrupt) else type(exc).__name__)
+            record["sections"]["post_optional_corroboration"] = _not_observed(reason)
     except KeyboardInterrupt:
         for name in optional_names:
             record["sections"].setdefault(name, _not_observed("INTERRUPTED_BEFORE_SECTION"))
@@ -712,7 +857,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         configuration_files=tuple(args.configuration_file),
         unit_files=tuple(args.unit_file),
     )
-    print(json.dumps(run_observer(config), sort_keys=True, separators=(",", ":")))
+    signal.signal(signal.SIGTERM, lambda _signum, _frame: (_ for _ in ()).throw(KeyboardInterrupt()))
+    sys.stdout.write(json.dumps(run_observer(config), sort_keys=True, separators=(",", ":")) + "\n")
     return 0
 
 
