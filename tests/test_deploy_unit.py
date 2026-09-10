@@ -12,3 +12,12 @@ def test_main_unit_places_global_options_before_run_subcommand():
     assert exec_start.index("--config") < exec_start.index(" run ")
     assert exec_start.index("--db") < exec_start.index(" run ")
     assert "--report-out /var/www/labelwatch" in exec_start
+
+
+def test_api_unit_pins_external_frontdoor_receipts():
+    unit = (Path(__file__).resolve().parents[1] / "deploy/labelwatch-api.service").read_text()
+    assert (
+        "Environment=LABELWATCH_AUDIT_RECEIPTS_DIR="
+        "/var/lib/labelwatch/receipts/frontdoor"
+    ) in unit
+    assert "ReadOnlyPaths=/var/lib/labelwatch" in unit

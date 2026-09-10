@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
 from labelwatch import db, weather_digest
+
+
+FIXED_NOW = datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc)
 
 
 def _seed_db(path: str):
@@ -106,7 +110,7 @@ def test_build_digest_full_shape(tmp_path):
     _seed_db(p)
     conn = db.connect(p, readonly=True)
     try:
-        digest = weather_digest.build_digest(conn)
+        digest = weather_digest.build_digest(conn, now=FIXED_NOW)
     finally:
         conn.close()
     required = {
@@ -138,7 +142,7 @@ def test_render_text_runs(tmp_path):
     _seed_db(p)
     conn = db.connect(p, readonly=True)
     try:
-        digest = weather_digest.build_digest(conn)
+        digest = weather_digest.build_digest(conn, now=FIXED_NOW)
     finally:
         conn.close()
     text = weather_digest.render_text(digest)
@@ -160,7 +164,7 @@ def test_render_bluesky_under_300_chars(tmp_path):
     _seed_db(p)
     conn = db.connect(p, readonly=True)
     try:
-        digest = weather_digest.build_digest(conn)
+        digest = weather_digest.build_digest(conn, now=FIXED_NOW)
     finally:
         conn.close()
     post = weather_digest.render_bluesky(digest)
@@ -177,7 +181,7 @@ def test_render_json_round_trips(tmp_path):
     _seed_db(p)
     conn = db.connect(p, readonly=True)
     try:
-        digest = weather_digest.build_digest(conn)
+        digest = weather_digest.build_digest(conn, now=FIXED_NOW)
     finally:
         conn.close()
     rendered = weather_digest.render_json(digest)

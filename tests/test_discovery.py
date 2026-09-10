@@ -259,7 +259,9 @@ def test_run_discovery_populates_db():
 
     ref_row = conn.execute("SELECT * FROM labelers WHERE labeler_did='did:plc:ref'").fetchone()
     assert ref_row["is_reference"] == 1
-    assert ref_row["labeler_class"] == "official_platform"
+    # Reference-set membership is editorial and does not confer platform
+    # authority. This synthetic DID is still a third-party labeler.
+    assert ref_row["labeler_class"] == "third_party"
     assert ref_row["endpoint_status"] == "accessible"
     assert ref_row["display_name"] == "Bluesky Moderation"
     assert ref_row["handle"] == "mod.bsky.app"

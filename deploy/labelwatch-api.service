@@ -19,6 +19,7 @@ TimeoutStopSec=15
 
 # Explicit environment — don't inherit weirdness
 Environment=CLIMATE_API_DISABLED=0
+Environment=LABELWATCH_AUDIT_RECEIPTS_DIR=/var/lib/labelwatch/receipts/frontdoor
 
 # Resource limits
 MemoryMax=512M

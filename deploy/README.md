@@ -10,6 +10,8 @@ output.
 # Create user and directories
 sudo useradd -r -s /bin/false labelwatch
 sudo mkdir -p /opt/labelwatch /var/lib/labelwatch /var/www/labelwatch
+sudo install -d -m 0750 -o root -g labelwatch \
+  /var/lib/labelwatch/receipts/frontdoor
 sudo chown labelwatch:labelwatch /var/lib/labelwatch /var/www/labelwatch
 
 # Install
@@ -36,7 +38,21 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo systemctl status labelwatch
 ls /var/www/labelwatch/index.html
 curl -s http://localhost/overview.json | python3 -m json.tool
+
+# The primary lookup is not release-ready merely because the process is live.
+curl -fsS http://127.0.0.1:8423/health \
+  | python3 -c 'import json,sys; assert json.load(sys.stdin)["frontdoor"]["ready"]'
+curl -fsS 'http://127.0.0.1:8423/v1/frontdoor/TEST_HANDLE?format=json' \
+  | python3 -c 'import json,sys; assert json.load(sys.stdin).get("refusal") not in {"index_audit_missing", "query_shape_unbounded"}'
 ```
+
+Before starting or restarting `labelwatch-api`, run the installed candidate's
+`index-audit --json` against the production database. Admit only
+`admissible`/`admissible_with_debt`, then install the JSON receipt as
+`root:labelwatch` mode `0640` under
+`/var/lib/labelwatch/receipts/frontdoor/`. Receipts are operational admission
+artifacts and do not belong in the wheel. The audit uses bounded
+`sqlite_stat1` cardinality estimates; it must not exact-count the event table.
 
 ## Known rough edges
 

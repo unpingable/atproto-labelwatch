@@ -407,6 +407,7 @@ class ClimateHandler(BaseHTTPRequestHandler):
         self._send_html(200, html.encode("utf-8"))
 
     def _handle_health(self):
+        from . import frontdoor
         from .read_health import get_tracker
         from .signal_health import signal_health_snapshot
 
@@ -426,9 +427,20 @@ class ClimateHandler(BaseHTTPRequestHandler):
         except Exception:
             logger.debug("Signal health query failed", exc_info=True)
 
+        frontdoor_ready, frontdoor_refusal, _ = frontdoor.audit_gate_status(
+            self.audit_receipt
+        )
+        frontdoor_receipt = self.audit_receipt or {}
+
         self._last_status = 200
         self._send_json(200, {
             "ok": True,
+            "frontdoor": {
+                "ready": frontdoor_ready,
+                "audit_verdict": frontdoor_receipt.get("overall_verdict"),
+                "audit_generated_at": frontdoor_receipt.get("generated_at"),
+                "refusal": frontdoor_refusal,
+            },
             "reads": reads,
             "reads_degraded": reads["verdict"] in ("DEGRADED",),
             "signals": {

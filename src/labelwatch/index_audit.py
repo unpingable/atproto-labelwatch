@@ -475,11 +475,24 @@ def _overall_verdict(query_results: list[dict]) -> str:
 
 
 def _table_counts(conn: sqlite3.Connection, tables: tuple[str, ...]) -> dict:
+    """Return bounded planner estimates rather than scanning fact tables.
+
+    The cardinalities are receipt context, not part of the query-shape gate.
+    Exact ``COUNT(*)`` made the supposedly bounded audit walk the entire 79 GB
+    production ``label_events`` table before it examined a single hot path.
+    SQLite's ANALYZE statistics are sufficient context and fail to ``None``
+    when unavailable or stale; they never authorize a query.
+    """
     out: dict[str, int | None] = {}
     for t in tables:
         try:
-            row = conn.execute(f"SELECT COUNT(*) AS c FROM {t}").fetchone()
-            out[t] = row["c"] if row else None
+            row = conn.execute(
+                "SELECT stat FROM sqlite_stat1 WHERE tbl = ? "
+                "ORDER BY CASE WHEN idx IS NULL THEN 0 ELSE 1 END LIMIT 1",
+                (t,),
+            ).fetchone()
+            stat = row["stat"] if row else None
+            out[t] = int(str(stat).split()[0]) if stat else None
         except sqlite3.Error:
             out[t] = None
     return out
@@ -516,6 +529,7 @@ def run_audit(
             "db_path": db_path,
             "db_size_bytes": _file_size_bytes(db_path),
             "table_counts": table_counts,
+            "table_counts_mode": "sqlite_stat1_estimate",
             "probe_subject_did": probe_subject_did,
             "query_results": query_results,
             "overall_verdict": overall,
