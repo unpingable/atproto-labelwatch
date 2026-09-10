@@ -1598,13 +1598,72 @@ def _prepare_out_dir(out_dir: str) -> str:
     return tmp_dir
 
 
-def _commit_out_dir(tmp_dir: str, out_dir: str) -> None:
-    if os.path.exists(out_dir):
-        backup = out_dir + ".prev"
-        if os.path.exists(backup):
-            shutil.rmtree(backup)
+def _path_identity(path: str) -> tuple[int, int]:
+    st = os.lstat(path)
+    if not os.path.isdir(path) or os.path.islink(path):
+        raise RuntimeError(f"refusing non-directory publication path: {path}")
+    return st.st_dev, st.st_ino
+
+
+def _same_identity(path: str, identity: tuple[int, int]) -> bool:
+    try:
+        return _path_identity(path) == identity
+    except (FileNotFoundError, RuntimeError):
+        return False
+
+
+def _cleanup_unpublished_staging(
+    tmp_dir: str,
+    identity: tuple[int, int],
+    publication: Dict[str, str],
+) -> None:
+    """Remove only our unchanged staging root before publication begins."""
+    if publication["state"] != "STAGING":
+        return
+    if not _same_identity(tmp_dir, identity):
+        log.warning("Retaining substituted or unavailable report staging path: %s", tmp_dir)
+        return
+    try:
+        shutil.rmtree(tmp_dir)
+    except OSError:
+        log.exception("Could not remove unpublished report staging directory: %s", tmp_dir)
+
+
+def _commit_out_dir(tmp_dir: str, out_dir: str, publication: Dict[str, str]) -> None:
+    """Publish a staged report without deleting rollback custody mid-transition."""
+    tmp_dir = os.path.abspath(tmp_dir)
+    out_dir = os.path.abspath(out_dir)
+    parent = os.path.dirname(out_dir)
+    if os.path.dirname(tmp_dir) != parent:
+        raise RuntimeError("report staging and destination must share a parent directory")
+    _path_identity(tmp_dir)
+
+    backup = out_dir + ".prev"
+    for path in (out_dir, backup):
+        if os.path.lexists(path):
+            _path_identity(path)
+
+    recovery = os.path.join(parent, f".report-recovery-{uuid.uuid4().hex}")
+    publication["state"] = "COMMIT_STARTED"
+    publication["recovery"] = recovery
+
+    if os.path.lexists(backup):
+        os.replace(backup, recovery)
+    if os.path.lexists(out_dir):
         os.replace(out_dir, backup)
     os.replace(tmp_dir, out_dir)
+    publication["state"] = "LIVE_REPLACED"
+
+    # Only the rollback object superseded by a fully installed live tree is
+    # eligible for deletion. Failure here leaves it named for reconciliation.
+    if os.path.lexists(recovery):
+        try:
+            shutil.rmtree(recovery)
+        except OSError:
+            log.exception("Retaining superseded report recovery directory: %s", recovery)
+            publication["state"] = "COMPLETE_WITH_RETAINED_RECOVERY"
+            return
+    publication["state"] = "COMPLETE"
 
 
 def _census_counts(conn) -> Dict[str, Dict[str, int]]:
@@ -1692,9 +1751,15 @@ def _alert_rollups(alerts_list, handles, display_names) -> str:
     return "".join(html_parts)
 
 
-def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
-                    facts_path: Optional[str] = None,
-                    config: Optional["Config"] = None) -> None:
+def _generate_report_into_staging(
+    conn,
+    tmp_dir: str,
+    out_dir: str,
+    publication: Dict[str, str],
+    now: Optional[datetime] = None,
+    facts_path: Optional[str] = None,
+    config: Optional["Config"] = None,
+) -> None:
     real_now = datetime.now(timezone.utc)
     if now is None:
         now = real_now
@@ -1855,7 +1920,6 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
         # meant observed quiet or an unobserved window.
     }
 
-    tmp_dir = _prepare_out_dir(out_dir)
     # `overview.json` is written after the weather verdict is computed, so the
     # artifact can carry the verdict and its standing together. See the
     # `network_weather` assignment below.
@@ -4055,4 +4119,35 @@ events per day, not active inventory.</p>
     sitemap_lines.append("</urlset>")
     _write(os.path.join(tmp_dir, "sitemap.xml"), "\n".join(sitemap_lines) + "\n")
 
-    _commit_out_dir(tmp_dir, out_dir)
+    _commit_out_dir(tmp_dir, out_dir, publication)
+
+
+def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
+                    facts_path: Optional[str] = None,
+                    config: Optional["Config"] = None) -> None:
+    """Generate and publish a report with explicit interruption custody.
+
+    Ordinary pre-publication failures clean only the unchanged staging root
+    created for this call. Once a publication rename begins, all remaining
+    objects are retained for explicit reconciliation.
+    """
+    tmp_dir = _prepare_out_dir(out_dir)
+    identity = _path_identity(tmp_dir)
+    publication = {"state": "STAGING"}
+    try:
+        _generate_report_into_staging(
+            conn,
+            tmp_dir,
+            out_dir,
+            publication,
+            now=now,
+            facts_path=facts_path,
+            config=config,
+        )
+    finally:
+        _cleanup_unpublished_staging(tmp_dir, identity, publication)
+
+
+# Preserve source-inspection compatibility for qualification tests that verify
+# invariants inside the report builder rather than the custody wrapper.
+generate_report.__wrapped__ = _generate_report_into_staging
