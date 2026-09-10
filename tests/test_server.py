@@ -129,6 +129,12 @@ class TestHealth:
         assert status == 200
         data = json.loads(body)
         assert data["ok"] is True
+        assert data["frontdoor"]["ready"] is True
+        assert data["frontdoor"]["audit_verdict"] in {
+            "admissible", "admissible_with_debt"
+        }
+        assert data["frontdoor"]["audit_generated_at"]
+        assert data["frontdoor"]["refusal"] is None
         assert headers.get("Cache-Control") == "no-store"
 
 

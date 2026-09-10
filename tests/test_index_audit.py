@@ -173,6 +173,7 @@ def test_json_schema_stable(tmp_path):
         "db_path",
         "db_size_bytes",
         "table_counts",
+        "table_counts_mode",
         "probe_subject_did",
         "query_results",
         "overall_verdict",
@@ -183,6 +184,7 @@ def test_json_schema_stable(tmp_path):
     )
     assert receipt["receipt_kind"] == RECEIPT_KIND
     assert receipt["receipt_schema_version"] == 1
+    assert receipt["table_counts_mode"] == "sqlite_stat1_estimate"
 
     # Per-query fields.
     required_per_query = {
@@ -217,6 +219,29 @@ def test_json_schema_stable(tmp_path):
     assert {r["query_id"] for r in receipt["query_results"]} == {
         "Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7", "Q8a", "Q8b", "Q8c"
     }
+
+
+def test_table_count_context_uses_bounded_planner_estimates(tmp_path):
+    p = _fresh_db_path(tmp_path)
+    conn = db.connect(p)
+    try:
+        conn.executemany(
+            "INSERT INTO label_events "
+            "(labeler_did,src,uri,val,neg,ts,event_hash,target_did) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            [
+                ("did:plc:labeler", "did:plc:labeler", f"did:plc:subject{i}",
+                 "test", 0, "2026-09-10T00:00:00Z", f"hash-{i}",
+                 f"did:plc:subject{i}")
+                for i in range(25)
+            ],
+        )
+        conn.commit()
+        conn.execute("ANALYZE")
+        estimate = index_audit._table_counts(conn, ("label_events",))
+    finally:
+        conn.close()
+    assert estimate["label_events"] == 25
 
 
 # ---------------------------------------------------------------------------

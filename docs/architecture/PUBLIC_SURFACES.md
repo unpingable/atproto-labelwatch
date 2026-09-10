@@ -1,7 +1,7 @@
 # labelwatch — Public Surfaces
 
 **Status**: v0 starter.
-**Last updated**: 2026-04-28
+**Last updated**: 2026-09-10
 
 ## The job
 
@@ -14,7 +14,7 @@ This doc names the public surfaces labelwatch exposes, the architectural rules t
 | Static report | HTML + JSON | public web (via Caddy) | atomic dir swap; no dynamic queries |
 | Climate API `/v1/climate/{did_or_handle}` | per-DID receiving-end accounting | loopback + Caddy | token bucket per IP, disk cache (5min TTL), kill switch (`CLIMATE_API_DISABLED`), payload whitelist strips `recent_receipts`, generation timeout, concurrency semaphore |
 | Registry endpoint `/v1/registry` | labeler directory | loopback + Caddy | rate-limited |
-| Health endpoint `/health` | liveness | loopback + Caddy | no payload beyond up/down |
+| Health endpoint `/health` | liveness plus gate state | loopback + Caddy | reports frontdoor receipt readiness without turning other healthy surfaces into a non-200 |
 | Bsky bot `@labelwatch.neutral.zone` | summary posts | ATProto | manual or scheduled, never per-DID |
 
 ## The aggregate / per-DID / behavioral distinction
