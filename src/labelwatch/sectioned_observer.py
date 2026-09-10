@@ -184,7 +184,12 @@ def _sha256_file(
             before.st_dev, before.st_ino, before.st_size
         ):
             raise SectionRefusal("PATH_IDENTITY_CHANGED_BEFORE_READ")
-        if opened.st_size == 0 and byte_limit > 0:
+        if opened.st_size == 0 and byte_limit <= 0:
+            raise SectionRefusal(
+                "ZERO_SIZE_FILE_UNVERIFIABLE_AT_CONTENT_BOUND",
+                {"content_bytes_read": consumed},
+            )
+        if opened.st_size == 0:
             probe = os.read(fd, 1)
             consumed += len(probe)
             if probe:
@@ -208,12 +213,38 @@ def _sha256_file(
             )
         if physical_root is not None and physical_root_identity is not None:
             _check_root_identity(physical_root, physical_root_identity)
+    except SectionRefusal as exc:
+        try:
+            os.close(fd)
+        except BaseException:
+            pass
+        observations = dict(exc.observations)
+        observations.setdefault("content_bytes_read", consumed)
+        raise SectionRefusal(exc.reason, observations) from exc
+    except KeyboardInterrupt as exc:
+        try:
+            os.close(fd)
+        except BaseException:
+            pass
+        raise SectionRefusal("INTERRUPTED", {"content_bytes_read": consumed}) from exc
+    except OSError as exc:
+        try:
+            os.close(fd)
+        except BaseException:
+            pass
+        raise SectionUnavailable(type(exc).__name__, {"content_bytes_read": consumed}) from exc
+    except BaseException:
+        try:
+            os.close(fd)
+        except BaseException:
+            pass
+        raise
+    try:
+        os.close(fd)
     except KeyboardInterrupt as exc:
         raise SectionRefusal("INTERRUPTED", {"content_bytes_read": consumed}) from exc
     except OSError as exc:
         raise SectionUnavailable(type(exc).__name__, {"content_bytes_read": consumed}) from exc
-    finally:
-        os.close(fd)
     return digest.hexdigest(), consumed, after
 
 
@@ -660,6 +691,8 @@ def observe_sqlite_header(config: ObserverConfig, expected_identity: tuple[int, 
             os.close(fd)
     except SectionRefusal as exc:
         return {"disposition": REFUSED, "reason": exc.reason, "content_bytes_read": exc.observations.get("content_bytes_read", consumed), "raw_content_retained": False}
+    except KeyboardInterrupt:
+        return {"disposition": REFUSED, "reason": "INTERRUPTED", "content_bytes_read": consumed, "raw_content_retained": False}
     except (FileNotFoundError, PermissionError, OSError) as exc:
         return {"disposition": NOT_OBSERVED, "reason": type(exc).__name__, "content_bytes_read": consumed, "raw_content_retained": False}
     if len(header) != 100:

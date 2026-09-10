@@ -46,7 +46,9 @@ entries are metadata-only. Symlinks encountered during an optional tree census
 are recorded and not followed. A symlink at an enrolled required path refuses
 the required section. No one-byte content probe crosses a content ceiling; if
 EOF cannot be established within the remaining allowance, the section refuses
-at the ceiling. Release traversal admits at most 8,192 entries and observes at
+at the ceiling. A zero-stat-size file with no remaining content allowance is
+likewise refused rather than assigned an unverified empty-file digest. Release
+traversal admits at most 8,192 entries and observes at
 most one additional directory-entry probe solely to establish refusal; it does
 not eagerly enumerate a larger directory. Directory descriptors, `O_NOFOLLOW`,
 root-identity checks held through each content read, and opened-descriptor

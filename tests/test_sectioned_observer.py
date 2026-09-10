@@ -654,3 +654,69 @@ def test_header_postread_error_retains_consumed_bytes(tmp_path, monkeypatch):
     result = observer.observe_sqlite_header(config)
     assert result["disposition"] == "NOT_OBSERVED"
     assert result["content_bytes_read"] == 100
+
+
+def test_final_root_replacement_retains_hashed_byte_count(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    root = Path(config.release_root)
+    (root / "file").write_bytes(b"abc")
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    original = observer.os.read
+
+    def moved_after_read(descriptor, maximum):
+        chunk = original(descriptor, maximum)
+        if root.exists():
+            root.rename(tmp_path / "original")
+            replacement.rename(root)
+        return chunk
+
+    monkeypatch.setattr(observer.os, "read", moved_after_read)
+    result = observer.observe_release(config)
+    assert result["reason"] == "RELEASE_ROOT_IDENTITY_CHANGED"
+    assert result["counters"]["content_bytes_read"] == 3
+
+
+def test_hash_close_error_retains_hashed_byte_count(tmp_path, monkeypatch):
+    path = tmp_path / "file"
+    path.write_bytes(b"abc")
+    original = observer.os.close
+
+    def failed(descriptor):
+        original(descriptor)
+        raise OSError("close unavailable")
+
+    monkeypatch.setattr(observer.os, "close", failed)
+    result = observer.observe_files([path], _limits())
+    assert result["disposition"] == "NOT_OBSERVED"
+    assert result["counters"]["content_bytes_read"] == 3
+
+
+def test_header_postread_interrupt_retains_count_and_section_disposition(
+    tmp_path, monkeypatch
+):
+    config = _config(tmp_path)
+    original = observer.os.fstat
+    calls = 0
+
+    def interrupted(descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise KeyboardInterrupt
+        return original(descriptor)
+
+    monkeypatch.setattr(observer.os, "fstat", interrupted)
+    result = observer.observe_sqlite_header(config)
+    assert result["disposition"] == "REFUSED"
+    assert result["reason"] == "INTERRUPTED"
+    assert result["content_bytes_read"] == 100
+
+
+def test_zero_content_budget_never_claims_zero_size_pseudofile_hash():
+    result = observer.observe_files(
+        [Path("/proc/version")], _limits(content_bytes=0)
+    )
+    assert result["disposition"] == "REFUSED"
+    assert result["reason"] == "ZERO_SIZE_FILE_UNVERIFIABLE_AT_CONTENT_BOUND"
+    assert result["counters"]["content_bytes_read"] == 0
