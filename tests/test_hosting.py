@@ -1,6 +1,7 @@
 """Tests for labelwatch.hosting — PDS host classification and hosting-locus analysis."""
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -161,6 +162,7 @@ def _make_full_test_db(tmp_path):
             is_major_provider INTEGER NOT NULL DEFAULT 0
         )
     """)
+    recent_event = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     main_db.executemany(
         "INSERT INTO provider_registry VALUES (?, ?, ?, ?, ?)",
         [
@@ -173,12 +175,12 @@ def _make_full_test_db(tmp_path):
     main_db.executemany(
         "INSERT INTO label_events (labeler_did, uri, val, ts, event_hash, target_did) VALUES (?, ?, ?, ?, ?, ?)",
         [
-            ("did:plc:labeler1", "at://did:plc:alice/post/1", "spam", "2026-03-18T00:00:00Z", "h1", "did:plc:alice"),
-            ("did:plc:labeler1", "at://did:plc:bob/post/2", "spam", "2026-03-18T00:00:00Z", "h2", "did:plc:bob"),
-            ("did:plc:labeler1", "at://did:plc:carol/post/3", "spam", "2026-03-18T00:00:00Z", "h3", "did:plc:carol"),
-            ("did:plc:labeler2", "at://did:plc:carol/post/4", "nsfw", "2026-03-18T00:00:00Z", "h4", "did:plc:carol"),
-            ("did:plc:labeler1", "at://did:plc:dave/post/5", "spam", "2026-03-18T00:00:00Z", "h5", "did:plc:dave"),
-            ("did:plc:labeler1", "at://did:plc:eve/post/6", "spam", "2026-03-18T00:00:00Z", "h6", "did:plc:eve"),
+            ("did:plc:labeler1", "at://did:plc:alice/post/1", "spam", recent_event, "h1", "did:plc:alice"),
+            ("did:plc:labeler1", "at://did:plc:bob/post/2", "spam", recent_event, "h2", "did:plc:bob"),
+            ("did:plc:labeler1", "at://did:plc:carol/post/3", "spam", recent_event, "h3", "did:plc:carol"),
+            ("did:plc:labeler2", "at://did:plc:carol/post/4", "nsfw", recent_event, "h4", "did:plc:carol"),
+            ("did:plc:labeler1", "at://did:plc:dave/post/5", "spam", recent_event, "h5", "did:plc:dave"),
+            ("did:plc:labeler1", "at://did:plc:eve/post/6", "spam", recent_event, "h6", "did:plc:eve"),
         ],
     )
     main_db.commit()
@@ -310,11 +312,12 @@ def _make_comparison_test_db(tmp_path):
     )
 
     # Labeled targets: 3 on bsky, 3 on pds.rip (50/50 split)
+    recent_event = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     events = [
-        ("did:plc:l1", f"at://did:plc:a{i}/post/1", "spam", "2026-03-18T00:00:00Z", f"h{i}", f"did:plc:a{i}")
+        ("did:plc:l1", f"at://did:plc:a{i}/post/1", "spam", recent_event, f"h{i}", f"did:plc:a{i}")
         for i in range(3)
     ] + [
-        ("did:plc:l1", f"at://did:plc:b{i}/post/1", "spam", "2026-03-18T00:00:00Z", f"g{i}", f"did:plc:b{i}")
+        ("did:plc:l1", f"at://did:plc:b{i}/post/1", "spam", recent_event, f"g{i}", f"did:plc:b{i}")
         for i in range(3)
     ]
     main_db.executemany(
