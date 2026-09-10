@@ -56,8 +56,18 @@ def _total_events(conn, labeler_did: str, _cache: dict | None = None) -> int:
     ).fetchone()["c"]
 
 
-def _build_event_count_cache(conn) -> dict[str, int]:
-    """One query: per-labeler total event counts."""
+def _build_event_count_cache(conn, *, cap: int | None = None) -> dict[str, int]:
+    """Exact counts by default; bounded counts for threshold-only rule decisions."""
+    if cap is not None:
+        if cap < 0:
+            raise ValueError('event count cap must be nonnegative')
+        return {
+            row['labeler_did']: conn.execute(
+                'SELECT COUNT(*) FROM (SELECT 1 FROM label_events WHERE labeler_did=? LIMIT ?)',
+                (row['labeler_did'], cap),
+            ).fetchone()[0]
+            for row in conn.execute('SELECT labeler_did FROM labelers').fetchall()
+        }
     rows = conn.execute(
         "SELECT labeler_did, COUNT(*) AS c FROM label_events GROUP BY labeler_did"
     ).fetchall()
@@ -504,8 +514,10 @@ def data_gap(conn, config: Config, now: datetime,
 
 
 def run_rules(conn, config: Config, now: datetime) -> List[Dict]:
-    # Pre-compute per-labeler event counts once (1 query instead of ~1600)
-    cache = _build_event_count_cache(conn)
+    # Counts serve only confidence/warmup comparisons. Reading beyond both
+    # thresholds cannot change those decisions and needlessly scans all history.
+    cache = _build_event_count_cache(
+        conn, cap=max(0, config.confidence_min_events, config.warmup_min_events))
     cov_cache = _build_coverage_cache(conn, now, config)
     alerts = []
     alerts.extend(label_rate_spike(conn, config, now, cache, cov_cache))

@@ -547,6 +547,25 @@ def filter_fight_edges(
     return fight_edges
 
 
+def moderation_edge_count(conn, window_start: str, window_end: str) -> int:
+    """Count the weather strip's moderation edges without loading report detail.
+
+    Grouping by the classifier inputs preserves the summary's edge-count
+    semantics (not distinct targets or qualifying fight pairs).
+    """
+    rows = conn.execute("""
+        SELECT top_family_a, top_family_b, COUNT(*) AS n
+        FROM boundary_edges
+        WHERE edge_type = 'contradiction'
+          AND computed_at >= ? AND computed_at <= ?
+          AND family_version = ?
+        GROUP BY top_family_a, top_family_b
+    """, (window_start, window_end, FAMILY_VERSION))
+    return sum(row['n'] for row in rows
+               if classify_domain(row['top_family_a'] or '') == 'moderation'
+               and classify_domain(row['top_family_b'] or '') == 'moderation')
+
+
 def boundary_summary_for_report(
     conn,
     window_start: str,

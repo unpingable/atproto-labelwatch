@@ -30,6 +30,30 @@ _INSTRUMENT_FONTS = Path(__file__).resolve().parent / "_instruments" / "fonts"
 _FONT_FILES = {"IBMPlexSans-Regular.woff2", "IBMPlexSans-SemiBold.woff2",
                "IBMPlexMono-Regular.woff2", "SourceSerif4-Bold.woff2"}
 
+
+def _homepage_weather(db_path: str, budget_seconds: float = 2.0) -> dict:
+    """Bound optional weather work on a request-owned readonly connection."""
+    from . import frontdoor as fd
+    conn = None
+    deadline = time.monotonic() + budget_seconds
+    try:
+        conn = db.connect(db_path, readonly=True)
+        conn.execute('PRAGMA busy_timeout=250')
+        conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+        weather = fd.network_weather(conn, strict_errors=True)
+        # Some report helpers tolerate missing query results. A deadline must
+        # never turn that tolerance into a successful zero-count observation.
+        if time.monotonic() >= deadline:
+            raise TimeoutError('homepage weather query budget exhausted')
+        return weather
+    except Exception as exc:
+        logger.warning('homepage.weather_unavailable reason=%s', type(exc).__name__)
+        return {'unavailable': True}
+    finally:
+        if conn is not None:
+            conn.set_progress_handler(None, 0)
+            conn.close()
+
 # ---------------------------------------------------------------------------
 # Token bucket rate limiter
 # ---------------------------------------------------------------------------
@@ -288,17 +312,7 @@ class ClimateHandler(BaseHTTPRequestHandler):
     def _handle_homepage(self):
         from . import frontdoor as fd
         receipt = self.audit_receipt
-        # Network weather: cheap dimension-table query (not in audit inventory).
-        # Failure here is non-fatal — strip is decoration; homepage still ships.
-        weather = None
-        try:
-            conn = db.connect(self.db_path, readonly=True)
-            try:
-                weather = fd.network_weather(conn)
-            finally:
-                conn.close()
-        except Exception:
-            logger.debug("frontdoor: network_weather query failed", exc_info=True)
+        weather = _homepage_weather(self.db_path)
         html = fd.render_homepage_html(audit_receipt=receipt, weather=weather)
         self._last_status = 200
         self._send_html(200, html.encode("utf-8"),

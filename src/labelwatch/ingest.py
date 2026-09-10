@@ -288,8 +288,17 @@ def ingest_multi(conn, config: Config, timeout: int | None = None,
         max_pages = config.multi_ingest_max_pages
 
     rows = conn.execute(
-        "SELECT labeler_did, service_endpoint FROM labelers WHERE endpoint_status='accessible'"
+        "SELECT labeler_did, service_endpoint FROM labelers "
+        "WHERE endpoint_status='accessible' AND service_endpoint IS NOT NULL "
+        "AND service_endpoint != '' ORDER BY labeler_did"
     ).fetchall()
+    # Resume after the last completed attempt, including failed and empty
+    # acquisitions. Repeated short budgets must not always favor the first DID.
+    # Comparing the stable key also handles removal of the previous source.
+    last_attempted = db.get_meta(conn, 'multi_ingest:last_attempted_did')
+    if last_attempted:
+        rows = ([row for row in rows if row['labeler_did'] > last_attempted]
+                + [row for row in rows if row['labeler_did'] <= last_attempted])
 
     results: Dict[str, int] = {}
     start_time = time.monotonic()
@@ -343,12 +352,14 @@ def ingest_multi(conn, config: Config, timeout: int | None = None,
             # durable position even when the endpoint returns no new cursor.
             # This must not update advanced_at, and a cursorless empty source
             # must remain cursorless.
-            if cursor is not None:
-                db.observe_cursor(conn, cursor_key)
+            # A terminal nonempty page may have no next-page cursor. The
+            # durable cursor used to obtain it was still successfully observed.
+            db.observe_cursor(conn, cursor_key)
             db.insert_ingest_outcome(
                 conn, did, ts_now, attempt_id, outcome, total,
                 None, latency_ms, None, None, "multi",
             )
+            db.set_meta(conn, 'multi_ingest:last_attempted_did', did)
             conn.commit()
         except Exception as exc:
             latency_ms = int((time.monotonic() - t0) * 1000)
@@ -359,6 +370,7 @@ def ingest_multi(conn, config: Config, timeout: int | None = None,
                 conn, did, ts_now, attempt_id, outcome, 0,
                 http_status, latency_ms, error_type, error_summary, "multi",
             )
+            db.set_meta(conn, 'multi_ingest:last_attempted_did', did)
             conn.commit()
             log.warning("Multi-ingest failed for %s at %s", did, endpoint, exc_info=True)
 

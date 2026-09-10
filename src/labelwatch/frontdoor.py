@@ -33,7 +33,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional
 
-from .boundary import boundary_summary_for_report
+from .boundary import moderation_edge_count
 from .label_family import (
     LABELER_DEFAULT_EFFECT,
     classify_authority_effect,
@@ -812,6 +812,7 @@ def observation_adequacy(
     now: Optional[datetime] = None,
     window_minutes: int = DEFAULT_COVERAGE_WINDOW_MINUTES,
     threshold: float = DEFAULT_COVERAGE_THRESHOLD,
+    strict_errors: bool = False,
 ) -> dict:
     """Whether the window has standing to support a negative claim.
 
@@ -839,6 +840,8 @@ def observation_adequacy(
             (window_start,),
         ).fetchall()
     except sqlite3.Error:
+        if strict_errors:
+            raise
         # Pre-migration database: the fact does not exist, so adequacy is not
         # knowable. Refusing to answer is correct; claiming calm is not.
         return {
@@ -870,6 +873,8 @@ def observation_adequacy(
             "SELECT COUNT(*) AS c FROM labelers WHERE endpoint_status = 'accessible'"
         ).fetchone()["c"] or 0
     except sqlite3.Error:
+        if strict_errors:
+            raise
         accessible = 0
     # An accessible labeler that should have been polled and was not is
     # unobserved for this window, the same as one whose polls all failed.
@@ -937,6 +942,7 @@ def network_weather(
     now: Optional[datetime] = None,
     coverage_window_minutes: int = DEFAULT_COVERAGE_WINDOW_MINUTES,
     coverage_threshold: float = DEFAULT_COVERAGE_THRESHOLD,
+    strict_errors: bool = False,
 ) -> dict:
     """Compute the lookup-page network weather strip.
 
@@ -964,6 +970,7 @@ def network_weather(
         conn, now=now,
         window_minutes=coverage_window_minutes,
         threshold=coverage_threshold,
+        strict_errors=strict_errors,
     )
 
     total = conn.execute("SELECT COUNT(*) AS c FROM labelers").fetchone()["c"] or 0
@@ -985,6 +992,8 @@ def network_weather(
             (since_24h,),
         ).fetchone()["c"] or 0
     except sqlite3.Error:
+        if strict_errors:
+            raise
         spike_24h = 0
     try:
         churn_24h = conn.execute(
@@ -992,15 +1001,18 @@ def network_weather(
             (since_24h,),
         ).fetchone()["c"] or 0
     except sqlite3.Error:
+        if strict_errors:
+            raise
         churn_24h = 0
     try:
-        boundary_summary = boundary_summary_for_report(
+        mod_conflicts = moderation_edge_count(
             conn,
             format_ts(now - timedelta(days=7)),
             format_ts(now),
         )
-        mod_conflicts = boundary_summary.get("moderation_edges", 0)
     except Exception:
+        if strict_errors:
+            raise
         mod_conflicts = 0
 
     signals: list[str] = []
@@ -1071,6 +1083,12 @@ def _render_weather_strip_html(weather: Optional[dict]) -> str:
     """Compact one-line strip linking to /methodology.html."""
     if not weather:
         return ""
+    if weather.get('unavailable'):
+        return ('<aside class="weather-strip"><p>Network weather: '
+                '<strong>temporarily unavailable</strong>. '
+                'No current weather conclusion is available.</p>'
+                '<p><a href="/methodology.html">Open system dashboard &amp; graphs</a>'
+                '</p></aside>')
     # An empty signal list is not calm. `network_weather` never returns one,
     # but this renderer also takes caller-supplied dicts, and defaulting to a
     # substantive negative claim here would reintroduce the same defect at the

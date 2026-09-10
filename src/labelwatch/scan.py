@@ -76,7 +76,7 @@ def _yield_between_derive_steps() -> None:
         time.sleep(_DERIVE_STEP_YIELD_SECONDS)
 
 
-def _derive_step(conn, name: str, fn) -> None:
+def _derive_step(conn, name: str, fn) -> dict:
     """Run one derive sub-step in its own transaction, commit, then yield.
 
     Each substep gets its own try/except so a single failure doesn't block the
@@ -85,11 +85,18 @@ def _derive_step(conn, name: str, fn) -> None:
     """
     t0 = time.monotonic()
     try:
-        fn()
+        result = fn()
         conn.commit()
+        state = 'SKIPPED' if isinstance(result, str) and result.startswith('SKIPPED_') else 'COMPLETE'
+        if name in ('update_author_day', 'update_author_labeler_day') and db.get_meta(conn, name + ':backlog_active') == '1':
+            state = 'PENDING'
+        outcome = {'state': state}
+        if state == 'SKIPPED':
+            outcome['reason'] = result
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         _log.info("derive.step name=%s ms=%d", name, elapsed_ms)
     except Exception as exc:
+        outcome = {'state': 'FAILED', 'error_type': type(exc).__name__}
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         _log.warning("derive.step name=%s ms=%d failed: %s", name, elapsed_ms, exc)
         try:
@@ -97,6 +104,7 @@ def _derive_step(conn, name: str, fn) -> None:
         except Exception:
             pass
     _yield_between_derive_steps()
+    return outcome
 
 
 def _fetch_event_stats(conn, ts_24h: str, ts_7d: str, ts_30d: str) -> dict:
@@ -681,7 +689,7 @@ def _cleanup_ingest_outcomes(conn, now: datetime) -> None:
 _log = logging.getLogger("labelwatch.scan")
 
 
-def _sync_driftwatch_facts(conn, config: Config) -> None:
+def _sync_driftwatch_facts(conn, config: Config) -> str | None:
     """Join label_events with driftwatch facts sidecar to compute lag_sec_claimed.
 
     Gated by a staleness check on the source facts.sqlite mtime. The Phase 1
@@ -704,12 +712,12 @@ def _sync_driftwatch_facts(conn, config: Config) -> None:
     """
     path = config.driftwatch_facts_path
     if not path or not os.path.exists(path):
-        return
+        return 'SKIPPED_SOURCE_UNAVAILABLE'
 
     # Validate path (ATTACH doesn't support parameter binding)
     if "'" in path or ";" in path:
         _log.warning("driftwatch_facts_path contains unsafe characters, skipping")
-        return
+        return 'SKIPPED_SOURCE_PATH'
 
     # Staleness gate. Skip the candidate scan entirely when the upstream facts
     # source can't have produced anything new for us to join against. The
@@ -720,7 +728,7 @@ def _sync_driftwatch_facts(conn, config: Config) -> None:
         mtime = int(os.stat(path).st_mtime)
     except OSError as e:
         _log.warning("facts_sync stat failed: %s", e)
-        return
+        return 'SKIPPED_SOURCE_UNAVAILABLE'
 
     now_epoch_check = int(time.time())
     source_age_s = now_epoch_check - mtime
@@ -732,7 +740,7 @@ def _sync_driftwatch_facts(conn, config: Config) -> None:
             "facts_sync skipped: stale source_age_s=%d max_age_s=%d mtime=%d",
             source_age_s, _FACTS_MAX_AGE_S, mtime,
         )
-        return
+        return 'SKIPPED_SOURCE_STALE'
     if last_seen_mtime is not None and mtime <= last_seen_mtime:
         _log.info(
             "facts_sync skipped: unchanged source_age_s=%d mtime=%d last_seen_mtime=%d",
@@ -1583,7 +1591,7 @@ def _compute_boundary_load_7d(conn) -> None:
     conn.execute("DROP TABLE IF EXISTS tmp_boundary_load")
 
 
-def run_derive(conn, config: Config, now: datetime | None = None) -> None:
+def run_derive(conn, config: Config, now: datetime | None = None) -> dict:
     """Run regime/risk/coherence derivation (expensive — call less often than scan).
 
     See gap-spec-derive-workload-isolation.md. Each sub-step commits independently
@@ -1596,29 +1604,33 @@ def run_derive(conn, config: Config, now: datetime | None = None) -> None:
         now = now_utc()
     if _DERIVE_DISABLED:
         _log.warning("derive.skipped reason=LABELWATCH_DERIVE_DISABLE=1")
-        return
+        return {'state': 'SKIPPED', 'reason': 'disabled', 'steps': {}}
 
     t_pass = time.monotonic()
-    _derive_step(conn, "run_derive_pass", lambda: _run_derive_pass(conn, config, now))
-    _derive_step(conn, "update_coverage_columns", lambda: _update_coverage_columns(conn, config, now))
-    _derive_step(conn, "cleanup_ingest_outcomes", lambda: _cleanup_ingest_outcomes(conn, now))
+    outcomes = {}
+    def step(name, fn):
+        outcomes[name] = _derive_step(conn, name, fn)
+    step("run_derive_pass", lambda: _run_derive_pass(conn, config, now))
+    step("update_coverage_columns", lambda: _update_coverage_columns(conn, config, now))
+    step("cleanup_ingest_outcomes", lambda: _cleanup_ingest_outcomes(conn, now))
 
     if config.driftwatch_facts_path:
-        _derive_step(conn, "sync_driftwatch_facts", lambda: _sync_driftwatch_facts(conn, config))
+        step("sync_driftwatch_facts", lambda: _sync_driftwatch_facts(conn, config))
 
-    _derive_step(conn, "compute_labeler_lag_7d", lambda: _compute_labeler_lag_7d(conn))
-    _derive_step(conn, "compute_reversal_stats_7d", lambda: _compute_reversal_stats_7d(conn))
-    _derive_step(conn, "compute_boundary_load_7d", lambda: _compute_boundary_load_7d(conn))
-    _derive_step(conn, "update_val_dist_day", lambda: _update_val_dist_day(conn))
-    _derive_step(conn, "compute_entropy_7d", lambda: _compute_entropy_7d(conn))
-    _derive_step(conn, "update_author_day", lambda: _update_author_day(conn))
-    _derive_step(conn, "update_author_labeler_day", lambda: _update_author_labeler_day(conn))
+    step("compute_labeler_lag_7d", lambda: _compute_labeler_lag_7d(conn))
+    step("compute_reversal_stats_7d", lambda: _compute_reversal_stats_7d(conn))
+    step("compute_boundary_load_7d", lambda: _compute_boundary_load_7d(conn))
+    step("update_val_dist_day", lambda: _update_val_dist_day(conn))
+    step("compute_entropy_7d", lambda: _compute_entropy_7d(conn))
+    step("update_author_day", lambda: _update_author_day(conn))
+    step("update_author_labeler_day", lambda: _update_author_labeler_day(conn))
 
     if config.boundary_enabled:
-        _derive_step(conn, "run_boundary_pass", lambda: run_boundary_pass(conn, config, now))
+        step("run_boundary_pass", lambda: run_boundary_pass(conn, config, now))
 
     total_ms = int((time.monotonic() - t_pass) * 1000)
-    _log.info("derive.pass total_ms=%d", total_ms)
+    state = 'COMPLETE' if all(o['state'] == 'COMPLETE' for o in outcomes.values()) else 'INCOMPLETE'
+    _log.info("derive.pass total_ms=%d state=%s", total_ms, state)
 
     # WAL checkpoint with TRUNCATE — reclaim WAL disk space after the batch.
     # run_derive does retention-style deletes across many sub-operations; the
@@ -1639,3 +1651,4 @@ def run_derive(conn, config: Config, now: datetime | None = None) -> None:
             )
     except sqlite3.OperationalError as e:
         _log.warning("wal_checkpoint(TRUNCATE) failed: %s", e)
+    return {'state': state, 'steps': outcomes}
