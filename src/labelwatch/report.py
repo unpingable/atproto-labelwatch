@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
+import stat
 import sys
 import time
 import uuid
+import fcntl
 from importlib import metadata
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -1590,21 +1591,226 @@ def _get_package_version() -> Optional[str]:
         return None
 
 
-def _prepare_out_dir(out_dir: str) -> str:
+def _prepare_out_dir(out_dir: str) -> tuple[str, tuple[int, int], int]:
     parent = os.path.dirname(os.path.abspath(out_dir)) or "."
     os.makedirs(parent, exist_ok=True)
     tmp_dir = os.path.join(parent, f".report-tmp-{uuid.uuid4().hex}")
-    os.makedirs(tmp_dir, exist_ok=True)
-    return tmp_dir
+    # Every supported publisher holds the sibling publication lock before this
+    # call. That is the exclusion boundary across mkdir -> descriptor capture;
+    # an uncooperative same-UID namespace writer is outside this contract.
+    # Exclusive creation separately prevents adoption of a preexisting tree.
+    os.mkdir(tmp_dir)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+    )
+    descriptor = os.open(tmp_dir, flags)
+    try:
+        opened = os.fstat(descriptor)
+        identity = (opened.st_dev, opened.st_ino)
+        if _path_identity(tmp_dir) != identity:
+            raise RuntimeError("report staging identity changed during capture")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return tmp_dir, identity, descriptor
 
 
-def _commit_out_dir(tmp_dir: str, out_dir: str) -> None:
-    if os.path.exists(out_dir):
-        backup = out_dir + ".prev"
-        if os.path.exists(backup):
-            shutil.rmtree(backup)
-        os.replace(out_dir, backup)
-    os.replace(tmp_dir, out_dir)
+def _path_identity(path: str) -> tuple[int, int]:
+    st = os.lstat(path)
+    if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
+        raise RuntimeError(f"refusing non-directory publication path: {path}")
+    return st.st_dev, st.st_ino
+
+
+def _same_identity(path: str, identity: tuple[int, int]) -> bool:
+    try:
+        return _path_identity(path) == identity
+    except (FileNotFoundError, RuntimeError):
+        return False
+
+
+def _clear_open_directory(descriptor: int) -> None:
+    """Clear an already identity-bound directory without following symlinks."""
+    with os.scandir(descriptor) as entries:
+        for entry in entries:
+            observed = entry.stat(follow_symlinks=False)
+            identity = (observed.st_dev, observed.st_ino)
+            if stat.S_ISDIR(observed.st_mode) and not stat.S_ISLNK(observed.st_mode):
+                flags = (
+                    os.O_RDONLY
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_DIRECTORY", 0)
+                )
+                child = os.open(entry.name, flags, dir_fd=descriptor)
+                try:
+                    current = os.fstat(child)
+                    if (current.st_dev, current.st_ino) != identity:
+                        raise RuntimeError("directory identity changed during cleanup")
+                    _clear_open_directory(child)
+                finally:
+                    os.close(child)
+                current = os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != identity:
+                    raise RuntimeError("directory pathname changed during cleanup")
+                os.rmdir(entry.name, dir_fd=descriptor)
+            else:
+                current = os.stat(entry.name, dir_fd=descriptor, follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != identity:
+                    raise RuntimeError("file pathname changed during cleanup")
+                os.unlink(entry.name, dir_fd=descriptor)
+
+
+def _clear_owned_tree(
+    path: str,
+    identity: tuple[int, int],
+    descriptor: int | None = None,
+) -> bool:
+    """Clear bytes through an identity-bound descriptor; retain the root."""
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+    )
+    owned_descriptor = descriptor is None
+    if descriptor is None:
+        try:
+            descriptor = os.open(path, flags)
+        except (FileNotFoundError, NotADirectoryError, OSError):
+            return False
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != identity:
+            return False
+        _clear_open_directory(descriptor)
+        return True
+    finally:
+        if owned_descriptor:
+            os.close(descriptor)
+
+
+def _cleanup_unpublished_staging(
+    tmp_dir: str,
+    identity: tuple[int, int],
+    publication: Dict[str, object],
+) -> None:
+    """Clear only the identity-bound stage before publication begins."""
+    if publication["state"] != "STAGING":
+        return
+    try:
+        if not _clear_owned_tree(tmp_dir, identity, int(publication["stage_fd"])):
+            log.warning("Retaining substituted or unavailable report staging path: %s", tmp_dir)
+    except (OSError, RuntimeError):
+        log.exception("Could not clear unpublished report staging directory: %s", tmp_dir)
+
+
+def _publication_lock(out_dir: str) -> tuple[int, str, tuple[int, int]]:
+    path = os.path.join(os.path.dirname(os.path.abspath(out_dir)), ".report-publication.lock")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise RuntimeError("report publication lock must be a regular file")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("report publication already active") from exc
+        current = os.lstat(path)
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            raise RuntimeError("report publication lock identity changed")
+        return descriptor, path, (opened.st_dev, opened.st_ino)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _assert_publication_lock(publication: Dict[str, object]) -> None:
+    descriptor = int(publication["lock_fd"])
+    path = str(publication["lock_path"])
+    expected = publication["lock_identity"]
+    opened = os.fstat(descriptor)
+    current = os.lstat(path)
+    if (opened.st_dev, opened.st_ino) != expected or (
+        current.st_dev,
+        current.st_ino,
+    ) != expected:
+        raise RuntimeError("report publication lock identity changed")
+
+
+def _validate_stable_layout(out_dir: str) -> None:
+    backup = os.path.abspath(out_dir) + ".prev"
+    live = os.path.abspath(out_dir)
+    live_identity = _path_identity(live) if os.path.lexists(live) else None
+    backup_identity = _path_identity(backup) if os.path.lexists(backup) else None
+    if live_identity is None and backup_identity is not None:
+        raise RuntimeError("ambiguous interrupted publication layout")
+
+
+def _replace_bound(source: str, destination: str, expected: tuple[int, int]) -> None:
+    """Move one validated tree and retain all objects on disagreement."""
+    if _path_identity(source) != expected:
+        raise RuntimeError("publication source identity changed")
+    os.replace(source, destination)
+    if _same_identity(destination, expected):
+        return
+    raise RuntimeError("publication source changed during rename")
+
+
+def _commit_out_dir(tmp_dir: str, out_dir: str, publication: Dict[str, object]) -> None:
+    """Publish a staged report without deleting rollback custody mid-transition."""
+    tmp_dir = os.path.abspath(tmp_dir)
+    out_dir = os.path.abspath(out_dir)
+    parent = os.path.dirname(out_dir)
+    if os.path.dirname(tmp_dir) != parent:
+        raise RuntimeError("report staging and destination must share a parent directory")
+    _assert_publication_lock(publication)
+    stage_identity = publication["stage_identity"]
+    stage_opened = os.fstat(int(publication["stage_fd"]))
+    if (stage_opened.st_dev, stage_opened.st_ino) != stage_identity:
+        raise RuntimeError("report staging descriptor identity changed")
+    if _path_identity(tmp_dir) != stage_identity:
+        raise RuntimeError("report staging identity changed")
+
+    backup = out_dir + ".prev"
+    out_identity = _path_identity(out_dir) if os.path.lexists(out_dir) else None
+    backup_identity = _path_identity(backup) if os.path.lexists(backup) else None
+    if out_identity is None and backup_identity is not None:
+        raise RuntimeError("ambiguous interrupted publication layout")
+
+    publication["state"] = "COMMIT_STARTED"
+    recovery = os.path.join(parent, f".report-recovery-{uuid.uuid4().hex}")
+    publication["recovery"] = recovery if backup_identity is not None else "NOT_CREATED"
+
+    if backup_identity is not None:
+        # Reserve the recovery name exclusively before it can become a
+        # deletion candidate or receive the superseded rollback tree.
+        os.mkdir(recovery)
+        _assert_publication_lock(publication)
+        _replace_bound(backup, recovery, backup_identity)
+    if out_identity is not None:
+        _assert_publication_lock(publication)
+        _replace_bound(out_dir, backup, out_identity)
+    _assert_publication_lock(publication)
+    _replace_bound(tmp_dir, out_dir, stage_identity)
+    publication["state"] = "LIVE_REPLACED"
+
+    # Only the rollback object superseded by a fully installed live tree is
+    # eligible for deletion. Failure here leaves it named for reconciliation.
+    if backup_identity is not None:
+        try:
+            if not _clear_owned_tree(recovery, backup_identity):
+                publication["state"] = "COMPLETE_WITH_RETAINED_RECOVERY"
+                return
+        except (OSError, RuntimeError):
+            log.exception("Retaining superseded report recovery directory: %s", recovery)
+            publication["state"] = "COMPLETE_WITH_RETAINED_RECOVERY"
+            return
+    publication["state"] = "COMPLETE"
 
 
 def _census_counts(conn) -> Dict[str, Dict[str, int]]:
@@ -1692,9 +1898,15 @@ def _alert_rollups(alerts_list, handles, display_names) -> str:
     return "".join(html_parts)
 
 
-def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
-                    facts_path: Optional[str] = None,
-                    config: Optional["Config"] = None) -> None:
+def _generate_report_into_staging(
+    conn,
+    tmp_dir: str,
+    out_dir: str,
+    publication: Dict[str, str],
+    now: Optional[datetime] = None,
+    facts_path: Optional[str] = None,
+    config: Optional["Config"] = None,
+) -> None:
     real_now = datetime.now(timezone.utc)
     if now is None:
         now = real_now
@@ -1855,7 +2067,6 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
         # meant observed quiet or an unobserved window.
     }
 
-    tmp_dir = _prepare_out_dir(out_dir)
     # `overview.json` is written after the weather verdict is computed, so the
     # artifact can carry the verdict and its standing together. See the
     # `network_weather` assignment below.
@@ -4055,4 +4266,50 @@ events per day, not active inventory.</p>
     sitemap_lines.append("</urlset>")
     _write(os.path.join(tmp_dir, "sitemap.xml"), "\n".join(sitemap_lines) + "\n")
 
-    _commit_out_dir(tmp_dir, out_dir)
+    _commit_out_dir(tmp_dir, out_dir, publication)
+
+
+def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
+                    facts_path: Optional[str] = None,
+                    config: Optional["Config"] = None) -> None:
+    """Generate and publish a report with explicit interruption custody.
+
+    Ordinary pre-publication failures clean only the unchanged staging root
+    created for this call. Once a publication rename begins, all remaining
+    objects are retained for explicit reconciliation.
+    """
+    parent = os.path.dirname(os.path.abspath(out_dir)) or "."
+    os.makedirs(parent, exist_ok=True)
+    lock_fd, lock_path, lock_identity = _publication_lock(out_dir)
+    publication: Dict[str, object] = {
+        "state": "LOCKED",
+        "lock_fd": lock_fd,
+        "lock_path": lock_path,
+        "lock_identity": lock_identity,
+    }
+    try:
+        _validate_stable_layout(out_dir)
+        tmp_dir, identity, stage_fd = _prepare_out_dir(out_dir)
+        publication["stage_identity"] = identity
+        publication["stage_fd"] = stage_fd
+        publication["state"] = "STAGING"
+        try:
+            _generate_report_into_staging(
+                conn,
+                tmp_dir,
+                out_dir,
+                publication,
+                now=now,
+                facts_path=facts_path,
+                config=config,
+            )
+        finally:
+            _cleanup_unpublished_staging(tmp_dir, identity, publication)
+            os.close(stage_fd)
+    finally:
+        os.close(lock_fd)
+
+
+# Preserve source-inspection compatibility for qualification tests that verify
+# invariants inside the report builder rather than the custody wrapper.
+generate_report.__wrapped__ = _generate_report_into_staging
