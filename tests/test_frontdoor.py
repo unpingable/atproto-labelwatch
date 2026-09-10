@@ -473,6 +473,17 @@ def test_methodology_remains_reachable_via_report(tmp_path):
     # Homepage links to methodology.
     assert "/methodology.html" in homepage
 
+    # Caddy serves the generated report as a static tree.  The fonts used by
+    # the inlined neutral-instruments CSS must be emitted into that tree too.
+    font_dir = os.path.join(out, "instruments", "fonts")
+    for name in (
+        "IBMPlexSans-Regular.woff2",
+        "IBMPlexSans-SemiBold.woff2",
+        "IBMPlexMono-Regular.woff2",
+        "SourceSerif4-Bold.woff2",
+    ):
+        assert os.path.isfile(os.path.join(font_dir, name))
+
 
 # ---------------------------------------------------------------------------
 # Test 8 — Frontdoor state derives from admissible audit receipt

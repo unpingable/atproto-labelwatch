@@ -1605,6 +1605,18 @@ def _prepare_out_dir(out_dir: str) -> str:
     return tmp_dir
 
 
+def _install_instrument_assets(tmp_dir: str) -> None:
+    """Install assets referenced by the report's inlined instrument CSS.
+
+    Production serves the report as a static tree, so its
+    ``/instruments/...`` URLs must live in that tree too.
+    """
+    shutil.copytree(
+        _VENDORED_INSTRUMENTS / "fonts",
+        Path(tmp_dir) / "instruments" / "fonts",
+    )
+
+
 def _commit_out_dir(tmp_dir: str, out_dir: str) -> None:
     if os.path.exists(out_dir):
         backup = out_dir + ".prev"
@@ -1863,6 +1875,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
     }
 
     tmp_dir = _prepare_out_dir(out_dir)
+    _install_instrument_assets(tmp_dir)
     # `overview.json` is written after the weather verdict is computed, so the
     # artifact can carry the verdict and its standing together. See the
     # `network_weather` assignment below.
