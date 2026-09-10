@@ -494,3 +494,163 @@ def test_process_unavailable_after_stat_retains_read_count(tmp_path):
     assert result["disposition"] == "COMPLETE"
     assert result["counters"]["unavailable_processes"] == 1
     assert result["counters"]["content_bytes_read"] == len(stat_bytes)
+
+
+def test_read_budget_continues_after_short_positive_read(tmp_path, monkeypatch):
+    path = tmp_path / "bytes"
+    path.write_bytes(b"abcdef")
+    original = observer.os.read
+    monkeypatch.setattr(
+        observer.os, "read", lambda descriptor, maximum: original(descriptor, min(2, maximum))
+    )
+    budget = observer.ReadBudget(10)
+    assert budget.read(path, 10) == b"abcdef"
+    assert budget.consumed == 6
+
+
+@pytest.mark.parametrize(
+    ("failure", "disposition", "reason"),
+    [(KeyboardInterrupt, "REFUSED", "INTERRUPTED"), (OSError, "NOT_OBSERVED", "OSError")],
+)
+def test_hash_partial_failure_retains_consumed_bytes(
+    tmp_path, monkeypatch, failure, disposition, reason
+):
+    path = tmp_path / "bytes"
+    path.write_bytes(b"abcdefgh")
+    original = observer.os.read
+    calls = 0
+
+    def interrupted(descriptor, maximum):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise failure()
+        return original(descriptor, min(2, maximum))
+
+    monkeypatch.setattr(observer.os, "read", interrupted)
+    result = observer.observe_files([path], _limits())
+    assert result["disposition"] == disposition
+    assert result["reason"] == reason
+    assert result["counters"]["content_bytes_read"] == 2
+
+
+def test_release_root_replacement_between_discovery_and_hash_refuses(
+    tmp_path, monkeypatch
+):
+    config = _config(tmp_path)
+    root = Path(config.release_root)
+    (root / "file").write_bytes(b"old")
+    replacement = tmp_path / "replacement-root"
+    replacement.mkdir()
+    (replacement / "file").write_bytes(b"replacement")
+    original_hash = observer._sha256_file
+    switched = False
+
+    def substitute(*args, **kwargs):
+        nonlocal switched
+        if not switched:
+            switched = True
+            root.rename(tmp_path / "original-root")
+            replacement.rename(root)
+        return original_hash(*args, **kwargs)
+
+    monkeypatch.setattr(observer, "_sha256_file", substitute)
+    result = observer.observe_release(config)
+    assert result["disposition"] == "REFUSED"
+    assert result["reason"] == "RELEASE_ROOT_IDENTITY_CHANGED"
+    assert all(record.get("state") != "HASHED_CONTENT_NOT_RETAINED" for record in result["records"])
+
+
+def test_process_scan_is_lazy_and_stops_at_refusal_probe(tmp_path, monkeypatch):
+    config = replace(_config(tmp_path), process_entries=1)
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    for pid in range(10):
+        (proc / str(pid)).mkdir()
+    original = observer.os.scandir
+    yielded = 0
+
+    class CountedScan:
+        def __init__(self, path):
+            self.inner = original(path)
+
+        def __enter__(self):
+            self.inner.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.inner.__exit__(*args)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal yielded
+            item = next(self.inner)
+            yielded += 1
+            return item
+
+    monkeypatch.setattr(observer.os, "scandir", CountedScan)
+    result = observer.observe_processes(config, proc)
+    assert result["reason"] == "PROCESS_ENTRY_LIMIT_EXCEEDED"
+    assert yielded == 2
+
+
+def test_process_refusal_keeps_final_content_count(tmp_path):
+    config = replace(_config(tmp_path), descriptor_entries=0)
+    proc = tmp_path / "proc"
+    process = proc / "42"
+    (process / "fd").mkdir(parents=True)
+    (process / "fdinfo").mkdir()
+    stat_bytes = _proc_stat(42, 5)
+    (process / "stat").write_bytes(stat_bytes)
+    (process / "fd" / "7").symlink_to(config.database)
+    result = observer.observe_processes(config, proc)
+    assert result["reason"] == "DESCRIPTOR_ENTRY_LIMIT_EXCEEDED"
+    assert result["counters"]["content_bytes_read"] == len(stat_bytes)
+
+
+def test_process_complete_result_cannot_exceed_output_limit(tmp_path):
+    config = replace(_config(tmp_path), process_output_bytes=512)
+    proc = tmp_path / "proc"
+    process = proc / "42"
+    (process / "fd").mkdir(parents=True)
+    (process / "fdinfo").mkdir()
+    (process / "stat").write_bytes(_proc_stat(42, 5))
+    (process / "cmdline").write_bytes(b"python\0worker.py\0")
+    (process / "maps").write_bytes(b"fixture maps")
+    (process / "fd" / "7").symlink_to(config.database)
+    (process / "fdinfo" / "7").write_text("flags:\t0100002\n")
+    result = observer.observe_processes(config, proc)
+    assert result["disposition"] == "REFUSED"
+    assert result["reason"] == "PROCESS_OUTPUT_LIMIT_EXCEEDED"
+    assert len(json.dumps(result, separators=(",", ":")).encode()) <= 512
+
+
+def test_process_final_deadline_prevents_complete_disposition(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    ticks = iter((0, 2_000_000_000))
+    monkeypatch.setattr(observer.time, "monotonic_ns", lambda: next(ticks))
+    result = observer.observe_processes(replace(config, process_seconds=1), proc)
+    assert result["disposition"] == "REFUSED"
+    assert result["reason"] == "TIME_LIMIT_EXCEEDED"
+
+
+def test_header_postread_error_retains_consumed_bytes(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    original = observer.os.fstat
+    calls = 0
+
+    def failing(descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("post-read metadata unavailable")
+        return original(descriptor)
+
+    monkeypatch.setattr(observer.os, "fstat", failing)
+    result = observer.observe_sqlite_header(config)
+    assert result["disposition"] == "NOT_OBSERVED"
+    assert result["content_bytes_read"] == 100

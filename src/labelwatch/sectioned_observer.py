@@ -76,9 +76,18 @@ class ObserverConfig:
     def __post_init__(self) -> None:
         if self.output_bytes < 128:
             raise ValueError("output_bytes must be at least 128 to retain a disposition")
+        if self.process_output_bytes < 512:
+            raise ValueError("process_output_bytes must be at least 512")
 
 
 class SectionRefusal(Exception):
+    def __init__(self, reason: str, observations: Mapping[str, object] | None = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.observations = dict(observations or {})
+
+
+class SectionUnavailable(Exception):
     def __init__(self, reason: str, observations: Mapping[str, object] | None = None):
         super().__init__(reason)
         self.reason = reason
@@ -99,16 +108,23 @@ class ReadBudget:
             descriptor = os.open(path, flags)
         except PermissionError as exc:
             raise SectionRefusal("PERMISSION_DENIED", {"content_bytes_read": self.consumed}) from exc
+        chunks: list[bytes] = []
+        observed = 0
         try:
-            content = os.read(descriptor, allowance)
+            while observed < allowance:
+                chunk = os.read(descriptor, allowance - observed)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                observed += len(chunk)
+                self.consumed += len(chunk)
         finally:
             os.close(descriptor)
-        self.consumed += len(content)
         # No one-byte probe crosses the declared ceiling. Filling the complete
         # allowance is conservatively refused because EOF was not observed.
-        if len(content) == allowance:
+        if observed == allowance:
             raise SectionRefusal("CONTENT_BOUND_REACHED_WITHOUT_EOF", {"content_bytes_read": self.consumed})
-        return content
+        return b"".join(chunks)
 
 
 def _deadline(seconds: float) -> int:
@@ -129,7 +145,25 @@ def _descriptor_within(fd: int, root: Path) -> bool:
         return False
 
 
-def _sha256_file(path: Path, byte_limit: int, deadline_ns: int, physical_root: Path | None = None) -> tuple[str, int, os.stat_result]:
+def _root_identity(root: Path) -> tuple[int, int]:
+    observed = root.lstat()
+    if stat.S_ISLNK(observed.st_mode) or not stat.S_ISDIR(observed.st_mode):
+        raise SectionRefusal("RELEASE_ROOT_DIRECTORY_REQUIRED")
+    return observed.st_dev, observed.st_ino
+
+
+def _check_root_identity(root: Path, expected: tuple[int, int]) -> None:
+    if _root_identity(root) != expected:
+        raise SectionRefusal("RELEASE_ROOT_IDENTITY_CHANGED")
+
+
+def _sha256_file(
+    path: Path,
+    byte_limit: int,
+    deadline_ns: int,
+    physical_root: Path | None = None,
+    physical_root_identity: tuple[int, int] | None = None,
+) -> tuple[str, int, os.stat_result]:
     before = path.stat(follow_symlinks=False)
     if not stat.S_ISREG(before.st_mode):
         raise SectionRefusal("NOT_A_REGULAR_FILE")
@@ -141,6 +175,8 @@ def _sha256_file(path: Path, byte_limit: int, deadline_ns: int, physical_root: P
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags)
     try:
+        if physical_root is not None and physical_root_identity is not None:
+            _check_root_identity(physical_root, physical_root_identity)
         opened = os.fstat(fd)
         if physical_root is not None and not _descriptor_within(fd, physical_root):
             raise SectionRefusal("OPENED_FILE_OUTSIDE_ENROLLED_ROOT")
@@ -170,6 +206,12 @@ def _sha256_file(path: Path, byte_limit: int, deadline_ns: int, physical_root: P
             raise SectionRefusal(
                 "CONTENT_MUTATED_DURING_READ", {"content_bytes_read": consumed}
             )
+        if physical_root is not None and physical_root_identity is not None:
+            _check_root_identity(physical_root, physical_root_identity)
+    except KeyboardInterrupt as exc:
+        raise SectionRefusal("INTERRUPTED", {"content_bytes_read": consumed}) from exc
+    except OSError as exc:
+        raise SectionUnavailable(type(exc).__name__, {"content_bytes_read": consumed}) from exc
     finally:
         os.close(fd)
     return digest.hexdigest(), consumed, after
@@ -432,7 +474,6 @@ def observe_required(config: ObserverConfig, cut: Callable[[ObserverConfig], dic
 
 def observe_files(paths: Iterable[Path], limits: SectionLimits, *, relative_to: Path | None = None) -> dict[str, object]:
     deadline_ns = _deadline(limits.seconds)
-    physical_root = relative_to.resolve(strict=True) if relative_to else None
     records: list[dict[str, object]] = []
     path_bytes = content_bytes = 0
     counters = {"entries": 0, "entry_probes": 0, "path_bytes": 0, "probe_path_bytes": 0, "content_bytes_read": 0}
@@ -451,8 +492,21 @@ def observe_files(paths: Iterable[Path], limits: SectionLimits, *, relative_to: 
             raise SectionRefusal("SECTION_OUTPUT_LIMIT_EXCEEDED", counters)
 
     try:
+        physical_root_identity = _root_identity(relative_to) if relative_to else None
+        physical_root = relative_to.resolve(strict=True) if relative_to else None
+        if relative_to and physical_root_identity:
+            _check_root_identity(relative_to, physical_root_identity)
+    except SectionRefusal as exc:
+        counters.update(exc.observations)
+        return result(REFUSED, exc.reason)
+    except (FileNotFoundError, PermissionError, OSError) as exc:
+        return result(NOT_OBSERVED, type(exc).__name__)
+
+    try:
         for path in paths:
             _check_time(deadline_ns, counters)
+            if relative_to and physical_root_identity:
+                _check_root_identity(relative_to, physical_root_identity)
             counters["entries"] += 1
             if counters["entries"] > limits.entries:
                 counters["entry_probes"] = 1
@@ -487,11 +541,21 @@ def observe_files(paths: Iterable[Path], limits: SectionLimits, *, relative_to: 
             if observed.st_size > remaining:
                 raise SectionRefusal("CONTENT_BYTE_LIMIT_EXCEEDED", counters)
             try:
-                digest, consumed, hashed_stat = _sha256_file(path, min(limits.file_bytes, remaining), deadline_ns, physical_root)
+                digest, consumed, hashed_stat = _sha256_file(
+                    path,
+                    min(limits.file_bytes, remaining),
+                    deadline_ns,
+                    physical_root,
+                    physical_root_identity,
+                )
             except SectionRefusal as exc:
                 content_bytes += int(exc.observations.get("content_bytes_read", 0))
                 counters["content_bytes_read"] = content_bytes
                 raise SectionRefusal(exc.reason, counters) from exc
+            except SectionUnavailable as exc:
+                content_bytes += int(exc.observations.get("content_bytes_read", 0))
+                counters["content_bytes_read"] = content_bytes
+                raise SectionUnavailable(exc.reason, counters) from exc
             content_bytes += consumed
             counters["content_bytes_read"] = content_bytes
             records.append({
@@ -505,6 +569,8 @@ def observe_files(paths: Iterable[Path], limits: SectionLimits, *, relative_to: 
             })
             check_record_budget()
         _check_time(deadline_ns, counters)
+        if relative_to and physical_root_identity:
+            _check_root_identity(relative_to, physical_root_identity)
     except KeyboardInterrupt:
         return result(REFUSED, "INTERRUPTED")
     except PermissionError:
@@ -513,6 +579,9 @@ def observe_files(paths: Iterable[Path], limits: SectionLimits, *, relative_to: 
         return result(NOT_OBSERVED, "PATH_DISAPPEARED")
     except OSError as exc:
         return result(NOT_OBSERVED, type(exc).__name__)
+    except SectionUnavailable as exc:
+        counters.update(exc.observations)
+        return result(NOT_OBSERVED, exc.reason)
     except SectionRefusal as exc:
         counters.update(exc.observations)
         return result(REFUSED, exc.reason)
@@ -568,6 +637,7 @@ def observe_release(config: ObserverConfig) -> dict[str, object]:
 def observe_sqlite_header(config: ObserverConfig, expected_identity: tuple[int, int] | None = None) -> dict[str, object]:
     path = Path(config.database)
     deadline_ns = _deadline(config.header_seconds)
+    consumed = 0
     try:
         path_stat = path.lstat()
         if stat.S_ISLNK(path_stat.st_mode) or not stat.S_ISREG(path_stat.st_mode):
@@ -581,16 +651,17 @@ def observe_sqlite_header(config: ObserverConfig, expected_identity: tuple[int, 
             if expected_identity and (before.st_dev, before.st_ino) != expected_identity:
                 raise SectionRefusal("SQLITE_HEADER_REQUIRED_IDENTITY_MISMATCH")
             header = os.read(fd, 100)
+            consumed = len(header)
             after = os.fstat(fd)
-            _check_time(deadline_ns, {"content_bytes_read": len(header)})
+            _check_time(deadline_ns, {"content_bytes_read": consumed})
             if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns):
                 raise SectionRefusal("SQLITE_HEADER_CONTENT_MUTATED", {"content_bytes_read": len(header)})
         finally:
             os.close(fd)
     except SectionRefusal as exc:
-        return {"disposition": REFUSED, "reason": exc.reason, "content_bytes_read": exc.observations.get("content_bytes_read", 0), "raw_content_retained": False}
+        return {"disposition": REFUSED, "reason": exc.reason, "content_bytes_read": exc.observations.get("content_bytes_read", consumed), "raw_content_retained": False}
     except (FileNotFoundError, PermissionError, OSError) as exc:
-        return {"disposition": NOT_OBSERVED, "reason": type(exc).__name__, "content_bytes_read": 0, "raw_content_retained": False}
+        return {"disposition": NOT_OBSERVED, "reason": type(exc).__name__, "content_bytes_read": consumed, "raw_content_retained": False}
     if len(header) != 100:
         return {"disposition": REFUSED, "reason": "SHORT_SQLITE_HEADER", "content_bytes_read": len(header), "raw_content_retained": False}
     return {
@@ -623,6 +694,53 @@ def _bounded_proc_digest(path: Path, maximum: int, budget: ReadBudget) -> tuple[
     return hashlib.sha256(content).hexdigest(), budget.consumed - before
 
 
+def _bounded_scandir(
+    root: Path,
+    counters: dict[str, int],
+    counter: str,
+    limit: int,
+    refusal: str,
+) -> Iterable[os.DirEntry[str]]:
+    """Lazily enumerate at most limit entries plus one refusal probe."""
+    with os.scandir(root) as entries:
+        for entry in entries:
+            counters[counter] += 1
+            if counters[counter] > limit:
+                raise SectionRefusal(refusal, counters)
+            yield entry
+
+
+def _process_result(
+    config: ObserverConfig,
+    disposition: str,
+    reason: str,
+    counters: Mapping[str, int],
+    records: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    value: dict[str, object] = {
+        "disposition": disposition,
+        "reason": reason,
+        "limits": _process_limits(config),
+        "counters": dict(counters),
+        "records": list(records),
+    }
+    encoded = lambda: len(json.dumps(value, separators=(",", ":")).encode("utf-8"))
+    if encoded() <= config.process_output_bytes:
+        return value
+    value["records"] = "OMITTED_TO_MEET_PROCESS_OUTPUT_BOUND"
+    value["details_retained"] = False
+    if encoded() <= config.process_output_bytes:
+        return value
+    # This compact envelope is bounded even at the supported 512-byte floor.
+    return {
+        "disposition": disposition,
+        "reason": reason,
+        "limits": {"output_bytes": config.process_output_bytes},
+        "counters": dict(counters),
+        "details_retained": False,
+    }
+
+
 def observe_processes(config: ObserverConfig, proc_root: Path = Path("/proc")) -> dict[str, object]:
     deadline_ns = _deadline(config.process_seconds)
     counters = {
@@ -641,18 +759,29 @@ def observe_processes(config: ObserverConfig, proc_root: Path = Path("/proc")) -
     except (FileNotFoundError, PermissionError, OSError) as exc:
         return {"disposition": NOT_OBSERVED, "reason": type(exc).__name__, "counters": counters}
     try:
-        for process in (p for p in proc_root.iterdir() if p.name.isdigit()):
+        for process_entry in _bounded_scandir(
+            proc_root,
+            counters,
+            "process_entries",
+            config.process_entries,
+            "PROCESS_ENTRY_LIMIT_EXCEEDED",
+        ):
             _check_time(deadline_ns, counters)
-            counters["process_entries"] += 1
-            if counters["process_entries"] > config.process_entries:
-                raise SectionRefusal("PROCESS_ENTRY_LIMIT_EXCEEDED", counters)
+            if not process_entry.name.isdigit():
+                continue
+            process = proc_root / process_entry.name
             try:
                 before = _proc_start_ticks(read_budget.read(process / "stat", 8192))
                 matches: list[dict[str, object]] = []
-                for descriptor in (process / "fd").iterdir():
-                    counters["descriptor_entries"] += 1
-                    if counters["descriptor_entries"] > config.descriptor_entries:
-                        raise SectionRefusal("DESCRIPTOR_ENTRY_LIMIT_EXCEEDED", counters)
+                for descriptor_entry in _bounded_scandir(
+                    process / "fd",
+                    counters,
+                    "descriptor_entries",
+                    config.descriptor_entries,
+                    "DESCRIPTOR_ENTRY_LIMIT_EXCEEDED",
+                ):
+                    _check_time(deadline_ns, counters)
+                    descriptor = process / "fd" / descriptor_entry.name
                     try:
                         descriptor_stat = descriptor.stat()
                     except (FileNotFoundError, PermissionError, OSError):
@@ -662,7 +791,7 @@ def observe_processes(config: ObserverConfig, proc_root: Path = Path("/proc")) -
                     counters["descriptor_matches"] += 1
                     if counters["descriptor_matches"] > config.descriptor_matches:
                         raise SectionRefusal("DESCRIPTOR_MATCH_LIMIT_EXCEEDED", counters)
-                    flags = _read_small(process / "fdinfo" / descriptor.name, budget=read_budget)
+                    flags = _read_small(process / "fdinfo" / descriptor_entry.name, budget=read_budget)
                     access = "NOT_OBSERVED"
                     if flags:
                         for line in flags.splitlines():
@@ -672,13 +801,15 @@ def observe_processes(config: ObserverConfig, proc_root: Path = Path("/proc")) -
                                     access = {os.O_RDONLY: "READ_ONLY", os.O_WRONLY: "WRITE_ONLY", os.O_RDWR: "READ_WRITE"}.get(mode, "NOT_OBSERVED")
                                 except ValueError:
                                     pass
-                    matches.append({"descriptor": descriptor.name, "access": access})
+                    matches.append({"descriptor": descriptor_entry.name, "access": access})
+                _check_time(deadline_ns, counters)
                 if not matches:
                     continue
                 argv_hash, argv_bytes = _bounded_proc_digest(process / "cmdline", config.argv_bytes_per_process, read_budget)
                 maps_hash, maps_bytes = _bounded_proc_digest(process / "maps", config.maps_bytes_per_process, read_budget)
                 after = _proc_start_ticks(read_budget.read(process / "stat", 8192))
                 counters["content_bytes_read"] = read_budget.consumed
+                _check_time(deadline_ns, counters)
                 if before != after:
                     raise SectionRefusal("PROCESS_IDENTITY_CHANGED", counters)
                 if matches:
@@ -692,7 +823,11 @@ def observe_processes(config: ObserverConfig, proc_root: Path = Path("/proc")) -
                         "database_descriptors": matches,
                         "raw_content_retained": False,
                     })
-                    if len(json.dumps(records, separators=(",", ":")).encode()) > config.process_output_bytes:
+                    candidate = _process_result(
+                        config, COMPLETE, "BOUNDED_PROCESS_CENSUS_COMPLETE", counters, records
+                    )
+                    if candidate.get("details_retained") is False:
+                        records.pop()
                         raise SectionRefusal("PROCESS_OUTPUT_LIMIT_EXCEEDED", counters)
             except SectionRefusal:
                 raise
@@ -704,12 +839,24 @@ def observe_processes(config: ObserverConfig, proc_root: Path = Path("/proc")) -
             finally:
                 counters["content_bytes_read"] = read_budget.consumed
     except KeyboardInterrupt:
-        return {"disposition": REFUSED, "reason": "INTERRUPTED", "limits": _process_limits(config), "counters": counters, "records": records}
+        counters["content_bytes_read"] = read_budget.consumed
+        return _process_result(config, REFUSED, "INTERRUPTED", counters, records)
     except SectionRefusal as exc:
-        return {"disposition": REFUSED, "reason": exc.reason, "limits": _process_limits(config), "counters": {**counters, **exc.observations}, "records": records}
+        counters["content_bytes_read"] = read_budget.consumed
+        merged = {**exc.observations, **counters}
+        return _process_result(config, REFUSED, exc.reason, merged, records)
     except OSError as exc:
-        return {"disposition": NOT_OBSERVED, "reason": type(exc).__name__, "limits": _process_limits(config), "counters": counters, "records": records}
-    return {"disposition": COMPLETE, "reason": "BOUNDED_PROCESS_CENSUS_COMPLETE", "limits": _process_limits(config), "counters": counters, "records": records}
+        counters["content_bytes_read"] = read_budget.consumed
+        return _process_result(config, NOT_OBSERVED, type(exc).__name__, counters, records)
+    counters["content_bytes_read"] = read_budget.consumed
+    try:
+        _check_time(deadline_ns, counters)
+    except SectionRefusal as exc:
+        return _process_result(config, REFUSED, exc.reason, counters, records)
+    complete = _process_result(config, COMPLETE, "BOUNDED_PROCESS_CENSUS_COMPLETE", counters, records)
+    if complete.get("details_retained") is False:
+        return _process_result(config, REFUSED, "PROCESS_OUTPUT_LIMIT_EXCEEDED", counters, records)
+    return complete
 
 
 def _process_limits(config: ObserverConfig) -> dict[str, object]:

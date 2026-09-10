@@ -30,7 +30,7 @@ Defaults are part of the candidate contract:
 | release | 8,192 admitted; at most one bounded refusal probe | 256 MiB aggregate, 64 MiB/file | 512 KiB path bytes; 3 MiB section output; 60 s |
 | configuration | 64 | 16 MiB aggregate, 4 MiB/file | 64 KiB path bytes; 256 KiB output; 20 s |
 | unit files | 128 | 16 MiB aggregate, 4 MiB/file | 128 KiB path bytes; 512 KiB output; 20 s |
-| processes | 1,024 | 128 MiB aggregate | 20,000 descriptors; 1,024 matches; 32 KiB argv and 1 MiB maps/process; 512 KiB output; 20 s |
+| processes | 1,024 `/proc` directory-entry probes | 128 MiB aggregate | 20,000 descriptor-entry probes; 1,024 matches; 32 KiB argv and 1 MiB maps/process; 512 KiB full-section output; 20 s |
 | SQLite header | one exact file | exactly 100 bytes | header-only claim |
 | post-optional cut | enrolled paths/devices only | 2 MiB | corroboration only; cannot reopen required section |
 
@@ -49,9 +49,11 @@ EOF cannot be established within the remaining allowance, the section refuses
 at the ceiling. Release traversal admits at most 8,192 entries and observes at
 most one additional directory-entry probe solely to establish refusal; it does
 not eagerly enumerate a larger directory. Directory descriptors, `O_NOFOLLOW`,
-root-identity checks, and opened-descriptor containment checks prevent a
-pathname replacement from redirecting content reads outside the enrolled
-release root. Process stat is read under the aggregate process budget;
+root-identity checks held through each content read, and opened-descriptor
+containment checks prevent a pathname replacement from being reported as
+content from the enrolled release root. Process and descriptor directories
+are enumerated lazily, including at most the single entry that establishes a
+bound refusal. Process stat is read under the aggregate process budget;
 argv, maps, and fdinfo are hashed or interpreted only after a descriptor scan
 finds the enrolled database identity. Raw values and descriptor targets are
 not returned. Mountinfo and small sysfs fields are interpreted content reads
@@ -63,6 +65,7 @@ applicable disposition envelope. Overall JSON plus its trailing newline is
 capped at 4 MiB. Optional detail is explicitly omitted before
 required facts or section dispositions. A configured limit too small to retain
 required facts yields a compact refusal rather than oversized output.
+Partial or interrupted content reads retain the number of bytes actually read.
 Unexpected filesystem errors are confined to the affected optional section;
 they cannot discard a completed required cut or prevent later independent
 sections from reporting their own dispositions.
