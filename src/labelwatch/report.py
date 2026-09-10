@@ -1591,13 +1591,31 @@ def _get_package_version() -> Optional[str]:
         return None
 
 
-def _prepare_out_dir(out_dir: str) -> str:
+def _prepare_out_dir(out_dir: str) -> tuple[str, tuple[int, int], int]:
     parent = os.path.dirname(os.path.abspath(out_dir)) or "."
     os.makedirs(parent, exist_ok=True)
     tmp_dir = os.path.join(parent, f".report-tmp-{uuid.uuid4().hex}")
-    # Exclusive creation is the evidence that this generation owns the tree.
+    # Every supported publisher holds the sibling publication lock before this
+    # call. That is the exclusion boundary across mkdir -> descriptor capture;
+    # an uncooperative same-UID namespace writer is outside this contract.
+    # Exclusive creation separately prevents adoption of a preexisting tree.
     os.mkdir(tmp_dir)
-    return tmp_dir
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+    )
+    descriptor = os.open(tmp_dir, flags)
+    try:
+        opened = os.fstat(descriptor)
+        identity = (opened.st_dev, opened.st_ino)
+        if _path_identity(tmp_dir) != identity:
+            raise RuntimeError("report staging identity changed during capture")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return tmp_dir, identity, descriptor
 
 
 def _path_identity(path: str) -> tuple[int, int]:
@@ -1646,7 +1664,11 @@ def _clear_open_directory(descriptor: int) -> None:
                 os.unlink(entry.name, dir_fd=descriptor)
 
 
-def _clear_owned_tree(path: str, identity: tuple[int, int]) -> bool:
+def _clear_owned_tree(
+    path: str,
+    identity: tuple[int, int],
+    descriptor: int | None = None,
+) -> bool:
     """Clear bytes through an identity-bound descriptor; retain the root."""
     flags = (
         os.O_RDONLY
@@ -1654,10 +1676,12 @@ def _clear_owned_tree(path: str, identity: tuple[int, int]) -> bool:
         | getattr(os, "O_NOFOLLOW", 0)
         | getattr(os, "O_DIRECTORY", 0)
     )
-    try:
-        descriptor = os.open(path, flags)
-    except (FileNotFoundError, NotADirectoryError, OSError):
-        return False
+    owned_descriptor = descriptor is None
+    if descriptor is None:
+        try:
+            descriptor = os.open(path, flags)
+        except (FileNotFoundError, NotADirectoryError, OSError):
+            return False
     try:
         opened = os.fstat(descriptor)
         if (opened.st_dev, opened.st_ino) != identity:
@@ -1665,7 +1689,8 @@ def _clear_owned_tree(path: str, identity: tuple[int, int]) -> bool:
         _clear_open_directory(descriptor)
         return True
     finally:
-        os.close(descriptor)
+        if owned_descriptor:
+            os.close(descriptor)
 
 
 def _cleanup_unpublished_staging(
@@ -1677,7 +1702,7 @@ def _cleanup_unpublished_staging(
     if publication["state"] != "STAGING":
         return
     try:
-        if not _clear_owned_tree(tmp_dir, identity):
+        if not _clear_owned_tree(tmp_dir, identity, int(publication["stage_fd"])):
             log.warning("Retaining substituted or unavailable report staging path: %s", tmp_dir)
     except (OSError, RuntimeError):
         log.exception("Could not clear unpublished report staging directory: %s", tmp_dir)
@@ -1727,16 +1752,12 @@ def _validate_stable_layout(out_dir: str) -> None:
 
 
 def _replace_bound(source: str, destination: str, expected: tuple[int, int]) -> None:
-    """Move one validated tree, reversing any pathname substitution."""
+    """Move one validated tree and retain all objects on disagreement."""
     if _path_identity(source) != expected:
         raise RuntimeError("publication source identity changed")
     os.replace(source, destination)
     if _same_identity(destination, expected):
         return
-    # The rename moved a substituted source. Put that object back when doing so
-    # cannot overwrite anything, and retain every other object for reconcile.
-    if not os.path.lexists(source) and os.path.lexists(destination):
-        os.replace(destination, source)
     raise RuntimeError("publication source changed during rename")
 
 
@@ -1749,6 +1770,9 @@ def _commit_out_dir(tmp_dir: str, out_dir: str, publication: Dict[str, object]) 
         raise RuntimeError("report staging and destination must share a parent directory")
     _assert_publication_lock(publication)
     stage_identity = publication["stage_identity"]
+    stage_opened = os.fstat(int(publication["stage_fd"]))
+    if (stage_opened.st_dev, stage_opened.st_ino) != stage_identity:
+        raise RuntimeError("report staging descriptor identity changed")
     if _path_identity(tmp_dir) != stage_identity:
         raise RuntimeError("report staging identity changed")
 
@@ -4265,9 +4289,9 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
     }
     try:
         _validate_stable_layout(out_dir)
-        tmp_dir = _prepare_out_dir(out_dir)
-        identity = _path_identity(tmp_dir)
+        tmp_dir, identity, stage_fd = _prepare_out_dir(out_dir)
         publication["stage_identity"] = identity
+        publication["stage_fd"] = stage_fd
         publication["state"] = "STAGING"
         try:
             _generate_report_into_staging(
@@ -4281,6 +4305,7 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
             )
         finally:
             _cleanup_unpublished_staging(tmp_dir, identity, publication)
+            os.close(stage_fd)
     finally:
         os.close(lock_fd)
 

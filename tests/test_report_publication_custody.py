@@ -18,16 +18,25 @@ def _marker(path: Path) -> str:
 @contextmanager
 def _publication(out: Path, staging: Path):
     lock_fd, lock_path, lock_identity = report._publication_lock(str(out))
+    flags = (
+        report.os.O_RDONLY
+        | getattr(report.os, "O_CLOEXEC", 0)
+        | getattr(report.os, "O_NOFOLLOW", 0)
+        | getattr(report.os, "O_DIRECTORY", 0)
+    )
+    stage_fd = report.os.open(staging, flags)
     value = {
         "state": "STAGING",
         "lock_fd": lock_fd,
         "lock_path": lock_path,
         "lock_identity": lock_identity,
         "stage_identity": report._path_identity(str(staging)),
+        "stage_fd": stage_fd,
     }
     try:
         yield value
     finally:
+        report.os.close(stage_fd)
         report.os.close(lock_fd)
 
 
@@ -74,6 +83,45 @@ def test_stage_creation_never_adopts_uuid_collision(tmp_path, monkeypatch):
     with pytest.raises(FileExistsError):
         report.generate_report(object(), str(out))
     assert _marker(collision) == "preexisting"
+
+
+def test_supported_publisher_lock_is_held_before_stage_creation(tmp_path, monkeypatch):
+    out = tmp_path / "report"
+    original = report.os.mkdir
+    observed = []
+
+    def check_lock(path, *args, **kwargs):
+        if Path(path).name.startswith(".report-tmp-"):
+            with pytest.raises(RuntimeError, match="already active"):
+                report._publication_lock(str(out))
+            observed.append(True)
+        return original(path, *args, **kwargs)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("generation stopped")
+
+    monkeypatch.setattr(report.os, "mkdir", check_lock)
+    monkeypatch.setattr(report, "_generate_report_into_staging", fail)
+    with pytest.raises(RuntimeError, match="generation stopped"):
+        report.generate_report(object(), str(out))
+    assert observed == [True]
+
+
+def test_stage_descriptor_clears_owned_tree_not_pathname_substitute(tmp_path, monkeypatch):
+    out = tmp_path / "report"
+
+    def substitute(_conn, staging, *_args, **_kwargs):
+        stage = Path(staging)
+        (stage / "owned").write_text("owned", encoding="utf-8")
+        stage.rename(tmp_path / "displaced-owned")
+        _tree(stage, "substitute")
+        raise RuntimeError("generation stopped")
+
+    monkeypatch.setattr(report, "_generate_report_into_staging", substitute)
+    with pytest.raises(RuntimeError, match="generation stopped"):
+        report.generate_report(object(), str(out))
+    assert _marker(next(tmp_path.glob(".report-tmp-*"))) == "substitute"
+    assert list((tmp_path / "displaced-owned").iterdir()) == []
 
 
 def test_success_keeps_immediate_rollback_and_clears_only_older_bytes(tmp_path):
@@ -138,7 +186,7 @@ def test_substituted_stage_is_not_accepted_as_live(tmp_path):
     assert (_marker(out), _marker(staging), _marker(displaced)) == ("live", "substitute", "generated")
 
 
-def test_live_symlink_inserted_during_rename_is_reversed(tmp_path, monkeypatch):
+def test_live_symlink_inserted_during_rename_is_retained_without_reversal(tmp_path, monkeypatch):
     out = tmp_path / "report"
     staging = tmp_path / ".report-tmp-fixed"
     displaced = tmp_path / "displaced-live"
@@ -161,7 +209,8 @@ def test_live_symlink_inserted_during_rename_is_reversed(tmp_path, monkeypatch):
     with _publication(out, staging) as publication:
         with pytest.raises(RuntimeError, match="changed during rename"):
             report._commit_out_dir(str(staging), str(out), publication)
-    assert out.is_symlink()
+    assert not out.exists()
+    assert (tmp_path / "report.prev").is_symlink()
     assert _marker(displaced) == "live"
     assert _marker(staging) == "new"
 
