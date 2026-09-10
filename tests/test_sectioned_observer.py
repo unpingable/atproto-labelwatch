@@ -88,6 +88,25 @@ def test_file_census_bounds(tmp_path, change, reason):
     assert result["reason"] == reason
 
 
+def test_content_probe_never_reads_past_aggregate_ceiling(tmp_path):
+    path = tmp_path / "larger"
+    path.write_bytes(b"abcd")
+    budget = observer.ReadBudget(3)
+    with pytest.raises(observer.SectionRefusal) as refused:
+        budget.read(path, 10)
+    assert refused.value.reason == "CONTENT_BOUND_REACHED_WITHOUT_EOF"
+    assert budget.consumed == 3
+
+
+def test_regular_file_oversize_refuses_before_content_open(tmp_path, monkeypatch):
+    path = tmp_path / "oversize"
+    path.write_bytes(b"abcd")
+    monkeypatch.setattr(observer.os, "open", lambda *args: pytest.fail("content open crossed pre-read size refusal"))
+    result = observer.observe_files([path], _limits(file_bytes=3))
+    assert result["disposition"] == "REFUSED"
+    assert result["counters"]["content_bytes_read"] == 0
+
+
 def test_time_bound_retains_partial_counters(tmp_path, monkeypatch):
     path = tmp_path / "a"
     path.write_bytes(b"a")
@@ -208,6 +227,14 @@ def test_required_failure_prevents_optional_reads(tmp_path):
     )
 
 
+def test_optional_oserror_is_section_local_and_required_cut_survives(tmp_path, monkeypatch):
+    monkeypatch.setattr(observer, "observe_release", lambda config: (_ for _ in ()).throw(OSError("fixture")))
+    result = observer.run_observer(_config(tmp_path), required_cut=_cut)
+    assert result["sections"]["required_capacity_topology"]["disposition"] == "COMPLETE"
+    assert result["sections"]["release"] == {"disposition": "NOT_OBSERVED", "reason": "OSError"}
+    assert result["sections"]["sqlite_header"]["disposition"] == "COMPLETE"
+
+
 def test_post_optional_change_does_not_reopen_closed_required(tmp_path):
     calls = 0
 
@@ -246,6 +273,22 @@ def test_impossibly_small_output_bound_emits_only_bounded_refusal(tmp_path):
     assert len(encoded) <= 300
     assert result["output"]["disposition"] == "REFUSED"
     assert result["output"]["reason"] == "OVERALL_OUTPUT_LIMIT_TOO_SMALL_FOR_REQUIRED_FACTS"
+
+
+def test_output_metadata_itself_is_included_in_limit():
+    record = {"schema": "x", "sections": {"required_capacity_topology": {"disposition": "COMPLETE", "padding": "x" * 100}}}
+    without_metadata = len(json.dumps(record, sort_keys=True, separators=(",", ":")).encode())
+    result = observer._bound_output(record, without_metadata + 1)
+    assert len(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()) <= without_metadata + 1
+
+
+def test_tree_enumeration_stops_after_one_bounded_probe(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    for index in range(100):
+        (root / str(index)).write_bytes(b"")
+    observed = list(observer._tree_paths(root, 2))
+    assert len(observed) == 3  # two admitted entries plus one explicit refusal probe
 
 
 def test_source_has_no_sql_or_service_mutation_path():

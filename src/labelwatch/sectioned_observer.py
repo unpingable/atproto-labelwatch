@@ -80,16 +80,18 @@ class ReadBudget:
 
     def read(self, path: Path, maximum: int) -> bytes:
         allowance = min(maximum, self.limit - self.consumed)
-        if allowance < 0:
+        if allowance <= 0:
             raise SectionRefusal("CONTENT_BYTE_LIMIT_EXCEEDED", {"content_bytes_read": self.consumed})
         try:
             with path.open("rb") as stream:
-                content = stream.read(allowance + 1)
+                content = stream.read(allowance)
         except PermissionError as exc:
             raise SectionRefusal("PERMISSION_DENIED", {"content_bytes_read": self.consumed}) from exc
         self.consumed += len(content)
-        if len(content) > allowance:
-            raise SectionRefusal("CONTENT_BYTE_LIMIT_EXCEEDED", {"content_bytes_read": self.consumed})
+        # No one-byte probe crosses the declared ceiling. Filling the complete
+        # allowance is conservatively refused because EOF was not observed.
+        if len(content) == allowance:
+            raise SectionRefusal("CONTENT_BOUND_REACHED_WITHOUT_EOF", {"content_bytes_read": self.consumed})
         return content
 
 
@@ -119,17 +121,15 @@ def _sha256_file(path: Path, byte_limit: int, deadline_ns: int) -> tuple[str, in
             before.st_dev, before.st_ino, before.st_size
         ):
             raise SectionRefusal("PATH_IDENTITY_CHANGED_BEFORE_READ")
-        while True:
+        while consumed < opened.st_size:
             _check_time(deadline_ns, {"content_bytes_read": consumed})
-            chunk = os.read(fd, min(1024 * 1024, byte_limit - consumed + 1))
+            chunk = os.read(fd, min(1024 * 1024, opened.st_size - consumed))
             if not chunk:
                 break
             consumed += len(chunk)
-            if consumed > byte_limit:
-                raise SectionRefusal(
-                    "FILE_BYTE_LIMIT_EXCEEDED", {"content_bytes_read": consumed}
-                )
             digest.update(chunk)
+        if consumed != opened.st_size:
+            raise SectionRefusal("SHORT_CONTENT_READ", {"content_bytes_read": consumed})
         after = os.fstat(fd)
         if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (
             opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns
@@ -428,20 +428,28 @@ def observe_files(paths: Iterable[Path], limits: SectionLimits, *, relative_to: 
     return {"disposition": COMPLETE, "reason": "BOUNDED_HASH_CENSUS_COMPLETE", "limits": asdict(limits), "counters": counters, "records": records}
 
 
-def _tree_paths(root: Path) -> Iterable[Path]:
-    # scandir does not follow directory symlinks. Sorting makes fixture output deterministic.
+def _tree_paths(root: Path, entry_limit: int) -> Iterable[Path]:
+    # scandir does not follow directory symlinks. Discovery itself stops after
+    # the one extra entry needed to produce a bounded refusal.
     pending = [root]
+    yielded = 0
     while pending:
         current = pending.pop()
         yield current
+        yielded += 1
+        if yielded > entry_limit:
+            return
         if current.is_symlink() or not current.is_dir():
             continue
-        children = sorted((Path(item.path) for item in os.scandir(current)), reverse=True)
-        pending.extend(children)
+        with os.scandir(current) as entries:
+            for item in entries:
+                pending.append(Path(item.path))
+                if yielded + len(pending) > entry_limit:
+                    break
 
 
 def observe_release(config: ObserverConfig) -> dict[str, object]:
-    return observe_files(_tree_paths(Path(config.release_root)), config.release, relative_to=Path(config.release_root))
+    return observe_files(_tree_paths(Path(config.release_root), config.release.entries), config.release, relative_to=Path(config.release_root))
 
 
 def observe_sqlite_header(config: ObserverConfig) -> dict[str, object]:
@@ -592,10 +600,16 @@ def _not_observed(reason: str, limits: Mapping[str, object] | None = None) -> di
 
 def _bound_output(record: dict[str, object], maximum: int) -> dict[str, object]:
     encoded = lambda: json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    if len(encoded()) <= maximum:
-        record["output"] = {"disposition": COMPLETE, "bytes": 0, "limit": maximum}
+    def finalize(extra: Mapping[str, object] | None = None) -> bool:
+        record["output"] = {"disposition": COMPLETE, "bytes": 0, "limit": maximum, **dict(extra or {})}
         for _ in range(4):
             record["output"]["bytes"] = len(encoded())
+        if len(encoded()) <= maximum:
+            return True
+        record.pop("output", None)
+        return False
+
+    if finalize():
         return record
     # Required facts and all dispositions are retained. Optional record detail is discarded explicitly.
     for name in ("release", "configuration", "unit_files"):
@@ -603,10 +617,7 @@ def _bound_output(record: dict[str, object], maximum: int) -> dict[str, object]:
         if isinstance(section, dict) and "records" in section:
             section["records"] = "OMITTED_TO_MEET_OVERALL_OUTPUT_BOUND"
             section["details_retained"] = False
-            if len(encoded()) <= maximum:
-                record["output"] = {"disposition": COMPLETE, "bytes": 0, "limit": maximum, "optional_details_omitted": True}
-                for _ in range(4):
-                    record["output"]["bytes"] = len(encoded())
+            if finalize({"optional_details_omitted": True}):
                 return record
     for name, section in tuple(record["sections"].items()):
         if name == "required_capacity_topology" or not isinstance(section, dict):
@@ -615,10 +626,7 @@ def _bound_output(record: dict[str, object], maximum: int) -> dict[str, object]:
         summary["details_retained"] = False
         summary["detail_reason"] = "OMITTED_TO_MEET_OVERALL_OUTPUT_BOUND"
         record["sections"][name] = summary
-    if len(encoded()) <= maximum:
-        record["output"] = {"disposition": COMPLETE, "bytes": 0, "limit": maximum, "optional_details_omitted": True}
-        for _ in range(4):
-            record["output"]["bytes"] = len(encoded())
+    if finalize({"optional_details_omitted": True}):
         return record
     # An impossibly small limit is reported without violating its own bound.
     minimal = {
@@ -632,7 +640,12 @@ def _bound_output(record: dict[str, object], maximum: int) -> dict[str, object]:
             json.dumps(record["sections"]["required_capacity_topology"], sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest(),
     }
-    minimal["output"]["bytes"] = len(json.dumps(minimal, sort_keys=True, separators=(",", ":")).encode())
+    for _ in range(4):
+        minimal["output"]["bytes"] = len(json.dumps(minimal, sort_keys=True, separators=(",", ":")).encode())
+    if len(json.dumps(minimal, sort_keys=True, separators=(",", ":")).encode()) > maximum:
+        minimal = {"output": {"disposition": REFUSED, "reason": "OUTPUT_LIMIT_TOO_SMALL", "limit": maximum}}
+        if len(json.dumps(minimal, sort_keys=True, separators=(",", ":")).encode()) > maximum:
+            return {}
     return minimal
 
 
@@ -657,11 +670,17 @@ def run_observer(config: ObserverConfig, *, required_cut: Callable[[ObserverConf
             record["sections"][name] = _not_observed("REQUIRED_SECTION_NOT_COMPLETE")
         return _bound_output(record, config.output_bytes)
     try:
-        record["sections"]["release"] = observe_release(config)
-        record["sections"]["configuration"] = observe_files((Path(p) for p in config.configuration_files), config.configuration)
-        record["sections"]["unit_files"] = observe_files((Path(p) for p in config.unit_files), config.unit_files_limits)
-        record["sections"]["processes"] = observe_processes(config)
-        record["sections"]["sqlite_header"] = observe_sqlite_header(config)
+        for name, operation in (
+            ("release", lambda: observe_release(config)),
+            ("configuration", lambda: observe_files((Path(p) for p in config.configuration_files), config.configuration)),
+            ("unit_files", lambda: observe_files((Path(p) for p in config.unit_files), config.unit_files_limits)),
+            ("processes", lambda: observe_processes(config)),
+            ("sqlite_header", lambda: observe_sqlite_header(config)),
+        ):
+            try:
+                record["sections"][name] = operation()
+            except OSError as exc:
+                record["sections"][name] = _not_observed(type(exc).__name__)
         try:
             post = required_cut(config)
             record["sections"]["post_optional_corroboration"] = {

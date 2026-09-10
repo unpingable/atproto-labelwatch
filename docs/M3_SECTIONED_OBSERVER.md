@@ -27,7 +27,7 @@ Defaults are part of the candidate contract:
 | Section | Entry bound | Content-read bound | Other bounds |
 | --- | ---: | ---: | --- |
 | each required cut | enrolled paths/devices only | 2 MiB | 15 s; two cuts before optional work |
-| release | 8,192 | 256 MiB aggregate, 64 MiB/file | 512 KiB path bytes; 3 MiB section output; 60 s |
+| release | 8,192 admitted; at most one bounded refusal probe | 256 MiB aggregate, 64 MiB/file | 512 KiB path bytes; 3 MiB section output; 60 s |
 | configuration | 64 | 16 MiB aggregate, 4 MiB/file | 64 KiB path bytes; 256 KiB output; 20 s |
 | unit files | 128 | 16 MiB aggregate, 4 MiB/file | 128 KiB path bytes; 512 KiB output; 20 s |
 | processes | 1,024 | 128 MiB aggregate | 20,000 descriptors; 1,024 matches; 32 KiB argv and 1 MiB maps/process; 512 KiB output; 20 s |
@@ -44,13 +44,20 @@ Hashed file contents are read under `O_NOFOLLOW`; the result retains the digest,
 byte count, and identity but never the raw bytes. Directory and non-regular
 entries are metadata-only. Symlinks encountered during an optional tree census
 are recorded and not followed. A symlink at an enrolled required path refuses
-the required section. Process argv, maps, and fdinfo are hashed or interpreted
+the required section. No one-byte content probe crosses a content ceiling; if
+EOF cannot be established within the remaining allowance, the section refuses
+at the ceiling. Release traversal admits at most 8,192 entries and observes at
+most one additional directory-entry probe solely to establish refusal; it does
+not eagerly enumerate a larger directory. Process argv, maps, and fdinfo are hashed or interpreted
 only for bounded database-descriptor evidence; raw values and descriptor
 targets are not returned.
 
 Overall JSON is capped at 4 MiB. Optional detail is explicitly omitted before
 required facts or section dispositions. A configured limit too small to retain
 required facts yields a compact refusal rather than oversized output.
+Unexpected filesystem errors are confined to the affected optional section;
+they cannot discard a completed required cut or prevent later independent
+sections from reporting their own dispositions.
 
 The module contains no SQLite API, subprocess execution, systemd action,
 network operation, retry, file replacement, deletion, provisioning, backup, or
