@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import sqlite3
+from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional
@@ -1693,15 +1694,12 @@ def render_result_page_html(
         f"<style>{_RESULT_CSS}</style>"
         f"{_THEME_SYNC_JS}"
         "</head><body>"
-        "<header class=\"top\">"
-        "<a class=\"home-link\" href=\"/\"><strong>labelwatch</strong></a>"
-        " &middot; "
-        "<a class=\"dashboard-link\" href=\"/methodology.html\">system dashboard &amp; graphs</a>"
-        " &middot; "
-        "<a href=\"/about\">about</a>"
-        "</header>"
+        "<header class=\"top nz-masthead\"><a class=\"nz-family\" href=\"/\">neutral.zone / instruments</a>"
+        "<span class=\"nz-product\">Labelwatch</span><nav>"
+        "<a href=\"/about\">About</a><a href=\"/methodology.html\">Methodology</a>"
+        "<a href=\"https://github.com/unpingable/atproto-labelwatch\">Source</a></nav></header>"
         f"<main>{weather_strip}{body}{cta_block}</main>"
-        f"{audit_footer}"
+        f"{audit_footer}<footer class=\"nz-footer\"><nav><a href=\"/about\">About</a><a href=\"https://github.com/unpingable/atproto-labelwatch\">Source on GitHub</a><a href=\"/methodology.html\">Methodology</a><a href=\"/about#privacy\">Privacy</a><a href=\"https://bsky.app/profile/neutral.zone\">Contact</a></nav><p>Operated by The Neutral Ambassador (@neutral.zone). Source and project history are published by James Beck on GitHub.</p></footer>"
         "</body></html>"
     )
 
@@ -1770,23 +1768,18 @@ def render_homepage_html(
         f"<style>{_HOMEPAGE_CSS}</style>"
         f"{_THEME_SYNC_JS}"
         "</head><body>"
-        "<header class=\"top\"><strong>labelwatch</strong>"
-        " &middot; <a class=\"dashboard-link\" href=\"/methodology.html\">"
-        "system dashboard &amp; graphs</a>"
-        " &middot; <a href=\"/about\">about</a>"
-        "</header>"
+        "<header class=\"top nz-masthead\"><a class=\"nz-family\" href=\"/\">neutral.zone / instruments</a>"
+        "<span class=\"nz-product\">Labelwatch</span><nav>"
+        "<a href=\"/about\">About</a><a href=\"/methodology.html\">Methodology</a>"
+        "<a href=\"https://github.com/unpingable/atproto-labelwatch\">Source</a></nav></header>"
         "<main>"
-        "<h1>What's observed on a Bluesky account or its posts?</h1>"
+        f"<div class=\"nz-status-rail\"><span><strong>Observed</strong> public labels</span><span><strong>Audit</strong> {_esc(audit_verdict or 'unavailable')}</span><span><strong>Decision</strong> none</span></div>"
+        "<p class=\"nz-eyebrow\">Account label lookup</p>"
+        "<h1>What moderation services have labeled this account?</h1>"
         "<p class=\"lede\">"
-        "Paste a handle or DID. See labeler testimony attached to that "
-        "account and to records authored by it &mdash; account-level labels, "
-        "profile labels, and post-level labels &mdash; what kind of authority "
-        "each label attempts, and how stable each labeler's emission shape "
-        "has been."
-        " <strong>Labelwatch publishes observations of testimony.</strong>"
-        " We do not adjudicate subjects, validate labels, rank labelers, "
-        "or produce a unified score."
+        "Paste a handle or DID. See labels attached to an account, profile, or posts &mdash; who published them, when, and what they affect."
         "</p>"
+        "<p><strong>Labelwatch observes labels. It doesn't decide whether they're true.</strong></p>"
         f"{pause_banner}"
         "<form id=\"lookup-form\" class=\"lookup\" method=\"get\" "
         "action=\"/v1/frontdoor\">"
@@ -1807,7 +1800,7 @@ def render_homepage_html(
         "</ul>"
         "</details>"
         "</main>"
-        f"{audit_footer}"
+        f"{audit_footer}<footer class=\"nz-footer\"><nav><a href=\"/about\">About</a><a href=\"https://github.com/unpingable/atproto-labelwatch\">Source on GitHub</a><a href=\"/methodology.html\">Methodology</a><a href=\"/about#privacy\">Privacy</a><a href=\"https://bsky.app/profile/neutral.zone\">Contact</a></nav><p>Operated by The Neutral Ambassador (@neutral.zone). Source and project history are published by James Beck on GitHub.</p></footer>"
         "<script>"
         # Submit form via GET to /v1/frontdoor?q=…; server redirects to the
         # canonical /v1/frontdoor/{did} once resolved.
@@ -1828,7 +1821,11 @@ def render_homepage_html(
 # CSS — kept inline to avoid Caddy static-asset coordination for v0
 # ---------------------------------------------------------------------------
 
-_BASE_CSS = """
+_VENDORED_INSTRUMENTS = Path(__file__).resolve().parent / "_instruments"
+_NEUTRAL_CSS = (_VENDORED_INSTRUMENTS / "neutral.css").read_text(encoding="utf-8").replace(
+    'url("fonts/', 'url("/instruments/fonts/')
+
+_BASE_CSS = _NEUTRAL_CSS + """
 /* Token palette deliberately matches report.py STYLE / [data-theme="dark"]
    so frontdoor and the system-dashboard page render with the same colors
    in both modes. Frontdoor uses prefers-color-scheme; methodology uses
@@ -1836,33 +1833,33 @@ _BASE_CSS = """
    first load, so both surfaces flip together. */
 :root {
   color-scheme: light dark;
-  --fg:#111; --bg:#fff; --muted:#666; --border:#ddd; --accent:#0b5394;
-  --bg-muted:#f6f7f9;
+  --fg:var(--nz-ink); --bg:var(--nz-paper); --muted:var(--nz-muted); --border:var(--nz-rule); --accent:var(--nz-signal);
+  --bg-muted:var(--nz-panel);
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --fg:#e0e0e0; --bg:#1a1a2e; --muted:#999; --border:#333; --accent:#6db3f2;
-    --bg-muted:#16213e;
+    --fg:var(--nz-ink); --bg:var(--nz-paper); --muted:var(--nz-muted); --border:var(--nz-rule); --accent:var(--nz-signal);
+    --bg-muted:var(--nz-panel);
   }
 }
 /* Honor explicit data-theme override (set by the methodology theme toggle JS
    when the user clicks Light/Dark on the system-dashboard page). Keeps the
    manual toggle's state consistent when navigating to the frontdoor. */
 [data-theme="dark"] {
-  --fg:#e0e0e0; --bg:#1a1a2e; --muted:#999; --border:#333; --accent:#6db3f2;
-  --bg-muted:#16213e;
+  --fg:var(--nz-ink); --bg:var(--nz-paper); --muted:var(--nz-muted); --border:var(--nz-rule); --accent:var(--nz-signal);
+  --bg-muted:var(--nz-panel);
 }
 [data-theme="light"] {
   --fg:#111; --bg:#fff; --muted:#666; --border:#ddd; --accent:#0b5394;
   --bg-muted:#f6f7f9;
 }
 * { box-sizing: border-box; }
-body { font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color:var(--fg); background:var(--bg); margin:0; }
+body { font:16px/1.5 var(--nz-sans); color:var(--fg); background:var(--bg); margin:0; }
 header.top { padding:14px 28px; border-bottom:1px solid var(--border); font-size:14px; }
 header.top a { color:var(--accent); text-decoration:none; }
 header.top a:hover { text-decoration:underline; }
 main { max-width:880px; margin:0 auto; padding:32px 28px 96px; }
-h1 { font-size:1.8rem; margin:0 0 .3em; }
+h1 { font:700 clamp(2.2rem,6vw,4.6rem)/1.02 var(--nz-serif); margin:0 0 .3em; max-width:16ch; }
 h2 { font-size:1.3rem; margin-top:2em; }
 p.lede { font-size:1.05rem; color:var(--muted); }
 footer.audit-footer { max-width:880px; margin:48px auto 32px; padding:12px 28px; border-top:1px solid var(--border); font-size:.85rem; color:var(--muted); }

@@ -11,8 +11,21 @@ def render_about_html() -> str:
     """Return the full about page HTML."""
     body = """
 <div class="hero">
-  <p class="hero-pitch">Labelers Are a Claims Layer</p>
+  <p class="hero-pitch">About Labelwatch</p>
 </div>
+
+<section class="about-summary">
+<h1>Labels are claims. Labelwatch makes them inspectable.</h1>
+<h2>What this is</h2><p>A public observatory for labels attached to Bluesky accounts, profiles, and posts: who published them, when, what they affect, and how the publisher behaves over time.</p>
+<h2>Why it exists</h2><p>Labels can shape visibility and reputation without becoming truth. The people affected by them should be able to see the claims layer and its provenance.</p>
+<h2>What it looks at</h2><p>Public ATProto label events, declared labeler records, observation health, and bounded longitudinal summaries.</p>
+<h2>What it does not claim</h2><p>Labelwatch does not decide whether a label is true, score subjects or labelers, recommend moderation, or turn many labels into one verdict.</p>
+<h2>Can I verify this?</h2><p>Yes. Read the <a href="/methodology.html">methodology and system dashboard</a>, inspect the linked receipts, and see the <a href="https://github.com/unpingable/atproto-labelwatch">source on GitHub</a>.</p>
+<h2 id="privacy">Privacy</h2><p>The lookup uses public protocol identifiers and label records. It does not require an account or retain a private social graph. Public result pages can contain the queried subject and observed labeler identities because those are the object of the requested lookup.</p>
+<h2>Who runs it?</h2><p>Operated by The Neutral Ambassador (<a href="https://bsky.app/profile/neutral.zone">@neutral.zone</a>). Source code and project history are published by James Beck on GitHub.</p>
+</section>
+
+<details class="about-essay"><summary>Read the longer argument: Labelers Are a Claims Layer</summary>
 
 <aside class="about-binding" style="border:1px solid var(--border,#ccc);border-left:4px solid var(--accent,#2980b9);padding:0.8rem 1rem;margin:1rem 0;background:var(--bg-muted,#f6f7f9);">
   <p style="margin:0 0 0.4rem 0;"><strong>What Labelwatch does not claim</strong></p>
@@ -222,7 +235,7 @@ precisely because it does not carry final authority.</p>
 
 <p>That is the claim. And that is why this site exists.</p>
 
-</div>
+</div></details>
 
 <p class="small" style="margin-top:2rem;"><a href="/">&larr; Back to dashboard</a></p>
 """

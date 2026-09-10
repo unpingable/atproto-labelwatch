@@ -116,6 +116,10 @@ def test_homepage_renders_lookup_input():
     assert 'action="/v1/frontdoor"' in html
     assert 'name="q"' in html
     assert "Paste a handle or DID" in html or "handle or DID" in html.lower()
+    assert "What moderation services have labeled this account?" in html
+    assert "Labelwatch observes labels. It doesn't decide whether they're true." in html
+    assert "neutral.zone / instruments" in html
+    assert "Source on GitHub" in html
 
 
 # ---------------------------------------------------------------------------

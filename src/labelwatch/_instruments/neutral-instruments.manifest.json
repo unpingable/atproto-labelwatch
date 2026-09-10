@@ -1,0 +1,13 @@
+{
+  "version": "0.1.0",
+  "source_commit": "d5bf84e7fc4f593650e4575bd0f6118a1f76d4d0",
+  "files": {
+    "neutral.css": "ee9dd29e5b63c995e8e48c701e8775d555da7d8211976d5c3dcc2bf329a96ee5",
+    "fonts/IBMPlexMono-Regular.woff2": "3c5a451f9ec27a354b0c2bcca636c6ec17a651281aabf29f8427e210a1d31e85",
+    "fonts/IBMPlexSans-Regular.woff2": "3b646991d30055a93a4ecc499713d4347953a74a947ecab435ab72070cbdab0e",
+    "fonts/IBMPlexSans-SemiBold.woff2": "8960851d691c054ed38e259bdcf1a6190d157b4203ed5bb32c632a863fb8ec2f",
+    "fonts/OFL-IBM-Plex.txt": "18aabf190848725e2576eefb5c29ba06aac1029d02132252a7f312eac2e50cf3",
+    "fonts/OFL-Source-Serif-4.txt": "18aabf190848725e2576eefb5c29ba06aac1029d02132252a7f312eac2e50cf3",
+    "fonts/SourceSerif4-Bold.woff2": "7691c51bc286a9014db0048277d2c3f2ad0a90b533dc8adfb16cb22a95390d39"
+  }
+}

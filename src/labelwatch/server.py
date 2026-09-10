@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 
@@ -25,6 +26,9 @@ from .registry import generate_registry, render_registry_html
 from .report import _did_slug
 
 logger = logging.getLogger(__name__)
+_INSTRUMENT_FONTS = Path(__file__).resolve().parent / "_instruments" / "fonts"
+_FONT_FILES = {"IBMPlexSans-Regular.woff2", "IBMPlexSans-SemiBold.woff2",
+               "IBMPlexMono-Regular.woff2", "SourceSerif4-Bold.woff2"}
 
 # ---------------------------------------------------------------------------
 # Token bucket rate limiter
@@ -239,6 +243,18 @@ class ClimateHandler(BaseHTTPRequestHandler):
                 self._handle_health()
             elif path == "/about":
                 self._handle_about()
+            elif path.startswith("/instruments/fonts/"):
+                name = path.rsplit("/", 1)[-1]
+                if name not in _FONT_FILES:
+                    self._send_error(404, "Not found")
+                else:
+                    body = (_INSTRUMENT_FONTS / name).read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "font/woff2")
+                    self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
             elif path == "/claims":
                 self._handle_claims()
             elif path == "/v1/registry":

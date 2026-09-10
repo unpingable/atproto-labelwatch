@@ -7,6 +7,7 @@ import shutil
 import sys
 import time
 import uuid
+from pathlib import Path
 from importlib import metadata
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -138,14 +139,18 @@ def _visibility_badge(vis_class: Optional[str]) -> str:
     return f'<span class="badge {cls}">{escape(label)}</span>'
 
 
-STYLE = """
+_VENDORED_INSTRUMENTS = Path(__file__).resolve().parent / "_instruments"
+_NEUTRAL_CSS = (_VENDORED_INSTRUMENTS / "neutral.css").read_text(encoding="utf-8").replace(
+    'url("fonts/', 'url("/instruments/fonts/')
+
+STYLE = _NEUTRAL_CSS + """
 :root {
-  --bg: #fff; --fg: #111; --fg-muted: #666; --border: #ddd; --bg-muted: #f6f7f9; --bar-fill: #0b5394;
+  --bg:var(--nz-paper); --fg:var(--nz-ink); --fg-muted:var(--nz-muted); --border:var(--nz-rule); --bg-muted:var(--nz-panel); --bar-fill:var(--nz-signal);
   --cat-shear: #8a9aa8; --cat-severity: #d49a2d; --cat-claim-action: #cc6633; --cat-substantive: #c44545;
   --auth-enforcement: #c44545; --auth-visibility: #cc6633; --auth-advisory: #d4a017; --auth-reputational: #8e44ad;
   --auth-descriptive: #2980b9; --auth-telemetry: #2a9d8f; --auth-decorative: #95a5a6; --auth-unknown: #b8c0c4;
-  --link: #0b5394; --link-hover-bg: #f0f7fb; --accent: #2980b9;
-  --card-bg: #fff; --card-border: #ddd;
+  --link:var(--nz-link); --link-hover-bg:var(--nz-panel); --accent:var(--nz-signal);
+  --card-bg:var(--nz-panel); --card-border:var(--nz-rule);
   --anomaly-bg: #fff8f0;
   --methods-bg: #f8f9fa; --methods-border: #e9ecef;
   --ref-bg: #f0f7fb; --ref-border: #b8d4e3;
@@ -161,12 +166,12 @@ STYLE = """
   --pre-bg: #f5f5f5;
 }
 [data-theme="dark"] {
-  --bg: #1a1a2e; --fg: #e0e0e0; --fg-muted: #999; --border: #333; --bg-muted: #16213e; --bar-fill: #6db3f2;
+  --bg:var(--nz-paper); --fg:var(--nz-ink); --fg-muted:var(--nz-muted); --border:var(--nz-rule); --bg-muted:var(--nz-panel); --bar-fill:var(--nz-signal);
   --cat-shear: #99aabb; --cat-severity: #e6c866; --cat-claim-action: #ef8d4d; --cat-substantive: #e68888;
   --auth-enforcement: #e68888; --auth-visibility: #ef8d4d; --auth-advisory: #e6c866; --auth-reputational: #b48bd8;
   --auth-descriptive: #6db3f2; --auth-telemetry: #5fd4c4; --auth-decorative: #b8c0c4; --auth-unknown: #888;
-  --link: #6db3f2; --link-hover-bg: #252545;
-  --card-bg: #16213e; --card-border: #333;
+  --link:var(--nz-link); --link-hover-bg:var(--nz-panel);
+  --card-bg:var(--nz-panel); --card-border:var(--nz-rule);
   --anomaly-bg: #2a2218;
   --methods-bg: #16213e; --methods-border: #333;
   --ref-bg: #0f2a3e; --ref-border: #1a5276;
@@ -179,13 +184,13 @@ STYLE = """
   --badge-fixated-bg: #3a2a1a; --badge-fixated-fg: #e6a866;
   --badge-flipflop-bg: #2a2040; --badge-flipflop-fg: #c0a8e6;
   --badge-lowconf-bg: #2a2a2a; --badge-lowconf-fg: #aaa;
-  --accent: #3498db;
+  --accent:var(--nz-signal);
   --pre-bg: #16213e;
 }
-body { font-family: Georgia, "Times New Roman", serif; margin: 2rem; color: var(--fg); background: var(--bg); font-size: 1.05rem; line-height: 1.6; }
+body { font-family:var(--nz-sans); margin:2rem; color:var(--fg); background:var(--bg); font-size:1.05rem; line-height:1.6; }
 header { margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: flex-start; }
 header > div { flex: 1; }
-h1, h2, h3 { font-family: "Gill Sans", "Trebuchet MS", sans-serif; }
+h1 { font-family:var(--nz-serif); } h2, h3 { font-family:var(--nz-sans); }
 table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
 th, td { border-bottom: 1px solid var(--border); padding: 0.5rem 0.75rem; text-align: left; font-size: 0.95rem; }
 .small { color: var(--fg-muted); font-size: 0.92rem; }
@@ -604,6 +609,7 @@ def _layout(title: str, body: str, canonical: str = "", description: str = "") -
 {THEME_JS}
 </head>
 <body>
+<div class="nz-masthead"><a class="nz-family" href="/">neutral.zone / instruments</a><span class="nz-product">Labelwatch</span><nav><a href="/about">About</a><a href="/methodology.html">Methodology</a><a href="https://github.com/unpingable/atproto-labelwatch">Source</a></nav></div>
 <header>
 <div>
 <h1>{escape(title)}</h1>
@@ -612,6 +618,7 @@ def _layout(title: str, body: str, canonical: str = "", description: str = "") -
 <button id="theme-toggle" class="theme-toggle">Dark mode</button>
 </header>
 {body}
+<footer class="nz-footer"><nav><a href="/about">About</a><a href="https://github.com/unpingable/atproto-labelwatch">Source on GitHub</a><a href="/methodology.html">Methodology</a><a href="/about#privacy">Privacy</a><a href="https://bsky.app/profile/neutral.zone">Contact</a></nav><p>Operated by The Neutral Ambassador (@neutral.zone). Source and project history are published by James Beck on GitHub.</p></footer>
 {THEME_TOGGLE_JS}
 </body>
 </html>"""
@@ -2832,7 +2839,7 @@ cell intensity scales with edge count.</p>
   <div><strong>{len(labelers):,}</strong> <span class="small">labelers observed</span></div>
   <div><strong>{labelers_active_7d:,}</strong> <span class="small">labelers emitting (7d)</span></div>
   <div><strong>{total_events_7d:,}</strong> <span class="small">events in 7d</span></div>
-  <div><strong>{escape(last_ingest_label)}</strong> <span class="small">last ingest cycle</span></div>
+  <div><strong>{escape(last_ingest_label)}</strong> <span class="small">Last ingest cycle</span></div>
 </div>
 """
     hero_html = f"""

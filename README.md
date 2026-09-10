@@ -5,6 +5,10 @@ over time and flags integrity-risk patterns (rate spikes, drift, synchronized
 activity, boundary instability). It does not judge content or truth; it produces
 inspectable receipts about governance infrastructure behavior.
 
+**Public instrument: <https://labelwatch.neutral.zone/>** — look up labels on
+an account or its posts without signing in. The live site links back to this
+repository, its methodology, privacy boundary, and operator contact.
+
 Operational supervisors can discover the neutral concern manifest at
 `.ops/concerns.toml`; `labelwatch ops-status` renders the corresponding
 machine-readable or human view. See

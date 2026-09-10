@@ -25,6 +25,9 @@ jobs:
       - name: Compile check
         run: python -m compileall -q src/
 
+      - name: Verify pinned neutral-instruments snapshot
+        run: python scripts/verify-neutral-instruments.py
+
       - name: Install ruff
         run: pip install ruff
 

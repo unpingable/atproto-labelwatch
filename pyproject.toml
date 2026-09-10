@@ -26,7 +26,7 @@ export = []
 test = ["pytest>=7", "pytest-asyncio>=0.21", "anyio>=4"]
 
 [tool.setuptools.package-data]
-labelwatch = ["_ops/*.toml"]
+labelwatch = ["_ops/*.toml", "_instruments/*.css", "_instruments/*.json", "_instruments/fonts/*"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
