@@ -485,7 +485,7 @@ def test_report_computes_the_weather_verdict_exactly_once():
     index.html does not render — the original defect, on a narrower window.
     So the verdict must be computed once and reused.
     """
-    source = inspect.getsource(report.generate_report)
+    source = inspect.getsource(report._generate_report)
 
     assert "weather_signals" not in source
     assert "weather_attributions" not in source

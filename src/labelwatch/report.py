@@ -5,8 +5,8 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
 import time
-import uuid
 from pathlib import Path
 from importlib import metadata
 from collections import defaultdict
@@ -1597,14 +1597,6 @@ def _get_package_version() -> Optional[str]:
         return None
 
 
-def _prepare_out_dir(out_dir: str) -> str:
-    parent = os.path.dirname(os.path.abspath(out_dir)) or "."
-    os.makedirs(parent, exist_ok=True)
-    tmp_dir = os.path.join(parent, f".report-tmp-{uuid.uuid4().hex}")
-    os.makedirs(tmp_dir, exist_ok=True)
-    return tmp_dir
-
-
 def _install_instrument_assets(tmp_dir: str) -> None:
     """Install assets referenced by the report's inlined instrument CSS.
 
@@ -1714,6 +1706,24 @@ def _alert_rollups(alerts_list, handles, display_names) -> str:
 def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
                     facts_path: Optional[str] = None,
                     config: Optional["Config"] = None) -> None:
+    """Generate and atomically publish a report without leaking staging trees."""
+    parent = os.path.dirname(os.path.abspath(out_dir)) or "."
+    os.makedirs(parent, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".report-tmp-", dir=parent) as tmp_dir:
+        _generate_report(
+            conn,
+            out_dir,
+            now=now,
+            facts_path=facts_path,
+            config=config,
+            tmp_dir=tmp_dir,
+        )
+
+
+def _generate_report(conn, out_dir: str, now: Optional[datetime] = None,
+                     facts_path: Optional[str] = None,
+                     config: Optional["Config"] = None,
+                     *, tmp_dir: str) -> None:
     real_now = datetime.now(timezone.utc)
     if now is None:
         now = real_now
@@ -1874,7 +1884,6 @@ def generate_report(conn, out_dir: str, now: Optional[datetime] = None,
         # meant observed quiet or an unobserved window.
     }
 
-    tmp_dir = _prepare_out_dir(out_dir)
     _install_instrument_assets(tmp_dir)
     # `overview.json` is written after the weather verdict is computed, so the
     # artifact can carry the verdict and its standing together. See the
