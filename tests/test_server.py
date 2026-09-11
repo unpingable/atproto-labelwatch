@@ -173,6 +173,16 @@ class TestClimateHTML:
         assert b"Label Climate" in body
 
 
+class TestPublicAssets:
+    def test_social_card(self, seeded_server):
+        status, headers, body = _get(f"{seeded_server}/social-card-v1.png")
+        assert status == 200
+        assert headers.get("Content-Type") == "image/png"
+        assert headers.get("X-Content-Type-Options") == "nosniff"
+        assert headers.get("Cache-Control") == "public, max-age=31536000, immutable"
+        assert body.startswith(b"\x89PNG\r\n\x1a\n")
+
+
 class TestClimateEmpty:
     def test_climate_empty_did(self, seeded_server):
         status, _, body = _get(

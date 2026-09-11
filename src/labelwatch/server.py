@@ -27,6 +27,7 @@ from .report import _did_slug
 
 logger = logging.getLogger(__name__)
 _INSTRUMENT_FONTS = Path(__file__).resolve().parent / "_instruments" / "fonts"
+_SOCIAL_CARD = Path(__file__).resolve().parent / "_instruments" / "social-card-v1.png"
 _FONT_FILES = {"IBMPlexSans-Regular.woff2", "IBMPlexSans-SemiBold.woff2",
                "IBMPlexMono-Regular.woff2", "SourceSerif4-Bold.woff2"}
 
@@ -279,6 +280,15 @@ class ClimateHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
+            elif path == "/social-card-v1.png":
+                body = _SOCIAL_CARD.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
             elif path == "/claims":
                 self._handle_claims()
             elif path == "/v1/registry":

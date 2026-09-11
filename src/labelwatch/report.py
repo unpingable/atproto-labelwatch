@@ -609,7 +609,7 @@ def _layout(title: str, body: str, canonical: str = "", description: str = "") -
 {THEME_JS}
 </head>
 <body>
-<div class="nz-masthead"><a class="nz-family" href="/">neutral.zone / instruments</a><span class="nz-product">Labelwatch</span><nav><a href="/about">About</a><a href="/methodology.html">Methodology</a><a href="https://github.com/unpingable/atproto-labelwatch">Source</a></nav></div>
+<div class="nz-masthead"><a class="nz-family" href="/">ATProto Observatory</a><span class="nz-product">Labelwatch</span><nav><a href="/about">About</a><a href="/methodology.html">Methodology</a><a href="https://github.com/unpingable/atproto-labelwatch">Source</a></nav></div>
 <header>
 <div>
 <h1>{escape(title)}</h1>
