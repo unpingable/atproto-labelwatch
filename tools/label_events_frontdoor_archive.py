@@ -15,6 +15,7 @@ import json
 import os
 import sqlite3
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 import pyarrow as pa
@@ -26,6 +27,12 @@ from tools.label_events_cold_archive import verify_manifest
 
 FORMAT = "labelwatch.frontdoor-cold-summary"
 FORMAT_VERSION = 1
+
+
+@dataclass(frozen=True)
+class SummaryRef:
+    path: Path
+    sha256: str
 
 
 def _sha256(path: Path) -> str:
@@ -167,19 +174,51 @@ def build_summary(manifest_path: Path, destination: Path) -> dict:
     }
 
 
-def query_subject(summaries: list[Path], target_did: str, top_n: int = 50) -> dict:
-    """Return the four frontdoor aggregate shapes across cold summaries."""
+def verify_summary(reference: SummaryRef) -> dict[str, str]:
+    path = reference.path
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError("cold summary is absent or symlinked")
+    if _sha256(path) != reference.sha256:
+        raise RuntimeError("cold summary checksum mismatch")
+    conn = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    try:
+        if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            raise RuntimeError("cold summary quick_check failed")
+        metadata = dict(conn.execute("SELECT key,value FROM metadata"))
+        expected_keys = {
+            "format", "format_version", "day", "manifest_sha256",
+            "partition_sha256", "source_database_sha256",
+        }
+        if set(metadata) != expected_keys:
+            raise RuntimeError("cold summary metadata keys do not match v1")
+        if metadata["format"] != FORMAT or metadata["format_version"] != str(FORMAT_VERSION):
+            raise RuntimeError("unsupported cold summary")
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type='table'"
+        )}
+        if tables != {"metadata", "label_values", "states", "loci", "uri_values"}:
+            raise RuntimeError("cold summary tables do not match v1")
+        return metadata
+    finally:
+        conn.close()
+
+
+def query_subject(
+    summaries: list[SummaryRef],
+    target_did: str,
+    top_n: int = 50,
+    live_conn: sqlite3.Connection | None = None,
+) -> dict:
+    """Return frontdoor aggregate shapes across cold summaries and live rows."""
     values: dict[tuple[str, str], list] = {}
     states: defaultdict[str, set[tuple[str, int | None]]] = defaultdict(set)
     loci: defaultdict[tuple[str, str], int] = defaultdict(int)
     uris: dict[tuple[str, str, str], list] = {}
-    for path in summaries:
-        conn = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    for reference in summaries:
+        verify_summary(reference)
+        conn = sqlite3.connect(f"file:{reference.path}?mode=ro&immutable=1", uri=True)
         conn.row_factory = sqlite3.Row
         try:
-            metadata = dict(conn.execute("SELECT key,value FROM metadata"))
-            if metadata.get("format") != FORMAT or metadata.get("format_version") != str(FORMAT_VERSION):
-                raise RuntimeError("unsupported cold summary")
             for row in conn.execute("SELECT * FROM label_values WHERE target_did=?", (target_did,)):
                 key = (row["labeler_did"], row["val"])
                 value = values.setdefault(key, [0, None, None])
@@ -198,6 +237,46 @@ def query_subject(summaries: list[Path], target_did: str, top_n: int = 50) -> di
                 value[2] = _max(value[2], row["last_seen"])
         finally:
             conn.close()
+
+    if live_conn is not None:
+        for labeler, val, count, first_seen, last_seen in live_conn.execute(
+            "SELECT labeler_did,val,COUNT(*),MIN(ts),MAX(ts) FROM label_events "
+            "WHERE target_did=? GROUP BY labeler_did,val", (target_did,)
+        ):
+            key = (labeler, val)
+            value = values.setdefault(key, [0, None, None])
+            value[0] += count
+            value[1] = _min(value[1], first_seen)
+            value[2] = _max(value[2], last_seen)
+        for labeler, val, neg in live_conn.execute(
+            "SELECT DISTINCT labeler_did,val,neg FROM label_events WHERE target_did=?",
+            (target_did,),
+        ):
+            states[labeler].add((val, neg))
+        for labeler, locus, count in live_conn.execute(
+            "SELECT labeler_did, CASE "
+            "WHEN uri LIKE 'did:%' THEN 'account' "
+            "WHEN uri LIKE 'at://%/app.bsky.feed.post/%' THEN 'post' "
+            "WHEN uri LIKE 'at://%/app.bsky.actor.profile/%' THEN 'profile' "
+            "WHEN uri LIKE 'at://%/app.bsky.graph.list/%' THEN 'list' "
+            "WHEN uri LIKE 'at://%/app.bsky.graph.listitem/%' THEN 'list_item' "
+            "WHEN uri LIKE 'at://%/app.bsky.feed.generator/%' THEN 'feed_generator' "
+            "WHEN uri LIKE 'at://%/app.bsky.graph.starterpack/%' THEN 'starterpack' "
+            "WHEN uri LIKE 'at://%' THEN 'record' ELSE 'unknown' END AS locus, "
+            "COUNT(*) FROM label_events WHERE target_did=? GROUP BY labeler_did,locus",
+            (target_did,),
+        ):
+            loci[(labeler, locus)] += count
+        for labeler, uri, val, count, first_seen, last_seen in live_conn.execute(
+            "SELECT labeler_did,uri,val,COUNT(*),MIN(ts),MAX(ts) FROM label_events "
+            "WHERE target_did=? AND uri NOT LIKE 'did:%' "
+            "GROUP BY labeler_did,uri,val", (target_did,)
+        ):
+            key = (labeler, uri, val)
+            value = uris.setdefault(key, [0, None, None])
+            value[0] += count
+            value[1] = _min(value[1], first_seen)
+            value[2] = _max(value[2], last_seen)
 
     uri_totals: defaultdict[tuple[str, str], int] = defaultdict(int)
     for (labeler, uri, _val), value in uris.items():
