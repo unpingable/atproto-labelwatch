@@ -1,4 +1,5 @@
 import sqlite3
+from dataclasses import asdict
 
 import pytest
 
@@ -8,10 +9,13 @@ from labelwatch.frontdoor import (
     _Q8A_DISTINCT_STATES,
     _Q8B_LOCUS,
     _Q8C_LABELED_RECORDS,
+    lookup_subject,
 )
+from labelwatch.frontdoor_archive import load_catalog
 from tools.label_events_cold_archive import export_day, reconstruct
 from tools.label_events_frontdoor_archive import (
     SummaryRef,
+    build_catalog,
     build_summary,
     query_subject,
     verify_summary,
@@ -184,3 +188,81 @@ def test_missing_symlinked_and_checksum_mismatched_summaries_refuse(tmp_path):
         handle.write(b"tampered")
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         verify_summary(SummaryRef(summary, receipt["summary_sha256"]))
+
+
+def _make_summary(tmp_path, day, rows):
+    source = tmp_path / f"source-{day}.db"
+    conn = db.connect(str(source))
+    db.init_db(conn)
+    db.insert_label_events(conn, rows)
+    conn.commit()
+    conn.close()
+    manifest = export_day(source, tmp_path / f"archive-{day}", day, SOURCE_SHA)
+    summary = tmp_path / f"summary-{day}.db"
+    receipt = build_summary(manifest, summary)
+    return SummaryRef(summary, receipt["summary_sha256"])
+
+
+def test_complete_local_catalog_drives_production_lookup_equivalently(tmp_path):
+    subject = "did:plc:subject"
+    labeler = "did:plc:labeler"
+    cold_rows = [
+        (labeler, subject, f"at://{subject}/app.bsky.feed.post/a", None,
+         "spam", 0, None, None, "2026-09-01T01:00:00Z", "cold", subject),
+    ]
+    warm_rows = [
+        (labeler, subject, f"at://{subject}/app.bsky.feed.post/a", None,
+         "spam", 1, None, None, "2026-09-02T01:00:00Z", "warm", subject),
+    ]
+    refs = [
+        _make_summary(tmp_path, "2026-09-01", cold_rows),
+        _make_summary(tmp_path, "2026-09-02", warm_rows),
+    ]
+    catalog_manifest = build_catalog(refs, tmp_path / "frontdoor-catalog.sqlite")
+    catalog = load_catalog(catalog_manifest, filesystem_type="ext4")
+
+    full = tmp_path / "full.db"
+    full_conn = db.connect(str(full))
+    db.init_db(full_conn)
+    db.insert_label_events(full_conn, cold_rows + warm_rows)
+    full_conn.commit()
+    reduced = tmp_path / "reduced.db"
+    reduced_conn = db.connect(str(reduced))
+    db.init_db(reduced_conn)
+    reduced_conn.commit()
+    receipt = {"overall_verdict": "admissible", "generated_at": "2026-09-03T00:00:00Z"}
+    try:
+        expected = lookup_subject(full_conn, subject, audit_receipt=receipt)
+        observed = lookup_subject(
+            reduced_conn, subject, audit_receipt=receipt, cold_catalog=catalog
+        )
+    finally:
+        full_conn.close()
+        reduced_conn.close()
+    expected_value = asdict(expected)
+    observed_value = asdict(observed)
+    expected_value.pop("generated_at")
+    observed_value.pop("generated_at")
+    assert observed_value == expected_value
+    assert catalog.days == ("2026-09-01", "2026-09-02")
+    assert catalog.allocated_bytes <= sum(ref.path.stat().st_blocks * 512 for ref in refs)
+
+
+def test_catalog_requires_complete_days_and_local_storage(tmp_path):
+    subject = "did:plc:subject"
+    def row(day):
+        return [("did:plc:labeler", subject, subject, None, "spam", 0, None,
+                 None, f"{day}T01:00:00Z", f"hash-{day}", subject)]
+    refs = [
+        _make_summary(tmp_path, "2026-09-01", row("2026-09-01")),
+        _make_summary(tmp_path, "2026-09-03", row("2026-09-03")),
+    ]
+    with pytest.raises(RuntimeError, match="complete closed-day interval"):
+        build_catalog(refs, tmp_path / "gapped.sqlite")
+
+    manifest = build_catalog(refs[:1], tmp_path / "one-day.sqlite")
+    with pytest.raises(RuntimeError, match="local serving filesystem"):
+        load_catalog(manifest, filesystem_type="nfs4")
+    (tmp_path / "one-day.sqlite").unlink()
+    with pytest.raises(RuntimeError, match="absent or symlinked"):
+        load_catalog(manifest, filesystem_type="ext4")

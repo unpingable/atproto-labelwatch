@@ -16,12 +16,18 @@ import os
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from labelwatch.frontdoor import attachment_locus
+from labelwatch.frontdoor_archive import (
+    FORMAT as CATALOG_FORMAT,
+    FORMAT_VERSION as CATALOG_FORMAT_VERSION,
+    load_catalog,
+)
 from tools.label_events_cold_archive import verify_manifest
 
 
@@ -201,6 +207,170 @@ def verify_summary(reference: SummaryRef) -> dict[str, str]:
         return metadata
     finally:
         conn.close()
+
+
+def build_catalog(references: list[SummaryRef], destination: Path) -> Path:
+    """Merge a complete contiguous set of summaries into one local catalog."""
+    if not references:
+        raise ValueError("at least one summary is required")
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError("catalog destination must not exist")
+    manifest_path = destination.with_suffix(destination.suffix + ".manifest.json")
+    if manifest_path.exists() or manifest_path.is_symlink():
+        raise FileExistsError("catalog manifest destination must not exist")
+
+    verified = []
+    for reference in references:
+        metadata = verify_summary(reference)
+        verified.append((metadata["day"], reference, metadata))
+    verified.sort(key=lambda item: item[0])
+    days = [item[0] for item in verified]
+    if len(set(days)) != len(days):
+        raise RuntimeError("catalog contains duplicate summary days")
+    expected = []
+    cursor = date.fromisoformat(days[0])
+    end = date.fromisoformat(days[-1]) + timedelta(days=1)
+    while cursor < end:
+        expected.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+    if days != expected:
+        raise RuntimeError("catalog summaries do not form a complete closed-day interval")
+
+    tmp = destination.with_name(f".{destination.name}.{os.getpid()}.incomplete")
+    if tmp.exists() or tmp.is_symlink():
+        raise FileExistsError("incomplete catalog destination already exists")
+    conn = sqlite3.connect(tmp)
+    try:
+        conn.executescript("""
+            PRAGMA journal_mode=DELETE;
+            PRAGMA synchronous=FULL;
+            CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE label_values (
+                target_did TEXT NOT NULL, labeler_did TEXT NOT NULL,
+                val TEXT NOT NULL, event_count INTEGER NOT NULL,
+                first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+                PRIMARY KEY (target_did, labeler_did, val)
+            ) WITHOUT ROWID;
+            CREATE TABLE states (
+                target_did TEXT NOT NULL, labeler_did TEXT NOT NULL,
+                val TEXT NOT NULL, neg INTEGER
+            );
+            CREATE UNIQUE INDEX states_identity ON states(
+                target_did,labeler_did,val,COALESCE(neg,-9223372036854775808)
+            );
+            CREATE INDEX states_subject ON states(target_did, labeler_did);
+            CREATE TABLE loci (
+                target_did TEXT NOT NULL, labeler_did TEXT NOT NULL,
+                locus TEXT NOT NULL, event_count INTEGER NOT NULL,
+                PRIMARY KEY (target_did, labeler_did, locus)
+            ) WITHOUT ROWID;
+            CREATE TABLE uri_values (
+                target_did TEXT NOT NULL, labeler_did TEXT NOT NULL,
+                uri TEXT NOT NULL, val TEXT NOT NULL,
+                event_count INTEGER NOT NULL,
+                first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+                PRIMARY KEY (target_did, labeler_did, uri, val)
+            ) WITHOUT ROWID;
+        """)
+        conn.executemany("INSERT INTO metadata(key,value) VALUES(?,?)", {
+            "format": CATALOG_FORMAT,
+            "format_version": str(CATALOG_FORMAT_VERSION),
+            "start_day": days[0],
+            "end_day_exclusive": end.isoformat(),
+            "days_json": json.dumps(days, separators=(",", ":")),
+        }.items())
+        for _, reference, _ in verified:
+            source = sqlite3.connect(f"file:{reference.path}?mode=ro&immutable=1", uri=True)
+            try:
+                for row in source.execute("SELECT * FROM label_values"):
+                    current = conn.execute(
+                        "SELECT event_count,first_seen,last_seen FROM label_values "
+                        "WHERE target_did=? AND labeler_did=? AND val=?", row[:3]
+                    ).fetchone()
+                    if current is None:
+                        conn.execute("INSERT INTO label_values VALUES(?,?,?,?,?,?)", row)
+                    else:
+                        conn.execute(
+                            "UPDATE label_values SET event_count=?,first_seen=?,last_seen=? "
+                            "WHERE target_did=? AND labeler_did=? AND val=?",
+                            (current[0] + row[3], min(current[1], row[4]),
+                             max(current[2], row[5]), *row[:3]),
+                        )
+                conn.executemany("INSERT OR IGNORE INTO states VALUES(?,?,?,?)",
+                                 source.execute("SELECT * FROM states"))
+                for row in source.execute("SELECT * FROM loci"):
+                    current = conn.execute(
+                        "SELECT event_count FROM loci WHERE target_did=? AND labeler_did=? AND locus=?",
+                        row[:3],
+                    ).fetchone()
+                    if current is None:
+                        conn.execute("INSERT INTO loci VALUES(?,?,?,?)", row)
+                    else:
+                        conn.execute(
+                            "UPDATE loci SET event_count=? WHERE target_did=? AND labeler_did=? AND locus=?",
+                            (current[0] + row[3], *row[:3]),
+                        )
+                for row in source.execute("SELECT * FROM uri_values"):
+                    current = conn.execute(
+                        "SELECT event_count,first_seen,last_seen FROM uri_values "
+                        "WHERE target_did=? AND labeler_did=? AND uri=? AND val=?", row[:4]
+                    ).fetchone()
+                    if current is None:
+                        conn.execute("INSERT INTO uri_values VALUES(?,?,?,?,?,?,?)", row)
+                    else:
+                        conn.execute(
+                            "UPDATE uri_values SET event_count=?,first_seen=?,last_seen=? "
+                            "WHERE target_did=? AND labeler_did=? AND uri=? AND val=?",
+                            (current[0] + row[4], min(current[1], row[5]),
+                             max(current[2], row[6]), *row[:4]),
+                        )
+            finally:
+                source.close()
+        conn.commit()
+        if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            raise RuntimeError("catalog quick_check failed")
+    except Exception:
+        conn.close()
+        tmp.unlink(missing_ok=True)
+        raise
+    else:
+        conn.close()
+    with tmp.open("rb") as handle:
+        os.fsync(handle.fileno())
+    os.replace(tmp, destination)
+    dir_fd = os.open(destination.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+    sources = [{
+        "day": day,
+        "summary_sha256": reference.sha256,
+        "manifest_sha256": metadata["manifest_sha256"],
+        "partition_sha256": metadata["partition_sha256"],
+        "source_database_sha256": metadata["source_database_sha256"],
+    } for day, reference, metadata in verified]
+    manifest = {
+        "format": CATALOG_FORMAT,
+        "format_version": CATALOG_FORMAT_VERSION,
+        "coverage": {
+            "start_day": days[0],
+            "end_day_exclusive": end.isoformat(),
+            "days": days,
+        },
+        "catalog": {
+            "file": destination.name,
+            "sha256": _sha256(destination),
+            "logical_bytes": destination.stat().st_size,
+            "allocated_bytes": destination.stat().st_blocks * 512,
+        },
+        "sources": sources,
+    }
+    from tools.label_events_cold_archive import _atomic_json
+    _atomic_json(manifest_path, manifest)
+    load_catalog(manifest_path)
+    return manifest_path
 
 
 def query_subject(
