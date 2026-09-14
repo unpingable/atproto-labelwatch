@@ -66,8 +66,12 @@ def _build_event_count_cache(conn, *, cap: int | None = None,
         cold = query_labeler_totals(cold_catalog)
         rows = conn.execute(
             "SELECT labeler_did,COUNT(*) AS c FROM label_events "
-            "WHERE ts IS NULL OR ts < ? OR ts >= ? GROUP BY labeler_did",
-            (cold_catalog.start_day, cold_catalog.end_day_exclusive),
+            "WHERE id > ? OR ts IS NULL OR ts < ? OR ts >= ? GROUP BY labeler_did",
+            (
+                cold_catalog.source_event_id_upper_bound,
+                cold_catalog.start_day,
+                cold_catalog.end_day_exclusive,
+            ),
         ).fetchall()
         combined = {did: int(value["event_count"]) for did, value in cold.items()}
         for row in rows:

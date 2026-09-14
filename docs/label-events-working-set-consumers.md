@@ -18,12 +18,15 @@ verified local catalog.
 Commit `bf6c935` implements and tests this boundary for the frontdoor reader.
 It replaces the prototype test's temporary SQL view with an enforced query
 predicate, including rows immediately before and at the end boundary.
-Catalog v2 at `d33a9c7` also carries exact cumulative per-labeler counts for
-the owned interval. Scan/rule warmup and confidence decisions combine that
-ledger with only live-owned rows; the active 30-day derive window is required
-to begin at or after the catalog boundary. This prevents a reduced database
-from silently making a historically active but currently dormant labeler look
-new or sparse.
+Catalog v3 extends the v2 exact cumulative per-labeler counts with a frozen
+source event-ID watermark. A live row is excluded as an archived duplicate
+only when both its timestamp falls in the catalog interval and its ID is at or
+below that watermark. This preserves genuinely new late-arriving observations
+whose authored timestamp falls inside an older archived day. Scan/rule warmup
+and confidence decisions combine the catalog ledger with only live-owned rows;
+the active 30-day derive window is required to begin at or after the catalog
+boundary. This prevents a reduced database from silently making a historically
+active but currently dormant labeler look new or sparse.
 
 ## Consumers and required semantics
 
@@ -31,8 +34,8 @@ new or sparse.
 |---|---|---|---|
 | Public frontdoor (`frontdoor.py`, `server.py`) | All-history per-subject counts, first/last times, state tuples, loci, and top record/value histories | Exact catalog aggregates reproduce the bounded public result; live rows in the catalog interval are excluded even before physical removal | Verified local catalog loaded at startup; missing/tampered/NFS-hosted catalog refuses the all-history lookup |
 | Legacy/local `whatsonme.py` and CLI | Up to 500 exact account-label events ordered by time, then effective-state reduction | The aggregate catalog cannot reproduce exact raw-event display or latest-state ordering | Keep this path on the full archive/reconstruction toolchain or add a separately content-bound account-event projection before claiming reduced-generation equivalence; do not silently return only warm rows |
-| Scan census and regime (`scan.py`) | 24h/7d/30d counts, time sequences, target diversity, recent reversal/lag candidates; lifetime totals affect warmup | Keep the complete maximum live analysis window raw; carry exact lifetime counts and prior state explicitly | 30-day live raw floor plus catalog-v2 `labeler_totals`; runtime refuses a catalog overlapping the active 30-day window; incremental cursors never advance across absent raw input |
-| Rules/findings (`rules.py`, `boundary.py`, `lifetime.py`) | Windowed counts, distinct URIs, event hashes used as evidence, ordered state transitions, threshold-only lifetime counts, and explicit historical interval studies | Evidence-bearing findings need exact source events for their declared window; threshold-only warmup/confidence uses exact cumulative counts; lifetime research needs retrievable archives, not merely totals | Keep every online rule window raw, use catalog-v2 totals only for threshold decisions, retain cited hashes/provenance, and run older/lifetime research off-host through verified archive reconstruction |
+| Scan census and regime (`scan.py`, runner and standalone CLI) | 24h/7d/30d counts, time sequences, target diversity, recent reversal/lag candidates; lifetime totals affect warmup | Keep the complete maximum live analysis window raw; carry exact lifetime counts and prior state explicitly | 30-day live raw floor plus catalog-v3 `labeler_totals`; both runner and `labelwatch scan` load the same catalog; runtime refuses a catalog overlapping the active 30-day window; incremental cursors never advance across absent raw input |
+| Rules/findings (`rules.py`, `boundary.py`, `lifetime.py`) | Windowed counts, distinct URIs, event hashes used as evidence, ordered state transitions, threshold-only lifetime counts, and explicit historical interval studies | Evidence-bearing findings need exact source events for their declared window; threshold-only warmup/confidence uses exact cumulative counts; lifetime research needs retrievable archives, not merely totals | Keep every online rule window raw, use catalog-v3 totals only for threshold decisions, retain cited hashes/provenance, and run older/lifetime research off-host through verified archive reconstruction |
 | Report/derive (`report.py`, `runner.py`) | Recent-window counts and timing, lifetime warmup totals, direct evidence-hash lookups, and persisted derived tables; report freshness uses maximum event time | Preserve every active window raw and combine catalog-v2 lifetime totals; cited cold evidence remains reconstructible but is not fetched from NFS at request time | Qualify report and derive on the reduced generation at a fixed source time; separately compare any historical/report section that still queries raw all-history rows and mark unsupported sections unavailable rather than changing their meaning |
 | Incremental derived state (`state.py`, `scan.py` derived tables) | Rows after a durable event-id cursor, normally with a recent-time lower bound | No historical replay is needed after the derived checkpoint is sealed, but gaps and rebuild prerequisites must remain explicit | Seal derived checkpoint/source identity before removal; archive permits off-host rebuild when a derived table must be recreated |
 | Authority/provenance research (`authority_inventory.py`, `authority_posture.py`, `authority_triage.py`, `provenance.py`, `scope_axis.py`) | Windowed distributions plus several all-history totals, active-day counts, removals, and distinct pairs | Catalog v2 preserves only the totals explicitly declared by its schema; it does not make every exploratory query online-equivalent | Run historical research against content-bound reconstruction; only promote a local aggregate after a named consumer and equivalence test bind its semantics |

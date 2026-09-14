@@ -19,10 +19,12 @@ used by the public frontdoor:
 - per-URI/value counts plus first/last observation, with top-URI ranking done
   only after all partitions are merged.
 
-Catalog v2 additionally carries exact per-labeler event counts and first/last
-times for its owned interval. The scan and rule paths use those values only
+Catalog v3 carries the v2 exact per-labeler event counts and first/last times
+plus the frozen source's maximum event ID. The scan and rule paths use those values only
 for lifetime warmup/confidence semantics; their active 30-day window must be
-entirely newer than the catalog boundary. After every day is merged, the
+entirely newer than the catalog boundary. The ID watermark prevents a new,
+late-arriving event with an old authored timestamp from being mistaken for an
+archived duplicate. After every day is merged, the
 catalog retains only the globally ranked top 50 record URIs per
 subject/labeler—the existing public output bound—and compacts away the
 build-scale URI intermediates. Partition Parquet, not the catalog, remains
@@ -46,8 +48,11 @@ all-history frontdoor are separate compatibility classes.
 `labelwatch.frontdoor_archive` loads a versioned catalog manifest and its
 immutable SQLite summary at process startup. The configured catalog must be a
 complete, contiguous interval of closed UTC days; source summaries must cover
-that interval exactly. The loader verifies the catalog's size, allocation,
-SHA-256, schema, and embedded coverage metadata. It refuses network-backed
+that interval exactly. The loader verifies the catalog's logical size,
+SHA-256, schema, embedded coverage metadata, and ownership watermark, then
+reports the selected local copy's observed allocation for capacity accounting.
+Allocation geometry is not content identity and may change on restore. It
+refuses network-backed
 serving filesystems (including NFS): archive custody may live remotely, but a
 serving catalog must first be copied and verified onto the mounted Labelwatch
 volume.
@@ -56,7 +61,10 @@ When `LABELWATCH_FRONTDOOR_COLD_CATALOG` is set, the public lookup merges the
 verified catalog with the remaining live `label_events` working set. The
 catalog owns its exact closed interval even if those rows still physically
 overlap the live database during reader qualification; every live-side query
-excludes that interval, preventing double counts before deletion. Missing,
+excludes a row as an archived duplicate only when both its timestamp is in the
+catalog interval and its ID is at or below the frozen source watermark. This
+preserves genuinely new late observations while preventing double counts.
+Missing,
 invalid, incomplete, or remotely mounted configured catalogs fail startup;
 they never become an empty historical contribution. Health reports only the
 selected coverage interval, day count, and local allocation. Requests open no
@@ -74,6 +82,6 @@ row removal or establish filesystem reclamation without a separately
 qualified database rebuild/cutover.
 
 That two-day result remains the qualified v1 prototype at its recorded
-revision and receipt. The complete bridge-exit experiment uses catalog v2 and
+revision and receipt. The complete bridge-exit experiment uses catalog v3 and
 must independently qualify its larger interval; the older result is not
-silently reinterpreted as v2 evidence.
+silently reinterpreted as v3 evidence.

@@ -222,13 +222,16 @@ def verify_summary(reference: SummaryRef) -> dict[str, str]:
         conn.close()
 
 
-def build_catalog(references: list[SummaryRef], destination: Path,
+def build_catalog(references: list[SummaryRef], destination: Path, *,
+                  source_event_id_upper_bound: int,
                   uri_top_n: int = 50) -> Path:
     """Merge a complete contiguous set of summaries into one local catalog."""
     if not references:
         raise ValueError("at least one summary is required")
     if uri_top_n <= 0:
         raise ValueError("uri_top_n must be positive")
+    if source_event_id_upper_bound < 0:
+        raise ValueError("source_event_id_upper_bound must be nonnegative")
     if destination.exists() or destination.is_symlink():
         raise FileExistsError("catalog destination must not exist")
     manifest_path = destination.with_suffix(destination.suffix + ".manifest.json")
@@ -298,6 +301,7 @@ def build_catalog(references: list[SummaryRef], destination: Path,
             "start_day": days[0],
             "end_day_exclusive": end.isoformat(),
             "days_json": json.dumps(days, separators=(",", ":")),
+            "source_event_id_upper_bound": str(source_event_id_upper_bound),
             "uri_top_n": str(uri_top_n),
         }.items())
         for _, reference, _ in verified:
@@ -425,6 +429,10 @@ def build_catalog(references: list[SummaryRef], destination: Path,
             "end_day_exclusive": end.isoformat(),
             "days": days,
         },
+        "ownership": {
+            "source_event_id_upper_bound": source_event_id_upper_bound,
+            "live_exclusion": "id_lte_watermark_and_ts_in_interval",
+        },
         "catalog": {
             "file": destination.name,
             "sha256": _sha256(destination),
@@ -446,6 +454,7 @@ def query_subject(
     top_n: int = 50,
     live_conn: sqlite3.Connection | None = None,
     live_exclude_interval: tuple[str, str] | None = None,
+    live_exclude_id_upper_bound: int | None = None,
 ) -> dict:
     """Return aggregate shapes across cold summaries and disjoint live rows.
 
@@ -482,11 +491,16 @@ def query_subject(
             conn.close()
 
     if live_conn is not None:
-        if live_exclude_interval is None:
-            raise RuntimeError("live/cold merge requires an explicit ownership interval")
+        if live_exclude_interval is None or live_exclude_id_upper_bound is None:
+            raise RuntimeError(
+                "live/cold merge requires an explicit ownership interval and event-id watermark"
+            )
         start_day, end_day_exclusive = live_exclude_interval
-        live_owned = "(ts IS NULL OR ts < ? OR ts >= ?)"
-        live_params = (target_did, start_day, end_day_exclusive)
+        live_owned = "(id > ? OR ts IS NULL OR ts < ? OR ts >= ?)"
+        live_params = (
+            target_did, live_exclude_id_upper_bound,
+            start_day, end_day_exclusive,
+        )
         for labeler, val, count, first_seen, last_seen in live_conn.execute(
             "SELECT labeler_did,val,COUNT(*),MIN(ts),MAX(ts) FROM label_events "
             f"WHERE target_did=? AND {live_owned} GROUP BY labeler_did,val",

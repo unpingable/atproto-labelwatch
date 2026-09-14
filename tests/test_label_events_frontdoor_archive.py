@@ -4,7 +4,7 @@ from dataclasses import asdict
 
 import pytest
 
-from labelwatch import db
+from labelwatch import db, rules
 from labelwatch.frontdoor import (
     _Q3_LABEL_VALUES,
     _Q8A_DISTINCT_STATES,
@@ -105,7 +105,8 @@ def test_multiple_partition_summaries_merge_before_top_n(tmp_path):
     assert result["uri_values"][0]["uri_total"] == 5
 
     catalog_manifest = build_catalog(
-        summaries, tmp_path / "top-one-catalog.db", uri_top_n=1
+        summaries, tmp_path / "top-one-catalog.db",
+        source_event_id_upper_bound=100, uri_top_n=1
     )
     catalog = load_catalog(catalog_manifest, filesystem_type="ext4")
     catalog_result = query_catalog_subject(catalog, subject, top_n=1)
@@ -165,6 +166,7 @@ def test_live_and_cold_rows_merge_to_unreduced_frontdoor_shapes(tmp_path):
             subject,
             live_conn=live_conn,
             live_exclude_interval=("2026-09-01", "2026-09-02"),
+            live_exclude_id_upper_bound=100,
         )
     finally:
         live_conn.close()
@@ -198,6 +200,7 @@ def test_catalog_owns_only_its_interval_while_rows_still_overlap_live(tmp_path):
     catalog_manifest = build_catalog(
         [SummaryRef(summary, receipt["summary_sha256"])],
         tmp_path / "catalog.sqlite",
+        source_event_id_upper_bound=100,
     )
     catalog = load_catalog(catalog_manifest, filesystem_type="ext4")
 
@@ -207,13 +210,22 @@ def test_catalog_owns_only_its_interval_while_rows_still_overlap_live(tmp_path):
     # The cold row deliberately remains physically present during reader
     # qualification.  It must be owned only by the catalog.
     db.insert_label_events(live_conn, [before, archived, after])
+    # A genuinely new observation may carry an authored timestamp in the cold
+    # interval.  Its ID is above the frozen-source watermark, so it remains
+    # live-owned rather than disappearing behind the interval predicate.
+    live_conn.execute(
+        "INSERT INTO label_events(id,labeler_did,src,uri,cid,val,neg,exp,sig,ts,event_hash,target_did) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (101, "did:plc:labeler", subject, subject, None, "late", 0, None,
+         None, "2026-09-01T18:00:00Z", "late", subject),
+    )
     live_conn.commit()
     try:
         result = query_catalog_subject(catalog, subject, live_conn=live_conn)
     finally:
         live_conn.close()
     counts = {row["val"]: row["event_count"] for row in result["label_values"]}
-    assert counts == {"after": 1, "before": 1, "cold": 1}
+    assert counts == {"after": 1, "before": 1, "cold": 1, "late": 1}
 
 
 def test_catalog_preserves_lifetime_labeler_counts_without_overlap(tmp_path):
@@ -237,7 +249,8 @@ def test_catalog_preserves_lifetime_labeler_counts_without_overlap(tmp_path):
     summary = tmp_path / "summary.db"
     receipt = build_summary(manifest, summary)
     catalog_manifest = build_catalog(
-        [SummaryRef(summary, receipt["summary_sha256"])], tmp_path / "catalog.db"
+        [SummaryRef(summary, receipt["summary_sha256"])], tmp_path / "catalog.db",
+        source_event_id_upper_bound=100,
     )
     catalog = load_catalog(catalog_manifest, filesystem_type="ext4")
     assert query_labeler_totals(catalog)[labeler]["event_count"] == 2
@@ -248,16 +261,26 @@ def test_catalog_preserves_lifetime_labeler_counts_without_overlap(tmp_path):
     # Cold rows deliberately overlap physically; catalog ownership excludes
     # them from the live half.
     db.insert_label_events(live_conn, cold + [warm])
+    live_conn.execute(
+        "INSERT INTO label_events(id,labeler_did,src,uri,cid,val,neg,exp,sig,ts,event_hash,target_did) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        (101, labeler, subject, subject, None, "late", 0, None, None,
+         "2026-09-01T03:00:00Z", "late", subject),
+    )
     live_conn.commit()
     try:
         stats = _fetch_event_stats(
             live_conn, "2026-10-01", "2026-09-25", "2026-09-02", catalog
         )[labeler]
+        lifetime = rules._build_event_count_cache(
+            live_conn, cold_catalog=catalog
+        )[labeler]
     finally:
         live_conn.close()
-    assert stats["cnt_total"] == 3
+    assert stats["cnt_total"] == 4
     assert stats["cnt_30d"] == 1
     assert stats["last_event_ts"] == "2026-09-03T01:00:00Z"
+    assert lifetime == 4
 
 
 def test_missing_symlinked_and_checksum_mismatched_summaries_refuse(tmp_path):
@@ -316,7 +339,10 @@ def test_complete_local_catalog_drives_production_lookup_equivalently(tmp_path):
         _make_summary(tmp_path, "2026-09-01", cold_rows),
         _make_summary(tmp_path, "2026-09-02", warm_rows),
     ]
-    catalog_manifest = build_catalog(refs, tmp_path / "frontdoor-catalog.sqlite")
+    catalog_manifest = build_catalog(
+        refs, tmp_path / "frontdoor-catalog.sqlite",
+        source_event_id_upper_bound=100,
+    )
     catalog = load_catalog(catalog_manifest, filesystem_type="ext4")
 
     full = tmp_path / "full.db"
@@ -356,9 +382,13 @@ def test_catalog_requires_complete_days_and_local_storage(tmp_path):
         _make_summary(tmp_path, "2026-09-03", row("2026-09-03")),
     ]
     with pytest.raises(RuntimeError, match="complete closed-day interval"):
-        build_catalog(refs, tmp_path / "gapped.sqlite")
+        build_catalog(
+            refs, tmp_path / "gapped.sqlite", source_event_id_upper_bound=100
+        )
 
-    manifest = build_catalog(refs[:1], tmp_path / "one-day.sqlite")
+    manifest = build_catalog(
+        refs[:1], tmp_path / "one-day.sqlite", source_event_id_upper_bound=100
+    )
     with pytest.raises(RuntimeError, match="local serving filesystem"):
         load_catalog(manifest, filesystem_type="nfs4")
     (tmp_path / "one-day.sqlite").unlink()
@@ -371,7 +401,9 @@ def test_catalog_restore_allocation_is_observed_not_content_identity(tmp_path):
     rows = [("did:plc:labeler", subject, subject, None, "spam", 0, None,
              None, "2026-09-01T01:00:00Z", "hash", subject)]
     reference = _make_summary(tmp_path, "2026-09-01", rows)
-    manifest_path = build_catalog([reference], tmp_path / "catalog.sqlite")
+    manifest_path = build_catalog(
+        [reference], tmp_path / "catalog.sqlite", source_event_id_upper_bound=100
+    )
     manifest = json.loads(manifest_path.read_text())
     manifest["catalog"]["allocated_bytes"] += 4096
     manifest_path.write_text(json.dumps(manifest))

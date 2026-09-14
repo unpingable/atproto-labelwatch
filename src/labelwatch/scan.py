@@ -115,8 +115,12 @@ def _fetch_event_stats(conn, ts_24h: str, ts_7d: str, ts_30d: str,
     if cold_catalog is not None:
         if ts_30d < cold_catalog.end_day_exclusive:
             raise RuntimeError("cold catalog overlaps the active 30-day derive window")
-        ownership = "WHERE ts IS NULL OR ts < ? OR ts >= ?"
-        params.extend([cold_catalog.start_day, cold_catalog.end_day_exclusive])
+        ownership = "WHERE id > ? OR ts IS NULL OR ts < ? OR ts >= ?"
+        params.extend([
+            cold_catalog.source_event_id_upper_bound,
+            cold_catalog.start_day,
+            cold_catalog.end_day_exclusive,
+        ])
     rows = conn.execute(
         f"""SELECT labeler_did,
                   SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS cnt_24h,

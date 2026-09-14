@@ -145,7 +145,20 @@ def main() -> None:
         print(json.dumps(summary_result, sort_keys=True), flush=True)
         return
 
-    catalog_manifest = build_catalog(refs, args.output / "frontdoor-cold-catalog.sqlite")
+    source_conn = sqlite3.connect(
+        f"file:{args.source_db}?mode=ro&immutable=1", uri=True
+    )
+    try:
+        source_event_id_upper_bound = int(source_conn.execute(
+            "SELECT COALESCE(MAX(id),0) FROM label_events"
+        ).fetchone()[0])
+    finally:
+        source_conn.close()
+    catalog_manifest = build_catalog(
+        refs,
+        args.output / "frontdoor-cold-catalog.sqlite",
+        source_event_id_upper_bound=source_event_id_upper_bound,
+    )
     catalog = json.loads(catalog_manifest.read_text())
     result = {
         "schema": "labelwatch.complete-working-set-archive.v1",

@@ -16,7 +16,7 @@ import sqlite3
 
 
 FORMAT = "labelwatch.frontdoor-cold-catalog"
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 CATALOG_TABLES = {
     "metadata", "label_values", "labeler_totals", "states", "loci", "uri_values",
 }
@@ -65,6 +65,7 @@ class ColdCatalog:
     days: tuple[str, ...]
     start_day: str
     end_day_exclusive: str
+    source_event_id_upper_bound: int
     allocated_bytes: int
     uri_top_n: int
 
@@ -89,8 +90,10 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
     if not manifest_path.is_file() or manifest_path.is_symlink():
         raise RuntimeError("cold catalog manifest is absent or symlinked")
     manifest = json.loads(manifest_path.read_text())
-    if set(manifest) != {"format", "format_version", "coverage", "catalog", "sources"}:
-        raise RuntimeError("cold catalog manifest root keys do not match v2")
+    if set(manifest) != {
+        "format", "format_version", "coverage", "ownership", "catalog", "sources"
+    }:
+        raise RuntimeError("cold catalog manifest root keys do not match v3")
     if manifest["format"] != FORMAT or manifest["format_version"] != FORMAT_VERSION:
         raise RuntimeError("unsupported cold catalog format")
 
@@ -109,6 +112,15 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
         cursor += timedelta(days=1)
     if days != tuple(expected):
         raise RuntimeError("cold catalog coverage is not a complete closed-day interval")
+
+    ownership = manifest["ownership"]
+    if set(ownership) != {"source_event_id_upper_bound", "live_exclusion"}:
+        raise RuntimeError("cold catalog ownership keys do not match v3")
+    source_event_id_upper_bound = ownership["source_event_id_upper_bound"]
+    if not isinstance(source_event_id_upper_bound, int) or source_event_id_upper_bound < 0:
+        raise RuntimeError("cold catalog event-id watermark is invalid")
+    if ownership["live_exclusion"] != "id_lte_watermark_and_ts_in_interval":
+        raise RuntimeError("unsupported cold catalog live-exclusion rule")
 
     catalog = manifest["catalog"]
     if set(catalog) != {"file", "sha256", "logical_bytes", "allocated_bytes", "uri_top_n"}:
@@ -164,6 +176,7 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
             "start_day": coverage["start_day"],
             "end_day_exclusive": coverage["end_day_exclusive"],
             "days_json": json.dumps(list(days), separators=(",", ":")),
+            "source_event_id_upper_bound": str(source_event_id_upper_bound),
             "uri_top_n": str(uri_top_n),
         }:
             raise RuntimeError("cold catalog database metadata mismatch")
@@ -176,6 +189,7 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
         days=days,
         start_day=coverage["start_day"],
         end_day_exclusive=coverage["end_day_exclusive"],
+        source_event_id_upper_bound=source_event_id_upper_bound,
         allocated_bytes=observed_allocated_bytes,
         uri_top_n=uri_top_n,
     )
@@ -222,8 +236,11 @@ def query_subject(catalog: ColdCatalog, target_did: str, *, live_conn=None,
         cold.close()
 
     if live_conn is not None:
-        live_owned = "(ts IS NULL OR ts < ? OR ts >= ?)"
-        live_params = (target_did, catalog.start_day, catalog.end_day_exclusive)
+        live_owned = "(id > ? OR ts IS NULL OR ts < ? OR ts >= ?)"
+        live_params = (
+            target_did, catalog.source_event_id_upper_bound,
+            catalog.start_day, catalog.end_day_exclusive,
+        )
         for labeler, val, count, first_seen, last_seen in live_conn.execute(
             "SELECT labeler_did,val,COUNT(*),MIN(ts),MAX(ts) FROM label_events "
             f"WHERE target_did=? AND {live_owned} GROUP BY labeler_did,val",
