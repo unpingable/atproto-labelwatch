@@ -19,6 +19,15 @@ used by the public frontdoor:
 - per-URI/value counts plus first/last observation, with top-URI ranking done
   only after all partitions are merged.
 
+Catalog v2 additionally carries exact per-labeler event counts and first/last
+times for its owned interval. The scan and rule paths use those values only
+for lifetime warmup/confidence semantics; their active 30-day window must be
+entirely newer than the catalog boundary. After every day is merged, the
+catalog retains only the globally ranked top 50 record URIs per
+subject/labeler—the existing public output bound—and compacts away the
+build-scale URI intermediates. Partition Parquet, not the catalog, remains
+the complete reconstruction source.
+
 The summary contains DIDs and AT URIs. It is private retained evidence, not a
 publishable artifact. Production use requires an explicit custody location,
 privacy review, bounded partition inventory, and a reader that combines cold
@@ -44,7 +53,10 @@ serving catalog must first be copied and verified onto the mounted Labelwatch
 volume.
 
 When `LABELWATCH_FRONTDOOR_COLD_CATALOG` is set, the public lookup merges the
-verified catalog with the remaining live `label_events` working set. Missing,
+verified catalog with the remaining live `label_events` working set. The
+catalog owns its exact closed interval even if those rows still physically
+overlap the live database during reader qualification; every live-side query
+excludes that interval, preventing double counts before deletion. Missing,
 invalid, incomplete, or remotely mounted configured catalogs fail startup;
 they never become an empty historical contribution. Health reports only the
 selected coverage interval, day count, and local allocation. Requests open no
@@ -60,3 +72,8 @@ subjects matched the production `lookup_subject` result. This qualifies the
 reader shape and bounded serving footprint; it does not authorize production
 row removal or establish filesystem reclamation without a separately
 qualified database rebuild/cutover.
+
+That two-day result remains the qualified v1 prototype at its recorded
+revision and receipt. The complete bridge-exit experiment uses catalog v2 and
+must independently qualify its larger interval; the older result is not
+silently reinterpreted as v2 evidence.
