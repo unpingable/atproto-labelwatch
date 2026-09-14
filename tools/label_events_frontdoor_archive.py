@@ -32,7 +32,7 @@ from tools.label_events_cold_archive import verify_manifest
 
 
 FORMAT = "labelwatch.frontdoor-cold-summary"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,7 @@ def build_summary(manifest_path: Path, destination: Path) -> dict:
         raise FileExistsError("incomplete summary destination already exists")
 
     label_values: dict[tuple[str, str, str], list] = {}
+    labeler_totals: dict[str, list] = {}
     states: set[tuple[str, str, str, int | None]] = set()
     loci: defaultdict[tuple[str, str, str], int] = defaultdict(int)
     uri_values: dict[tuple[str, str, str, str], list] = {}
@@ -75,13 +76,17 @@ def build_summary(manifest_path: Path, destination: Path) -> dict:
     skipped_without_target = 0
     for batch in pq.ParquetFile(parquet).iter_batches(batch_size=50_000):
         for row in pa.Table.from_batches([batch]).to_pylist():
+            labeler = row["labeler_did"]
+            ts = row["ts"]
+            labeler_total = labeler_totals.setdefault(labeler, [0, None, None])
+            labeler_total[0] += 1
+            labeler_total[1] = _min(labeler_total[1], ts)
+            labeler_total[2] = _max(labeler_total[2], ts)
             target = row["target_did"]
             if target is None:
                 skipped_without_target += 1
                 continue
-            labeler = row["labeler_did"]
             val = row["val"]
-            ts = row["ts"]
             key = (target, labeler, val)
             aggregate = label_values.setdefault(key, [0, None, None])
             aggregate[0] += 1
@@ -109,6 +114,10 @@ def build_summary(manifest_path: Path, destination: Path) -> dict:
                 val TEXT NOT NULL, event_count INTEGER NOT NULL,
                 first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
                 PRIMARY KEY (target_did, labeler_did, val)
+            ) WITHOUT ROWID;
+            CREATE TABLE labeler_totals (
+                labeler_did TEXT PRIMARY KEY, event_count INTEGER NOT NULL,
+                first_seen TEXT NOT NULL, last_seen TEXT NOT NULL
             ) WITHOUT ROWID;
             CREATE TABLE states (
                 target_did TEXT NOT NULL, labeler_did TEXT NOT NULL,
@@ -141,6 +150,10 @@ def build_summary(manifest_path: Path, destination: Path) -> dict:
         conn.executemany(
             "INSERT INTO label_values VALUES(?,?,?,?,?,?)",
             ((*key, *value) for key, value in sorted(label_values.items())),
+        )
+        conn.executemany(
+            "INSERT INTO labeler_totals VALUES(?,?,?,?)",
+            ((key, *value) for key, value in sorted(labeler_totals.items())),
         )
         conn.executemany("INSERT INTO states VALUES(?,?,?,?)", sorted(states, key=repr))
         conn.executemany(
@@ -202,8 +215,8 @@ def verify_summary(reference: SummaryRef) -> dict[str, str]:
         tables = {row[0] for row in conn.execute(
             "SELECT name FROM sqlite_schema WHERE type='table'"
         )}
-        if tables != {"metadata", "label_values", "states", "loci", "uri_values"}:
-            raise RuntimeError("cold summary tables do not match v1")
+        if tables != {"metadata", "label_values", "labeler_totals", "states", "loci", "uri_values"}:
+            raise RuntimeError("cold summary tables do not match v2")
         return metadata
     finally:
         conn.close()
@@ -251,6 +264,10 @@ def build_catalog(references: list[SummaryRef], destination: Path) -> Path:
                 first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
                 PRIMARY KEY (target_did, labeler_did, val)
             ) WITHOUT ROWID;
+            CREATE TABLE labeler_totals (
+                labeler_did TEXT PRIMARY KEY, event_count INTEGER NOT NULL,
+                first_seen TEXT NOT NULL, last_seen TEXT NOT NULL
+            ) WITHOUT ROWID;
             CREATE TABLE states (
                 target_did TEXT NOT NULL, labeler_did TEXT NOT NULL,
                 val TEXT NOT NULL, neg INTEGER
@@ -291,6 +308,14 @@ def build_catalog(references: list[SummaryRef], destination: Path) -> Path:
                       event_count=label_values.event_count+excluded.event_count,
                       first_seen=MIN(label_values.first_seen,excluded.first_seen),
                       last_seen=MAX(label_values.last_seen,excluded.last_seen)
+                """)
+                conn.execute("""
+                    INSERT INTO labeler_totals
+                    SELECT * FROM source_summary.labeler_totals WHERE true
+                    ON CONFLICT(labeler_did) DO UPDATE SET
+                      event_count=labeler_totals.event_count+excluded.event_count,
+                      first_seen=MIN(labeler_totals.first_seen,excluded.first_seen),
+                      last_seen=MAX(labeler_totals.last_seen,excluded.last_seen)
                 """)
                 conn.execute("INSERT OR IGNORE INTO states SELECT * FROM source_summary.states")
                 conn.execute("""

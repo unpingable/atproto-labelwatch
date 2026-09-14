@@ -16,8 +16,10 @@ import sqlite3
 
 
 FORMAT = "labelwatch.frontdoor-cold-catalog"
-FORMAT_VERSION = 1
-CATALOG_TABLES = {"metadata", "label_values", "states", "loci", "uri_values"}
+FORMAT_VERSION = 2
+CATALOG_TABLES = {
+    "metadata", "label_values", "labeler_totals", "states", "loci", "uri_values",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -64,6 +66,21 @@ class ColdCatalog:
     start_day: str
     end_day_exclusive: str
     allocated_bytes: int
+
+
+def query_labeler_totals(catalog: ColdCatalog) -> dict[str, dict]:
+    """Return exact cumulative per-labeler history from the owned interval."""
+    conn = sqlite3.connect(
+        f"file:{catalog.database_path}?mode=ro&immutable=1", uri=True
+    )
+    conn.row_factory = sqlite3.Row
+    try:
+        return {
+            row["labeler_did"]: dict(row)
+            for row in conn.execute("SELECT * FROM labeler_totals")
+        }
+    finally:
+        conn.close()
 
 
 def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = None) -> ColdCatalog:

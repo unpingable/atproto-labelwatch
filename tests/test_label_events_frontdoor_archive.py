@@ -11,7 +11,12 @@ from labelwatch.frontdoor import (
     _Q8C_LABELED_RECORDS,
     lookup_subject,
 )
-from labelwatch.frontdoor_archive import load_catalog, query_subject as query_catalog_subject
+from labelwatch.frontdoor_archive import (
+    load_catalog,
+    query_labeler_totals,
+    query_subject as query_catalog_subject,
+)
+from labelwatch.scan import _fetch_event_stats
 from tools.label_events_cold_archive import export_day, reconstruct
 from tools.label_events_frontdoor_archive import (
     SummaryRef,
@@ -196,6 +201,50 @@ def test_catalog_owns_only_its_interval_while_rows_still_overlap_live(tmp_path):
         live_conn.close()
     counts = {row["val"]: row["event_count"] for row in result["label_values"]}
     assert counts == {"after": 1, "before": 1, "cold": 1}
+
+
+def test_catalog_preserves_lifetime_labeler_counts_without_overlap(tmp_path):
+    subject = "did:plc:subject"
+    labeler = "did:plc:labeler"
+    cold = [
+        (labeler, subject, subject, None, "one", 0, None, None,
+         "2026-09-01T01:00:00Z", "cold-1", subject),
+        (labeler, None, "https://example.invalid", None, "two", 0, None, None,
+         "2026-09-01T02:00:00Z", "cold-2", None),
+    ]
+    warm = (labeler, subject, subject, None, "three", 0, None, None,
+            "2026-09-03T01:00:00Z", "warm-1", subject)
+    source = tmp_path / "source.db"
+    conn = db.connect(str(source))
+    db.init_db(conn)
+    db.insert_label_events(conn, cold)
+    conn.commit()
+    conn.close()
+    manifest = export_day(source, tmp_path / "archive", "2026-09-01", SOURCE_SHA)
+    summary = tmp_path / "summary.db"
+    receipt = build_summary(manifest, summary)
+    catalog_manifest = build_catalog(
+        [SummaryRef(summary, receipt["summary_sha256"])], tmp_path / "catalog.db"
+    )
+    catalog = load_catalog(catalog_manifest, filesystem_type="ext4")
+    assert query_labeler_totals(catalog)[labeler]["event_count"] == 2
+
+    live = tmp_path / "live.db"
+    live_conn = db.connect(str(live))
+    db.init_db(live_conn)
+    # Cold rows deliberately overlap physically; catalog ownership excludes
+    # them from the live half.
+    db.insert_label_events(live_conn, cold + [warm])
+    live_conn.commit()
+    try:
+        stats = _fetch_event_stats(
+            live_conn, "2026-10-01", "2026-09-25", "2026-09-02", catalog
+        )[labeler]
+    finally:
+        live_conn.close()
+    assert stats["cnt_total"] == 3
+    assert stats["cnt_30d"] == 1
+    assert stats["last_event_ts"] == "2026-09-03T01:00:00Z"
 
 
 def test_missing_symlinked_and_checksum_mismatched_summaries_refuse(tmp_path):

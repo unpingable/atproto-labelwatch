@@ -56,11 +56,26 @@ def _total_events(conn, labeler_did: str, _cache: dict | None = None) -> int:
     ).fetchone()["c"]
 
 
-def _build_event_count_cache(conn, *, cap: int | None = None) -> dict[str, int]:
+def _build_event_count_cache(conn, *, cap: int | None = None,
+                             cold_catalog=None) -> dict[str, int]:
     """Exact counts by default; bounded counts for threshold-only rule decisions."""
+    if cap is not None and cap < 0:
+        raise ValueError('event count cap must be nonnegative')
+    if cold_catalog is not None:
+        from .frontdoor_archive import query_labeler_totals
+        cold = query_labeler_totals(cold_catalog)
+        rows = conn.execute(
+            "SELECT labeler_did,COUNT(*) AS c FROM label_events "
+            "WHERE ts IS NULL OR ts < ? OR ts >= ? GROUP BY labeler_did",
+            (cold_catalog.start_day, cold_catalog.end_day_exclusive),
+        ).fetchall()
+        combined = {did: int(value["event_count"]) for did, value in cold.items()}
+        for row in rows:
+            combined[row["labeler_did"]] = combined.get(row["labeler_did"], 0) + int(row["c"])
+        if cap is not None:
+            return {did: min(value, cap) for did, value in combined.items()}
+        return combined
     if cap is not None:
-        if cap < 0:
-            raise ValueError('event count cap must be nonnegative')
         return {
             row['labeler_did']: conn.execute(
                 'SELECT COUNT(*) FROM (SELECT 1 FROM label_events WHERE labeler_did=? LIMIT ?)',
@@ -513,11 +528,12 @@ def data_gap(conn, config: Config, now: datetime,
     return alerts
 
 
-def run_rules(conn, config: Config, now: datetime) -> List[Dict]:
+def run_rules(conn, config: Config, now: datetime, *, cold_catalog=None) -> List[Dict]:
     # Counts serve only confidence/warmup comparisons. Reading beyond both
     # thresholds cannot change those decisions and needlessly scans all history.
     cache = _build_event_count_cache(
-        conn, cap=max(0, config.confidence_min_events, config.warmup_min_events))
+        conn, cap=max(0, config.confidence_min_events, config.warmup_min_events),
+        cold_catalog=cold_catalog)
     cov_cache = _build_coverage_cache(conn, now, config)
     alerts = []
     alerts.extend(label_rate_spike(conn, config, now, cache, cov_cache))
