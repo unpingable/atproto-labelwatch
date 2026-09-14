@@ -40,6 +40,10 @@ def test_reconstructs_complete_interval_with_stable_ids(tmp_path, monkeypatch) -
     main()
     receipt = json.loads(result.read_text())
     assert receipt["rows"] == 2
+    assert receipt["peak_workspace_allocated_bytes"] >= receipt["allocated_bytes"]
+    assert receipt["checkpoint_policy"] == (
+        "required non-busy TRUNCATE after every partition"
+    )
     restored = sqlite3.connect(destination)
     try:
         assert [row[0] for row in restored.execute(
