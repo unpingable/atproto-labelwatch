@@ -280,52 +280,36 @@ def build_catalog(references: list[SummaryRef], destination: Path) -> Path:
             "days_json": json.dumps(days, separators=(",", ":")),
         }.items())
         for _, reference, _ in verified:
-            source = sqlite3.connect(f"file:{reference.path}?mode=ro&immutable=1", uri=True)
+            conn.execute("ATTACH DATABASE ? AS source_summary", (
+                f"file:{reference.path}?mode=ro&immutable=1",
+            ))
             try:
-                for row in source.execute("SELECT * FROM label_values"):
-                    current = conn.execute(
-                        "SELECT event_count,first_seen,last_seen FROM label_values "
-                        "WHERE target_did=? AND labeler_did=? AND val=?", row[:3]
-                    ).fetchone()
-                    if current is None:
-                        conn.execute("INSERT INTO label_values VALUES(?,?,?,?,?,?)", row)
-                    else:
-                        conn.execute(
-                            "UPDATE label_values SET event_count=?,first_seen=?,last_seen=? "
-                            "WHERE target_did=? AND labeler_did=? AND val=?",
-                            (current[0] + row[3], min(current[1], row[4]),
-                             max(current[2], row[5]), *row[:3]),
-                        )
-                conn.executemany("INSERT OR IGNORE INTO states VALUES(?,?,?,?)",
-                                 source.execute("SELECT * FROM states"))
-                for row in source.execute("SELECT * FROM loci"):
-                    current = conn.execute(
-                        "SELECT event_count FROM loci WHERE target_did=? AND labeler_did=? AND locus=?",
-                        row[:3],
-                    ).fetchone()
-                    if current is None:
-                        conn.execute("INSERT INTO loci VALUES(?,?,?,?)", row)
-                    else:
-                        conn.execute(
-                            "UPDATE loci SET event_count=? WHERE target_did=? AND labeler_did=? AND locus=?",
-                            (current[0] + row[3], *row[:3]),
-                        )
-                for row in source.execute("SELECT * FROM uri_values"):
-                    current = conn.execute(
-                        "SELECT event_count,first_seen,last_seen FROM uri_values "
-                        "WHERE target_did=? AND labeler_did=? AND uri=? AND val=?", row[:4]
-                    ).fetchone()
-                    if current is None:
-                        conn.execute("INSERT INTO uri_values VALUES(?,?,?,?,?,?,?)", row)
-                    else:
-                        conn.execute(
-                            "UPDATE uri_values SET event_count=?,first_seen=?,last_seen=? "
-                            "WHERE target_did=? AND labeler_did=? AND uri=? AND val=?",
-                            (current[0] + row[4], min(current[1], row[5]),
-                             max(current[2], row[6]), *row[:4]),
-                        )
+                conn.execute("""
+                    INSERT INTO label_values
+                    SELECT * FROM source_summary.label_values WHERE true
+                    ON CONFLICT(target_did,labeler_did,val) DO UPDATE SET
+                      event_count=label_values.event_count+excluded.event_count,
+                      first_seen=MIN(label_values.first_seen,excluded.first_seen),
+                      last_seen=MAX(label_values.last_seen,excluded.last_seen)
+                """)
+                conn.execute("INSERT OR IGNORE INTO states SELECT * FROM source_summary.states")
+                conn.execute("""
+                    INSERT INTO loci
+                    SELECT * FROM source_summary.loci WHERE true
+                    ON CONFLICT(target_did,labeler_did,locus) DO UPDATE SET
+                      event_count=loci.event_count+excluded.event_count
+                """)
+                conn.execute("""
+                    INSERT INTO uri_values
+                    SELECT * FROM source_summary.uri_values WHERE true
+                    ON CONFLICT(target_did,labeler_did,uri,val) DO UPDATE SET
+                      event_count=uri_values.event_count+excluded.event_count,
+                      first_seen=MIN(uri_values.first_seen,excluded.first_seen),
+                      last_seen=MAX(uri_values.last_seen,excluded.last_seen)
+                """)
+                conn.commit()
             finally:
-                source.close()
+                conn.execute("DETACH DATABASE source_summary")
         conn.commit()
         if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             raise RuntimeError("catalog quick_check failed")
