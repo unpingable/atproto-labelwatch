@@ -127,8 +127,14 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
         raise RuntimeError("cold catalog must reside on the local serving filesystem")
     if database.stat().st_size != catalog["logical_bytes"]:
         raise RuntimeError("cold catalog logical size mismatch")
-    if database.stat().st_blocks * 512 != catalog["allocated_bytes"]:
-        raise RuntimeError("cold catalog allocated size mismatch")
+    if not isinstance(catalog["allocated_bytes"], int) or catalog["allocated_bytes"] < 0:
+        raise RuntimeError("cold catalog recorded allocation is invalid")
+    # Allocation is placement metadata, not content identity.  A byte-identical
+    # restore can consume a different number of filesystem blocks (including a
+    # small extent-allocation difference on the same filesystem).  Bind content
+    # with logical size + SHA-256 and report the allocation of the local serving
+    # copy for capacity accounting.
+    observed_allocated_bytes = database.stat().st_blocks * 512
     if _sha256(database) != catalog["sha256"]:
         raise RuntimeError("cold catalog checksum mismatch")
 
@@ -170,7 +176,7 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
         days=days,
         start_day=coverage["start_day"],
         end_day_exclusive=coverage["end_day_exclusive"],
-        allocated_bytes=catalog["allocated_bytes"],
+        allocated_bytes=observed_allocated_bytes,
         uri_top_n=uri_top_n,
     )
 

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from dataclasses import asdict
 
@@ -363,3 +364,19 @@ def test_catalog_requires_complete_days_and_local_storage(tmp_path):
     (tmp_path / "one-day.sqlite").unlink()
     with pytest.raises(RuntimeError, match="absent or symlinked"):
         load_catalog(manifest, filesystem_type="ext4")
+
+
+def test_catalog_restore_allocation_is_observed_not_content_identity(tmp_path):
+    subject = "did:plc:subject"
+    rows = [("did:plc:labeler", subject, subject, None, "spam", 0, None,
+             None, "2026-09-01T01:00:00Z", "hash", subject)]
+    reference = _make_summary(tmp_path, "2026-09-01", rows)
+    manifest_path = build_catalog([reference], tmp_path / "catalog.sqlite")
+    manifest = json.loads(manifest_path.read_text())
+    manifest["catalog"]["allocated_bytes"] += 4096
+    manifest_path.write_text(json.dumps(manifest))
+
+    catalog = load_catalog(manifest_path, filesystem_type="ext4")
+
+    assert catalog.allocated_bytes == catalog.database_path.stat().st_blocks * 512
+    assert catalog.allocated_bytes != manifest["catalog"]["allocated_bytes"]
