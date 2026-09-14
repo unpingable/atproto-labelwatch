@@ -209,7 +209,7 @@ def verify_summary(reference: SummaryRef) -> dict[str, str]:
             "partition_sha256", "source_database_sha256",
         }
         if set(metadata) != expected_keys:
-            raise RuntimeError("cold summary metadata keys do not match v1")
+            raise RuntimeError("cold summary metadata keys do not match v2")
         if metadata["format"] != FORMAT or metadata["format_version"] != str(FORMAT_VERSION):
             raise RuntimeError("unsupported cold summary")
         tables = {row[0] for row in conn.execute(

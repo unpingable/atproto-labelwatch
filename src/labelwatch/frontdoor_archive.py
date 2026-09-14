@@ -90,13 +90,13 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
         raise RuntimeError("cold catalog manifest is absent or symlinked")
     manifest = json.loads(manifest_path.read_text())
     if set(manifest) != {"format", "format_version", "coverage", "catalog", "sources"}:
-        raise RuntimeError("cold catalog manifest root keys do not match v1")
+        raise RuntimeError("cold catalog manifest root keys do not match v2")
     if manifest["format"] != FORMAT or manifest["format_version"] != FORMAT_VERSION:
         raise RuntimeError("unsupported cold catalog format")
 
     coverage = manifest["coverage"]
     if set(coverage) != {"start_day", "end_day_exclusive", "days"}:
-        raise RuntimeError("cold catalog coverage keys do not match v1")
+        raise RuntimeError("cold catalog coverage keys do not match v2")
     days = tuple(coverage["days"])
     if not days or days != tuple(sorted(set(days))):
         raise RuntimeError("cold catalog days must be nonempty, unique, and ordered")
@@ -140,7 +140,7 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
         "source_database_sha256",
     }
     if any(set(item) != required_source_keys for item in sources):
-        raise RuntimeError("cold catalog source keys do not match v1")
+        raise RuntimeError("cold catalog source keys do not match v2")
 
     conn = sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True)
     try:
@@ -150,7 +150,7 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
             "SELECT name FROM sqlite_schema WHERE type='table'"
         )}
         if tables != CATALOG_TABLES:
-            raise RuntimeError("cold catalog tables do not match v1")
+            raise RuntimeError("cold catalog tables do not match v2")
         metadata = dict(conn.execute("SELECT key,value FROM metadata"))
         if metadata != {
             "format": FORMAT,
