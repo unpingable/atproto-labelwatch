@@ -1,0 +1,19 @@
+{
+  "schema": "neutral-zone.social-card-provenance.v1",
+  "project": "labelwatch",
+  "generated_at": "2026-09-10",
+  "generator": "OpenAI built-in image generation",
+  "artwork_sha256": "0ea921baa25ea440eea5a66a82862bf8d23d96a707affa091315b3a49e8172c9",
+  "final_sha256": "af760ccbe78ffc7fdf9187202882ba2d9b8dc7ac1cc0f47ba6ea74d515a67c66",
+  "prompt": "Create a sophisticated longitudinal signal-strip illustration for Labelwatch, a public instrument observing moderation labels over time. Deep charcoal and dark slate, parallel evidence streams, clean interruptions, discontinuities and custody markers, sparse oxide-red and signal-amber accents, right-weighted with the left 52% quiet for typography. Refined archival editorial data-art with no text, numbers, logos, UI panels, people, profiles, verdict icons, circuit boards, network-node spaghetti, or live values.",
+  "overlay": "assets/social-card.src.html",
+  "renderer": "Google Chrome 143.0.7499.109",
+  "render_command": "scripts/render-social-card.sh",
+  "width": 1200,
+  "height": 630,
+  "perceptual_review": {
+    "sizes": ["1200x630", "600x315", "360x189"],
+    "result": "pass",
+    "notes": "Question, testimony boundary and custody line remain legible; no subject-specific or live material."
+  }
+}

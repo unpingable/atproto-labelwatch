@@ -118,8 +118,10 @@ def test_homepage_renders_lookup_input():
     assert "Paste a handle or DID" in html or "handle or DID" in html.lower()
     assert "What moderation services have labeled this account?" in html
     assert "Labelwatch observes labels. It doesn't decide whether they're true." in html
-    assert "neutral.zone / instruments" in html
+    assert "ATProto Observatory" in html
     assert "Source on GitHub" in html
+    assert 'property="og:image" content="https://labelwatch.neutral.zone/social-card-v1.png"' in html
+    assert 'name="twitter:card" content="summary_large_image"' in html
 
 
 # ---------------------------------------------------------------------------

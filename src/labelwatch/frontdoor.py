@@ -1612,6 +1612,7 @@ def render_result_body_html(result: FrontdoorResult) -> str:
 
 # Public site URL — used for og:url + canonical. Override via env in test/dev.
 _SITE_URL = os.environ.get("LABELWATCH_SITE_URL", "https://labelwatch.neutral.zone")
+_SOCIAL_CARD_URL = _SITE_URL + "/social-card-v1.png"
 
 # Homepage social-card copy. Keep this sharp: the card is doing first-contact
 # duty whether it deserves the job or not.
@@ -1647,9 +1648,14 @@ def _render_social_meta(
         f"<meta property=\"og:type\" content=\"{_esc(og_type)}\"/>"
         f"{og_url_tag}"
         f"<meta property=\"og:site_name\" content=\"Labelwatch\"/>"
-        f"<meta name=\"twitter:card\" content=\"summary\"/>"
+        f"<meta property=\"og:image\" content=\"{_esc(_SOCIAL_CARD_URL)}\"/>"
+        f"<meta property=\"og:image:width\" content=\"1200\"/>"
+        f"<meta property=\"og:image:height\" content=\"630\"/>"
+        f"<meta property=\"og:image:alt\" content=\"Labelwatch — observe moderation-label testimony without treating it as truth.\"/>"
+        f"<meta name=\"twitter:card\" content=\"summary_large_image\"/>"
         f"<meta name=\"twitter:title\" content=\"{_esc(title)}\"/>"
         f"<meta name=\"twitter:description\" content=\"{_esc(description)}\"/>"
+        f"<meta name=\"twitter:image\" content=\"{_esc(_SOCIAL_CARD_URL)}\"/>"
         f"{canonical_tag}"
     )
 
@@ -1712,7 +1718,7 @@ def render_result_page_html(
         f"<style>{_RESULT_CSS}</style>"
         f"{_THEME_SYNC_JS}"
         "</head><body>"
-        "<header class=\"top nz-masthead\"><a class=\"nz-family\" href=\"/\">neutral.zone / instruments</a>"
+        "<header class=\"top nz-masthead\"><a class=\"nz-family\" href=\"/\">ATProto Observatory</a>"
         "<span class=\"nz-product\">Labelwatch</span><nav>"
         "<a href=\"/about\">About</a><a href=\"/methodology.html\">Methodology</a>"
         "<a href=\"https://github.com/unpingable/atproto-labelwatch\">Source</a></nav></header>"
@@ -1786,7 +1792,7 @@ def render_homepage_html(
         f"<style>{_HOMEPAGE_CSS}</style>"
         f"{_THEME_SYNC_JS}"
         "</head><body>"
-        "<header class=\"top nz-masthead\"><a class=\"nz-family\" href=\"/\">neutral.zone / instruments</a>"
+        "<header class=\"top nz-masthead\"><a class=\"nz-family\" href=\"/\">ATProto Observatory</a>"
         "<span class=\"nz-product\">Labelwatch</span><nav>"
         "<a href=\"/about\">About</a><a href=\"/methodology.html\">Methodology</a>"
         "<a href=\"https://github.com/unpingable/atproto-labelwatch\">Source</a></nav></header>"
