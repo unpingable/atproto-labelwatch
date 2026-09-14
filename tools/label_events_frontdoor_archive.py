@@ -222,10 +222,13 @@ def verify_summary(reference: SummaryRef) -> dict[str, str]:
         conn.close()
 
 
-def build_catalog(references: list[SummaryRef], destination: Path) -> Path:
+def build_catalog(references: list[SummaryRef], destination: Path,
+                  uri_top_n: int = 50) -> Path:
     """Merge a complete contiguous set of summaries into one local catalog."""
     if not references:
         raise ValueError("at least one summary is required")
+    if uri_top_n <= 0:
+        raise ValueError("uri_top_n must be positive")
     if destination.exists() or destination.is_symlink():
         raise FileExistsError("catalog destination must not exist")
     manifest_path = destination.with_suffix(destination.suffix + ".manifest.json")
@@ -295,6 +298,7 @@ def build_catalog(references: list[SummaryRef], destination: Path) -> Path:
             "start_day": days[0],
             "end_day_exclusive": end.isoformat(),
             "days_json": json.dumps(days, separators=(",", ":")),
+            "uri_top_n": str(uri_top_n),
         }.items())
         for _, reference, _ in verified:
             conn.execute("ATTACH DATABASE ? AS source_summary", (
@@ -335,6 +339,43 @@ def build_catalog(references: list[SummaryRef], destination: Path) -> Path:
                 conn.commit()
             finally:
                 conn.execute("DETACH DATABASE source_summary")
+        # The public reader exposes only the top N record URIs for each
+        # subject/labeler after counts have been merged across every day.
+        # Pruning earlier would be incorrect because a URI can accumulate
+        # across partitions.  The compacted final database releases the pages
+        # occupied by non-selected URI rows instead of carrying build-scale
+        # slack into the serving footprint.
+        conn.executescript("""
+            CREATE TEMP TABLE selected_uris (
+                target_did TEXT NOT NULL, labeler_did TEXT NOT NULL,
+                uri TEXT NOT NULL,
+                PRIMARY KEY(target_did,labeler_did,uri)
+            ) WITHOUT ROWID;
+        """)
+        conn.execute("""
+            INSERT INTO selected_uris
+            SELECT target_did,labeler_did,uri FROM (
+              SELECT target_did,labeler_did,uri,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY target_did,labeler_did
+                       ORDER BY uri_total DESC,uri
+                     ) AS rank
+              FROM (
+                SELECT target_did,labeler_did,uri,SUM(event_count) AS uri_total
+                FROM uri_values
+                GROUP BY target_did,labeler_did,uri
+              )
+            ) WHERE rank <= ?
+        """, (uri_top_n,))
+        conn.execute("""
+            DELETE FROM uri_values
+            WHERE NOT EXISTS (
+              SELECT 1 FROM selected_uris selected
+              WHERE selected.target_did=uri_values.target_did
+                AND selected.labeler_did=uri_values.labeler_did
+                AND selected.uri=uri_values.uri
+            )
+        """)
         conn.commit()
         if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
             raise RuntimeError("catalog quick_check failed")
@@ -344,9 +385,25 @@ def build_catalog(references: list[SummaryRef], destination: Path) -> Path:
         raise
     else:
         conn.close()
-    with tmp.open("rb") as handle:
+    compact = destination.with_name(f".{destination.name}.{os.getpid()}.compact.incomplete")
+    if compact.exists() or compact.is_symlink():
+        tmp.unlink(missing_ok=True)
+        raise FileExistsError("compact catalog destination already exists")
+    compact_conn = sqlite3.connect(tmp)
+    try:
+        escaped = str(compact).replace("'", "''")
+        compact_conn.execute(f"VACUUM INTO '{escaped}'")
+    except Exception:
+        compact_conn.close()
+        compact.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
+        raise
+    else:
+        compact_conn.close()
+    with compact.open("rb") as handle:
         os.fsync(handle.fileno())
-    os.replace(tmp, destination)
+    tmp.unlink()
+    os.replace(compact, destination)
     dir_fd = os.open(destination.parent, os.O_RDONLY)
     try:
         os.fsync(dir_fd)
@@ -373,6 +430,7 @@ def build_catalog(references: list[SummaryRef], destination: Path) -> Path:
             "sha256": _sha256(destination),
             "logical_bytes": destination.stat().st_size,
             "allocated_bytes": destination.stat().st_blocks * 512,
+            "uri_top_n": uri_top_n,
         },
         "sources": sources,
     }

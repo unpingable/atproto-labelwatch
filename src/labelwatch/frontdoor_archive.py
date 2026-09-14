@@ -66,6 +66,7 @@ class ColdCatalog:
     start_day: str
     end_day_exclusive: str
     allocated_bytes: int
+    uri_top_n: int
 
 
 def query_labeler_totals(catalog: ColdCatalog) -> dict[str, dict]:
@@ -110,8 +111,11 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
         raise RuntimeError("cold catalog coverage is not a complete closed-day interval")
 
     catalog = manifest["catalog"]
-    if set(catalog) != {"file", "sha256", "logical_bytes", "allocated_bytes"}:
-        raise RuntimeError("cold catalog file keys do not match v1")
+    if set(catalog) != {"file", "sha256", "logical_bytes", "allocated_bytes", "uri_top_n"}:
+        raise RuntimeError("cold catalog file keys do not match v2")
+    uri_top_n = catalog["uri_top_n"]
+    if not isinstance(uri_top_n, int) or uri_top_n <= 0:
+        raise RuntimeError("cold catalog uri_top_n is invalid")
     relative = Path(catalog["file"])
     if relative.is_absolute() or len(relative.parts) != 1 or relative.name in {"", ".", ".."}:
         raise RuntimeError("cold catalog file must be a local sibling")
@@ -154,6 +158,7 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
             "start_day": coverage["start_day"],
             "end_day_exclusive": coverage["end_day_exclusive"],
             "days_json": json.dumps(list(days), separators=(",", ":")),
+            "uri_top_n": str(uri_top_n),
         }:
             raise RuntimeError("cold catalog database metadata mismatch")
     finally:
@@ -166,6 +171,7 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
         start_day=coverage["start_day"],
         end_day_exclusive=coverage["end_day_exclusive"],
         allocated_bytes=catalog["allocated_bytes"],
+        uri_top_n=uri_top_n,
     )
 
 
@@ -186,6 +192,8 @@ def query_subject(catalog: ColdCatalog, target_did: str, *, live_conn=None,
     cutover, but they must not contribute twice.  Rows outside the interval
     (including older rows not covered by this catalog) remain live-owned.
     """
+    if top_n > catalog.uri_top_n:
+        raise RuntimeError("requested URI count exceeds the catalog custody bound")
     values: dict[tuple[str, str], list] = {}
     states: defaultdict[str, set[tuple[str, int | None]]] = defaultdict(set)
     loci: defaultdict[tuple[str, str], int] = defaultdict(int)

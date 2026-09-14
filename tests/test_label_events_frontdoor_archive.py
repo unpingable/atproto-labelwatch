@@ -103,6 +103,18 @@ def test_multiple_partition_summaries_merge_before_top_n(tmp_path):
     }
     assert result["uri_values"][0]["uri_total"] == 5
 
+    catalog_manifest = build_catalog(
+        summaries, tmp_path / "top-one-catalog.db", uri_top_n=1
+    )
+    catalog = load_catalog(catalog_manifest, filesystem_type="ext4")
+    catalog_result = query_catalog_subject(catalog, subject, top_n=1)
+    assert {row["uri"] for row in catalog_result["uri_values"]} == {
+        f"at://{subject}/app.bsky.feed.post/2"
+    }
+    assert catalog_result["uri_values"][0]["uri_total"] == 5
+    with pytest.raises(RuntimeError, match="exceeds the catalog custody bound"):
+        query_catalog_subject(catalog, subject, top_n=2)
+
 
 def test_live_and_cold_rows_merge_to_unreduced_frontdoor_shapes(tmp_path):
     subject = "did:plc:subject"

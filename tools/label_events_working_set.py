@@ -52,6 +52,7 @@ def main() -> None:
     parser.add_argument("--end-day-exclusive", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--summaries-only", action="store_true")
     args = parser.parse_args()
 
     if args.output.is_symlink():
@@ -123,6 +124,26 @@ def main() -> None:
             "summary_bytes": summary["summary_bytes"],
             "elapsed_seconds": time.time() - day_started,
         }, sort_keys=True), flush=True)
+
+    summary_result = {
+        "schema": "labelwatch.complete-working-set-summaries.v1",
+        "source_database_sha256": args.source_sha256,
+        "start_day": args.start_day,
+        "end_day_exclusive": args.end_day_exclusive,
+        "days": len(days),
+        "archived_rows": rows,
+        "catalog_included_events": included,
+        "events_without_target_did": skipped,
+        "elapsed_seconds": time.time() - started,
+        "source_rows_deleted": False,
+        "production_changed": False,
+    }
+    (args.output / "summaries-qualification.json").write_text(
+        json.dumps(summary_result, sort_keys=True, indent=2) + "\n"
+    )
+    if args.summaries_only:
+        print(json.dumps(summary_result, sort_keys=True), flush=True)
+        return
 
     catalog_manifest = build_catalog(refs, args.output / "frontdoor-cold-catalog.sqlite")
     catalog = json.loads(catalog_manifest.read_text())
