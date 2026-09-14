@@ -11,7 +11,7 @@ from labelwatch.frontdoor import (
     _Q8C_LABELED_RECORDS,
     lookup_subject,
 )
-from labelwatch.frontdoor_archive import load_catalog
+from labelwatch.frontdoor_archive import load_catalog, query_subject as query_catalog_subject
 from tools.label_events_cold_archive import export_day, reconstruct
 from tools.label_events_frontdoor_archive import (
     SummaryRef,
@@ -129,11 +129,6 @@ def test_live_and_cold_rows_merge_to_unreduced_frontdoor_shapes(tmp_path):
     db.init_db(live_conn)
     db.insert_label_events(live_conn, archived_rows + live_rows)
     live_conn.commit()
-    live_conn.execute(
-        "CREATE TEMP VIEW label_events AS "
-        "SELECT * FROM main.label_events WHERE ts >= '2026-09-02'"
-    )
-
     full = tmp_path / "full.db"
     full_conn = db.connect(str(full))
     db.init_db(full_conn)
@@ -151,6 +146,7 @@ def test_live_and_cold_rows_merge_to_unreduced_frontdoor_shapes(tmp_path):
             [SummaryRef(summary, receipt["summary_sha256"])],
             subject,
             live_conn=live_conn,
+            live_exclude_interval=("2026-09-01", "2026-09-02"),
         )
     finally:
         live_conn.close()
@@ -160,6 +156,46 @@ def test_live_and_cold_rows_merge_to_unreduced_frontdoor_shapes(tmp_path):
     for rows in observed.values():
         rows.sort(key=lambda row: tuple(str(value) for value in row.values()))
     assert observed == actual
+
+
+def test_catalog_owns_only_its_interval_while_rows_still_overlap_live(tmp_path):
+    subject = "did:plc:subject"
+    labeler = "did:plc:labeler"
+    before = (labeler, subject, subject, None, "before", 0, None, None,
+              "2026-08-31T23:59:59Z", "before", subject)
+    archived = (labeler, subject, subject, None, "cold", 0, None, None,
+                "2026-09-01T12:00:00Z", "cold", subject)
+    after = (labeler, subject, subject, None, "after", 0, None, None,
+             "2026-09-02T00:00:00Z", "after", subject)
+
+    archive_source = tmp_path / "archive-source.db"
+    conn = db.connect(str(archive_source))
+    db.init_db(conn)
+    db.insert_label_events(conn, [archived])
+    conn.commit()
+    conn.close()
+    manifest = export_day(archive_source, tmp_path / "archive", "2026-09-01", SOURCE_SHA)
+    summary = tmp_path / "summary.db"
+    receipt = build_summary(manifest, summary)
+    catalog_manifest = build_catalog(
+        [SummaryRef(summary, receipt["summary_sha256"])],
+        tmp_path / "catalog.sqlite",
+    )
+    catalog = load_catalog(catalog_manifest, filesystem_type="ext4")
+
+    live = tmp_path / "live.db"
+    live_conn = db.connect(str(live))
+    db.init_db(live_conn)
+    # The cold row deliberately remains physically present during reader
+    # qualification.  It must be owned only by the catalog.
+    db.insert_label_events(live_conn, [before, archived, after])
+    live_conn.commit()
+    try:
+        result = query_catalog_subject(catalog, subject, live_conn=live_conn)
+    finally:
+        live_conn.close()
+    counts = {row["val"]: row["event_count"] for row in result["label_values"]}
+    assert counts == {"after": 1, "before": 1, "cold": 1}
 
 
 def test_missing_symlinked_and_checksum_mismatched_summaries_refuse(tmp_path):

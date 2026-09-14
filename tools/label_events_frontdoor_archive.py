@@ -378,8 +378,14 @@ def query_subject(
     target_did: str,
     top_n: int = 50,
     live_conn: sqlite3.Connection | None = None,
+    live_exclude_interval: tuple[str, str] | None = None,
 ) -> dict:
-    """Return frontdoor aggregate shapes across cold summaries and live rows."""
+    """Return aggregate shapes across cold summaries and disjoint live rows.
+
+    During pre-cutover qualification archived rows may still exist in the live
+    database.  Callers must pass the catalog-owned closed interval so those
+    physical duplicates cannot be counted twice.
+    """
     values: dict[tuple[str, str], list] = {}
     states: defaultdict[str, set[tuple[str, int | None]]] = defaultdict(set)
     loci: defaultdict[tuple[str, str], int] = defaultdict(int)
@@ -409,9 +415,15 @@ def query_subject(
             conn.close()
 
     if live_conn is not None:
+        if live_exclude_interval is None:
+            raise RuntimeError("live/cold merge requires an explicit ownership interval")
+        start_day, end_day_exclusive = live_exclude_interval
+        live_owned = "(ts IS NULL OR ts < ? OR ts >= ?)"
+        live_params = (target_did, start_day, end_day_exclusive)
         for labeler, val, count, first_seen, last_seen in live_conn.execute(
             "SELECT labeler_did,val,COUNT(*),MIN(ts),MAX(ts) FROM label_events "
-            "WHERE target_did=? GROUP BY labeler_did,val", (target_did,)
+            f"WHERE target_did=? AND {live_owned} GROUP BY labeler_did,val",
+            live_params,
         ):
             key = (labeler, val)
             value = values.setdefault(key, [0, None, None])
@@ -419,8 +431,8 @@ def query_subject(
             value[1] = _min(value[1], first_seen)
             value[2] = _max(value[2], last_seen)
         for labeler, val, neg in live_conn.execute(
-            "SELECT DISTINCT labeler_did,val,neg FROM label_events WHERE target_did=?",
-            (target_did,),
+            "SELECT DISTINCT labeler_did,val,neg FROM label_events "
+            f"WHERE target_did=? AND {live_owned}", live_params,
         ):
             states[labeler].add((val, neg))
         for labeler, locus, count in live_conn.execute(
@@ -433,14 +445,14 @@ def query_subject(
             "WHEN uri LIKE 'at://%/app.bsky.feed.generator/%' THEN 'feed_generator' "
             "WHEN uri LIKE 'at://%/app.bsky.graph.starterpack/%' THEN 'starterpack' "
             "WHEN uri LIKE 'at://%' THEN 'record' ELSE 'unknown' END AS locus, "
-            "COUNT(*) FROM label_events WHERE target_did=? GROUP BY labeler_did,locus",
-            (target_did,),
+            f"COUNT(*) FROM label_events WHERE target_did=? AND {live_owned} "
+            "GROUP BY labeler_did,locus", live_params,
         ):
             loci[(labeler, locus)] += count
         for labeler, uri, val, count, first_seen, last_seen in live_conn.execute(
             "SELECT labeler_did,uri,val,COUNT(*),MIN(ts),MAX(ts) FROM label_events "
-            "WHERE target_did=? AND uri NOT LIKE 'did:%' "
-            "GROUP BY labeler_did,uri,val", (target_did,)
+            f"WHERE target_did=? AND uri NOT LIKE 'did:%' AND {live_owned} "
+            "GROUP BY labeler_did,uri,val", live_params,
         ):
             key = (labeler, uri, val)
             value = uris.setdefault(key, [0, None, None])

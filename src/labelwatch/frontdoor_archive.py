@@ -162,7 +162,13 @@ def _maximum(current: str | None, value: str) -> str:
 
 def query_subject(catalog: ColdCatalog, target_did: str, *, live_conn=None,
                   top_n: int = 50) -> dict:
-    """Merge one verified local catalog with the current online working set."""
+    """Merge one verified local catalog with its disjoint online working set.
+
+    The catalog owns its complete closed-day interval.  The live database may
+    still physically contain those rows during qualification or a guarded
+    cutover, but they must not contribute twice.  Rows outside the interval
+    (including older rows not covered by this catalog) remain live-owned.
+    """
     values: dict[tuple[str, str], list] = {}
     states: defaultdict[str, set[tuple[str, int | None]]] = defaultdict(set)
     loci: defaultdict[tuple[str, str], int] = defaultdict(int)
@@ -185,17 +191,20 @@ def query_subject(catalog: ColdCatalog, target_did: str, *, live_conn=None,
         cold.close()
 
     if live_conn is not None:
+        live_owned = "(ts IS NULL OR ts < ? OR ts >= ?)"
+        live_params = (target_did, catalog.start_day, catalog.end_day_exclusive)
         for labeler, val, count, first_seen, last_seen in live_conn.execute(
             "SELECT labeler_did,val,COUNT(*),MIN(ts),MAX(ts) FROM label_events "
-            "WHERE target_did=? GROUP BY labeler_did,val", (target_did,)
+            f"WHERE target_did=? AND {live_owned} GROUP BY labeler_did,val",
+            live_params,
         ):
             value = values.setdefault((labeler, val), [0, None, None])
             value[0] += count
             value[1] = _minimum(value[1], first_seen)
             value[2] = _maximum(value[2], last_seen)
         for labeler, val, neg in live_conn.execute(
-            "SELECT DISTINCT labeler_did,val,neg FROM label_events WHERE target_did=?",
-            (target_did,),
+            "SELECT DISTINCT labeler_did,val,neg FROM label_events "
+            f"WHERE target_did=? AND {live_owned}", live_params,
         ):
             states[labeler].add((val, neg))
         locus_sql = (
@@ -207,14 +216,15 @@ def query_subject(catalog: ColdCatalog, target_did: str, *, live_conn=None,
             "WHEN uri LIKE 'at://%/app.bsky.feed.generator/%' THEN 'feed_generator' "
             "WHEN uri LIKE 'at://%/app.bsky.graph.starterpack/%' THEN 'starterpack' "
             "WHEN uri LIKE 'at://%' THEN 'record' ELSE 'unknown' END, COUNT(*) "
-            "FROM label_events WHERE target_did=? GROUP BY labeler_did,2"
+            f"FROM label_events WHERE target_did=? AND {live_owned} "
+            "GROUP BY labeler_did,2"
         )
-        for labeler, locus, count in live_conn.execute(locus_sql, (target_did,)):
+        for labeler, locus, count in live_conn.execute(locus_sql, live_params):
             loci[(labeler, locus)] += count
         for labeler, uri, val, count, first_seen, last_seen in live_conn.execute(
             "SELECT labeler_did,uri,val,COUNT(*),MIN(ts),MAX(ts) FROM label_events "
-            "WHERE target_did=? AND uri NOT LIKE 'did:%' GROUP BY labeler_did,uri,val",
-            (target_did,),
+            f"WHERE target_did=? AND uri NOT LIKE 'did:%' AND {live_owned} "
+            "GROUP BY labeler_did,uri,val", live_params,
         ):
             value = uris.setdefault((labeler, uri, val), [0, None, None])
             value[0] += count
