@@ -14,3 +14,13 @@ reference_dids = [
     "did:plc:ar7c4by46qjdydhdevvrndac",  # Bluesky Moderation
     "did:plc:e4elbtctnfqocyfcml6h2lf7",  # Skywatch Blue
 ]
+
+# Semantic shadow sidecar (LW-JEV-SHADOW-v0) — observation-only Jev shadow
+# over structurally-evidenced post-relation edges. CLI-run only; no public
+# output; no enforcement authority. Additional kill switch:
+# LABELWATCH_SEMANTIC_SHADOW_DISABLED=1 (env). Requires TYPESAFE_API_KEY for
+# any live call; every live path refuses closed without it.
+#semantic_shadow_enabled = false
+#semantic_shadow_daily_cap = 200        # max adjudications per UTC day
+#semantic_shadow_window_minutes = 15    # recent-post cache TTL
+#semantic_shadow_cache_size = 10000     # recent-post cache bound

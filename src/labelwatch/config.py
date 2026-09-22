@@ -107,6 +107,13 @@ class Config:
 
     driftwatch_facts_path: str = ""  # path to facts.sqlite, empty = disabled
 
+    # Semantic shadow sidecar (LW-JEV-SHADOW-v0) — observation-only,
+    # CLI-run, no enforcement authority. All bounded/default-off.
+    semantic_shadow_enabled: bool = False  # behind flag
+    semantic_shadow_daily_cap: int = 200  # max Jev adjudications per UTC day
+    semantic_shadow_window_minutes: int = 15  # recent-post cache TTL
+    semantic_shadow_cache_size: int = 10000  # recent-post cache bound
+
     def to_receipt_dict(self) -> dict:
         return {
             "window_minutes": self.window_minutes,
@@ -135,6 +142,10 @@ class Config:
             "boundary_min_top_share": self.boundary_min_top_share,
             "boundary_lag_max_s": self.boundary_lag_max_s,
             "boundary_lag_min_overlap": self.boundary_lag_min_overlap,
+            "semantic_shadow_enabled": self.semantic_shadow_enabled,
+            "semantic_shadow_daily_cap": self.semantic_shadow_daily_cap,
+            "semantic_shadow_window_minutes": self.semantic_shadow_window_minutes,
+            "semantic_shadow_cache_size": self.semantic_shadow_cache_size,
         }
 
 

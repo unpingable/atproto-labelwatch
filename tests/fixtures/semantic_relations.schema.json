@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://labelwatch.neutral.zone/schemas/semantic_relations.fixture.v0.json",
+  "title": "labelwatch semantic_relations fixture record (LW-JEV-SHADOW-v0 §5.9)",
+  "description": "One JSONL line: an authored synthetic post pair with a structural relation, a gold relation from the §5.4 vocabulary, an ambiguity note, and the acceptable-answer set. Evaluation material only; several classes legitimately gold underdetermined.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fixture_id",
+    "fixture_class",
+    "relation_type",
+    "text_a",
+    "text_b",
+    "dt_seconds",
+    "langs_a",
+    "langs_b",
+    "gold_relation",
+    "acceptable_answers",
+    "ambiguity_note"
+  ],
+  "properties": {
+    "fixture_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9_-]*$"
+    },
+    "fixture_class": {
+      "type": "string",
+      "enum": [
+        "explicit_direct_reference",
+        "subtweet",
+        "irony",
+        "vaguebooking",
+        "unrelated_similarity",
+        "structurally_linked_semantically_unrelated"
+      ]
+    },
+    "relation_type": {
+      "type": "string",
+      "enum": ["reply", "quote", "repost"]
+    },
+    "text_a": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "description": "Post A's text (the structural target). No DIDs, AT-URIs, or handle mentions."
+    },
+    "text_b": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "Post B's text. May be empty only when relation_type is repost (bare repost carries no text)."
+    },
+    "dt_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Seconds between A and B."
+    },
+    "langs_a": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "langs_b": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "gold_relation": {
+      "type": "string",
+      "enum": [
+        "dependent_direct",
+        "dependent_indirect",
+        "independent_lexical",
+        "unrelated",
+        "underdetermined"
+      ],
+      "description": "Gold relation from the frozen §5.4 vocabulary."
+    },
+    "acceptable_answers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": [
+          "dependent_direct",
+          "dependent_indirect",
+          "independent_lexical",
+          "unrelated",
+          "underdetermined"
+        ]
+      },
+      "description": "Expected-acceptable answer set. MUST contain gold_relation; that cross-field rule is enforced by the python validator (labelwatch.semantic_shadow.validate_fixture_record), which is normative where this schema is silent."
+    },
+    "ambiguity_note": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Why this pair is or is not ambiguous; authored, not generated."
+    },
+    "note": {
+      "type": "string",
+      "description": "Optional free-text context."
+    }
+  }
+}

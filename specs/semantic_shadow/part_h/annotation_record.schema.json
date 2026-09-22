@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://labelwatch.neutral.zone/schemas/semantic_shadow_holdout_annotation.v1.json",
+  "title": "Part H annotation record (Amendment 2026-09-17-C §6.2)",
+  "description": "One label record by annotator A, annotator B or the adjudicator. Normative validator: labelwatch.semantic_shadow_holdout.validate_annotation / assemble_gold. An unresolved adjudication carries null labels; gold becomes unclear/underdetermined.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_kind",
+    "item_id",
+    "item_digest",
+    "corpus_digest",
+    "annotator_ref",
+    "role",
+    "explicit_reference",
+    "relation",
+    "unresolved",
+    "codebook_version",
+    "annotated_at",
+    "seconds_spent",
+    "blind_attestation"
+  ],
+  "properties": {
+    "record_kind": {
+      "const": "labelwatch.semantic_shadow_holdout_annotation.v1"
+    },
+    "item_id": {
+      "type": "string",
+      "pattern": "^h-[0-9a-f]{12}$"
+    },
+    "item_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "corpus_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "annotator_ref": {
+      "type": "string",
+      "pattern": "^annotator-[0-9a-f]{8}$"
+    },
+    "role": {
+      "enum": [
+        "A",
+        "B",
+        "adjudicator"
+      ]
+    },
+    "explicit_reference": {
+      "enum": [
+        "yes",
+        "no",
+        "unclear",
+        null
+      ]
+    },
+    "relation": {
+      "enum": [
+        "dependent_direct",
+        "dependent_indirect",
+        "independent_lexical",
+        "unrelated",
+        "underdetermined",
+        null
+      ]
+    },
+    "unresolved": {
+      "type": "boolean"
+    },
+    "codebook_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "annotated_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seconds_spent": {
+      "type": "number",
+      "minimum": 0
+    },
+    "blind_attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "saw_jev_outputs",
+        "saw_anchor_features",
+        "saw_distinctive_token_features",
+        "saw_other_annotator",
+        "saw_author_intent"
+      ],
+      "properties": {
+        "saw_jev_outputs": {
+          "const": false
+        },
+        "saw_anchor_features": {
+          "const": false
+        },
+        "saw_distinctive_token_features": {
+          "const": false
+        },
+        "saw_other_annotator": {
+          "const": false
+        },
+        "saw_author_intent": {
+          "const": false
+        }
+      }
+    }
+  }
+}

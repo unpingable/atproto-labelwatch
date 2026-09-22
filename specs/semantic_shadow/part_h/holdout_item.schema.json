@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://labelwatch.neutral.zone/schemas/semantic_shadow_holdout_item.v1.json",
+  "title": "Part H holdout item (Amendment 2026-09-17-C §6.1)",
+  "description": "One authored post pair for the V0.1 fresh validation. Carries no gold labels, no Jev output and no evaluation class. Normative validator: labelwatch.semantic_shadow_holdout.validate_item / validate_corpus (which also enforce derived-metadata, privacy and composition checks this schema cannot express).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "record_kind",
+    "item_id",
+    "authoring_protocol_version",
+    "author_ref",
+    "relation_type",
+    "text_a",
+    "text_b",
+    "dt_seconds",
+    "langs_a",
+    "langs_b",
+    "categories",
+    "anchor_bearing_negative",
+    "declared_long_text",
+    "declared_multilingual"
+  ],
+  "properties": {
+    "record_kind": {
+      "const": "labelwatch.semantic_shadow_holdout_item.v1"
+    },
+    "item_id": {
+      "type": "string",
+      "pattern": "^h-[0-9a-f]{12}$"
+    },
+    "authoring_protocol_version": {
+      "const": "lw-part-h-authoring/v1"
+    },
+    "author_ref": {
+      "type": "string",
+      "pattern": "^author-[0-9a-f]{8}$"
+    },
+    "relation_type": {
+      "enum": [
+        "reply",
+        "quote",
+        "repost"
+      ]
+    },
+    "text_a": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "text_b": {
+      "type": "string",
+      "maxLength": 500
+    },
+    "dt_seconds": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "langs_a": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{1,8})*$"
+      }
+    },
+    "langs_b": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{1,8})*$"
+      }
+    },
+    "categories": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "explicit_direct_reference",
+          "subtweet",
+          "irony",
+          "vaguebooking",
+          "unrelated_similarity",
+          "structurally_linked_semantically_unrelated",
+          "common_source_convergence",
+          "explicit_reference_with_stance",
+          "quote_no_comment"
+        ]
+      }
+    },
+    "anchor_bearing_negative": {
+      "type": "boolean"
+    },
+    "declared_long_text": {
+      "type": "boolean"
+    },
+    "declared_multilingual": {
+      "type": "boolean"
+    },
+    "author_intended": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "explicit_reference": {
+          "enum": [
+            "yes",
+            "no",
+            "unclear"
+          ]
+        },
+        "relation": {
+          "enum": [
+            "dependent_direct",
+            "dependent_indirect",
+            "independent_lexical",
+            "unrelated",
+            "underdetermined"
+          ]
+        }
+      }
+    },
+    "author_note": {
+      "type": "string"
+    }
+  }
+}

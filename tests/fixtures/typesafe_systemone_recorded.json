@@ -1,0 +1,186 @@
+{
+  "_note": "VERBATIM recorded TypeSafe System One live responses (bodies and selected headers). Sources: typesafe characterization run 20260916T002242Z-screening-live and Weatherwatch live smoke jev-run-20260917T105234Z-ea68d6. Responses carry no request content or identity. Used to pin the wire contract offline. Also: Labelwatch fixture live smoke 2026-09-17 call 0 (explicit_direct_reference-001; response carries no text).",
+  "responses": [
+    {
+      "source": "typesafe/20260916T002242Z-screening-live call_index 1",
+      "decision_family": "failure_class",
+      "options": [
+        "capacity",
+        "dependency",
+        "deploy",
+        "data",
+        "noise",
+        "unclear"
+      ],
+      "http_status": 200,
+      "headers": {
+        "content-type": "application/json",
+        "x-typesafe-request-id": "req_01a0a7982ac17dff820192778c9b50e4"
+      },
+      "body": {
+        "model": "jev-1.13.0",
+        "answers": {
+          "failure_class": {
+            "type": "choice",
+            "choice": "dependency",
+            "confidence": 0.95,
+            "probabilities": {
+              "dependency": 0.96,
+              "capacity": 0.0,
+              "deploy": 0.04,
+              "noise": 0.0,
+              "unclear": 0.0,
+              "data": 0.0
+            }
+          }
+        },
+        "usage": {
+          "input_tokens": 691,
+          "output_tokens": 61
+        }
+      }
+    },
+    {
+      "source": "weatherwatch live smoke 2026-09-17 call 4",
+      "decision_family": "window_signature",
+      "options": [
+        "ordinary",
+        "ingress_surge",
+        "deletion_cascade",
+        "block_cascade",
+        "mixed_signature",
+        "indeterminate"
+      ],
+      "http_status": 200,
+      "headers": {
+        "content-type": "application/json",
+        "x-typesafe-request-id": "req_01a0aeff366c7bb683d55961565a89fb"
+      },
+      "body": {
+        "answers": {
+          "window_signature": {
+            "choice": "deletion_cascade",
+            "confidence": 0.62,
+            "probabilities": {
+              "block_cascade": 0.01,
+              "deletion_cascade": 0.6900000000000001,
+              "indeterminate": 0.05,
+              "ingress_surge": 0.0,
+              "mixed_signature": 0.24,
+              "ordinary": 0.01
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 1967,
+          "output_tokens": 77
+        }
+      }
+    },
+    {
+      "source": "weatherwatch live smoke 2026-09-17 call 0",
+      "decision_family": "instrument_or_platform",
+      "options": [
+        "platform_event",
+        "instrument_degradation",
+        "both",
+        "indeterminate"
+      ],
+      "http_status": 200,
+      "headers": {
+        "content-type": "application/json",
+        "x-typesafe-request-id": "req_01a0aeff319679de9be9b88e4406f36d"
+      },
+      "body": {
+        "answers": {
+          "instrument_or_platform": {
+            "choice": "both",
+            "confidence": 0.59,
+            "probabilities": {
+              "both": 0.69,
+              "indeterminate": 0.01,
+              "instrument_degradation": 0.3,
+              "platform_event": 0.0
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 1972,
+          "output_tokens": 53
+        }
+      }
+    },
+    {
+      "source": "weatherwatch live smoke 2026-09-17 call 7",
+      "decision_family": "nowcast",
+      "options": [
+        "crosses",
+        "does_not_cross"
+      ],
+      "http_status": 200,
+      "headers": {
+        "content-type": "application/json",
+        "x-typesafe-request-id": "req_01a0aeff3a527b1782a0de5e05a305dd"
+      },
+      "body": {
+        "answers": {
+          "nowcast": {
+            "choice": "does_not_cross",
+            "confidence": 0.99,
+            "probabilities": {
+              "crosses": 0.01,
+              "does_not_cross": 0.99
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 1885,
+          "output_tokens": 38
+        }
+      }
+    },
+    {
+      "source": "labelwatch fixture live smoke 2026-09-17 call 0",
+      "decision_family": "edge_relation",
+      "options": [
+        "dependent_direct",
+        "dependent_indirect",
+        "independent_lexical",
+        "unrelated",
+        "underdetermined"
+      ],
+      "http_status": 200,
+      "headers": {
+        "content-type": "application/json",
+        "x-typesafe-request-id": "req_01a0af159180794d844edc9354030228"
+      },
+      "body": {
+        "answers": {
+          "edge_relation": {
+            "choice": "dependent_direct",
+            "confidence": 1.0,
+            "probabilities": {
+              "dependent_direct": 1.0,
+              "dependent_indirect": 0.0,
+              "independent_lexical": 0.0,
+              "underdetermined": 0.0,
+              "unrelated": 0.0
+            },
+            "type": "choice"
+          }
+        },
+        "model": "jev-1.13.0",
+        "usage": {
+          "input_tokens": 670,
+          "output_tokens": 68
+        }
+      }
+    }
+  ]
+}

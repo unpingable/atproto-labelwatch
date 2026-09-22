@@ -68,6 +68,11 @@ src/labelwatch/
   runner.py            — Continuous ingest/scan/report loop with report thread
   registry.py          — Labeler registry page generation
   whatsonme.py         — Account-level label lookup via network queryLabels
+  semantic_shadow.py   — LW-JEV-SHADOW-v0 shadow semantic sidecar daemon (behind flag)
+  semantic_shadow_jev.py — Thin JEV-CONTRACT-v0 client (stdlib urllib only)
+  semantic_shadow_db.py — Semantic shadow sidecar store (own DB, digests only, no text)
+  semantic_shadow_v01.py — V0.1 qualification rule (Amendment C; pure, offline, not wired into the daemon)
+  semantic_shadow_holdout.py — Part H holdout schema/composition/annotation/evaluation tooling (offline)
   cli.py               — argparse CLI: 16 subcommands
   utils.py             — Timestamps, hashing, DID resolution, git commit detection
 ```

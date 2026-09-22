@@ -992,6 +992,242 @@ def cmd_state_pilot(args) -> None:
     print(json.dumps(result, indent=2))
 
 
+def _shadow_preflight_or_refuse(args, jev, enabled, reason, activation_path):
+    """§2.9 live-entry gates: flag + kill switch, key, explicit spend
+    confirmation, mandatory --max-calls, printed cost estimate. Returns the
+    API key on success; raises SystemExit(2) with a refusal receipt line
+    otherwise."""
+    estimate = jev.estimate_cost_usd(args.max_calls or 0)
+    if not enabled:
+        print(json.dumps({"refused": reason, "preflight": estimate,
+                          "activation_receipt": activation_path}, indent=2))
+        raise SystemExit(2)
+    if args.max_calls is None:
+        print(json.dumps({"refused": "max_calls_required",
+                          "detail": "--max-calls is mandatory on every live entry point (§2.9)",
+                          "activation_receipt": activation_path}, indent=2))
+        raise SystemExit(2)
+    api_key = os.environ.get(jev.ENV_API_KEY)
+    if not api_key:
+        print(json.dumps({"refused": "key_absent",
+                          "detail": f"{jev.ENV_API_KEY} is not set; every live path refuses closed without it",
+                          "preflight": estimate,
+                          "activation_receipt": activation_path}, indent=2))
+        raise SystemExit(2)
+    if not args.confirm_live_spend:
+        print(json.dumps({"refused": "confirmation_required",
+                          "detail": "re-run with --confirm-live-spend to authorize the estimated spend",
+                          "preflight": estimate,
+                          "activation_receipt": activation_path}, indent=2))
+        raise SystemExit(2)
+    print(json.dumps({"preflight": estimate,
+                      "activation_receipt": activation_path}, indent=2),
+          file=sys.stderr)
+    return api_key
+
+
+def cmd_semantic_shadow(args) -> None:
+    """Live shadow semantic sidecar (LW-JEV-SHADOW-v0): status, run,
+    eval-fixtures, export-receipts. Observation only; no public output."""
+    import asyncio
+    from . import semantic_shadow as shadow
+    from . import semantic_shadow_db as shadow_db
+    from . import semantic_shadow_jev as jev
+
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    sidecar_path = getattr(args, "sidecar", None) or shadow_db.default_sidecar_path(cfg.db_path)
+    receipts_dir = getattr(args, "receipts_dir", None) or shadow.default_receipts_dir(sidecar_path)
+
+    enabled, reason = shadow.shadow_enabled(cfg)
+    _, activation_path = shadow.write_activation_receipt(
+        receipts_dir, cfg, enabled=enabled, disabled_reason=reason,
+        action=args.shadow_command)
+
+    if args.shadow_command == "status":
+        status = {
+            "enabled": enabled,
+            "disabled_reason": reason,
+            "flag_on": cfg.semantic_shadow_enabled,
+            "kill_switch": os.environ.get(shadow.KILL_SWITCH_ENV) == "1",
+            "sidecar_path": sidecar_path,
+            "sidecar_present": os.path.exists(sidecar_path),
+            "axolotl": "available" if shadow.resolve_axolotl() is not None else "unavailable",
+            "activation_receipt": activation_path,
+        }
+        if status["sidecar_present"]:
+            conn = shadow_db.init_sidecar(sidecar_path)
+            try:
+                status.update(shadow_db.status_summary(conn, jev.utc_day()))
+            finally:
+                conn.close()
+        print(json.dumps(status, indent=2))
+        return
+
+    if args.shadow_command == "export-receipts":
+        if not os.path.exists(sidecar_path):
+            raise SystemExit(f"Sidecar not found: {sidecar_path}")
+        conn = shadow_db.init_sidecar(sidecar_path)
+        try:
+            out_f = open(args.out, "w", encoding="utf-8") if args.out else sys.stdout
+            try:
+                n = 0
+                for record in shadow_db.iter_calls(conn, day=args.day):
+                    out_f.write(json.dumps(record, sort_keys=True) + "\n")
+                    n += 1
+            finally:
+                if args.out:
+                    out_f.close()
+        finally:
+            conn.close()
+        if args.out:
+            print(json.dumps({"wrote": args.out, "records": n,
+                              "activation_receipt": activation_path}))
+        return
+
+    if args.shadow_command == "run":
+        api_key = _shadow_preflight_or_refuse(args, jev, enabled, reason, activation_path)
+        asyncio.run(shadow.run(
+            cfg,
+            sidecar_path=sidecar_path,
+            max_calls=args.max_calls,
+            receipts_dir=receipts_dir,
+            api_key=api_key,
+        ))
+        return
+
+    if args.shadow_command == "eval-fixtures":
+        api_key = None
+        if args.live:
+            api_key = _shadow_preflight_or_refuse(args, jev, enabled, reason, activation_path)
+        receipt = shadow.eval_fixtures(
+            args.fixtures,
+            live=args.live,
+            api_key=api_key,
+            flag_on=enabled,
+            max_calls=args.max_calls or 0,
+            axolotl_mod=shadow.resolve_axolotl(),
+            records_dir=receipts_dir,
+        )
+        if args.out:
+            os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
+            with open(args.out, "w", encoding="utf-8") as f:
+                json.dump(receipt, f, indent=2)
+        print(json.dumps(receipt, indent=2))
+        if not receipt["valid"]:
+            raise SystemExit(2)
+        return
+
+    raise SystemExit(f"unknown semantic-shadow command: {args.shadow_command}")
+
+
+def cmd_semantic_holdout(args) -> None:
+    """Part H holdout tooling (Amendment 2026-09-17-C §6). Offline only: no
+    network, no config, no Labelwatch database. Never authors or labels."""
+    from . import semantic_shadow as shadow
+    from . import semantic_shadow_holdout as ho
+
+    def _write(obj, path):
+        text = json.dumps(obj, indent=2, sort_keys=True, default=str)
+        if path:
+            os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text + "\n")
+        print(text)
+
+    def _corpus(path):
+        items = ho.load_jsonl(path)
+        return items, ho.validate_corpus(items, ho.l2_reference_texts(args.l2_fixtures))
+
+    if args.holdout_command == "validate":
+        _, report = _corpus(args.items)
+        _write(report, args.out)
+        if not report["valid"]:
+            raise SystemExit(2)
+        return
+
+    if args.holdout_command == "annotation-view":
+        items, report = _corpus(args.items)
+        if not report["valid"]:
+            _write(report, None)
+            raise SystemExit(2)
+        view = ho.annotation_view(items, report["corpus_digest"])
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
+        with open(args.out, "w", encoding="utf-8") as f:
+            for row in view:
+                f.write(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n")
+        print(json.dumps({"wrote": args.out, "items": len(view),
+                          "corpus_digest": report["corpus_digest"]}))
+        return
+
+    if args.holdout_command == "eval-holdout":
+        from . import semantic_shadow_jev as jev
+        items, report = _corpus(args.items)
+        if not report["valid"]:
+            _write(report, None)
+            raise SystemExit(2)
+        pre = ho.preflight(items, max_calls=args.max_calls,
+                           codebook_version=args.codebook_version)
+        pre["corpus_digest"] = report["corpus_digest"]
+        if args.dry_run:
+            _write({"dry_run": True, "network_used": False, "preflight": pre}, args.out)
+            return
+        cfg = load_config(args.config)
+        enabled, reason = shadow.shadow_enabled(cfg)
+        api_key = os.environ.get(jev.ENV_API_KEY)
+        refusal = (None if enabled else reason) or \
+            (None if api_key else "key_absent") or \
+            (None if args.confirm_live_spend else "confirmation_required")
+        if refusal:
+            _write({"refused": refusal, "preflight": pre,
+                    "detail": {"flag_off": "semantic_shadow_enabled is not on",
+                               "kill_switch": "LABELWATCH_SEMANTIC_SHADOW_DISABLED=1",
+                               "key_absent": f"{jev.ENV_API_KEY} is not set",
+                               "confirmation_required":
+                                   "re-run with --confirm-live-spend"}.get(refusal)},
+                   None)
+            raise SystemExit(2)
+        print(json.dumps({"preflight": pre}, indent=2, sort_keys=True), file=sys.stderr)
+        receipt = ho.run_holdout_eval(
+            items, corpus_report=report, records_dir=args.records_dir,
+            api_key=api_key, flag_on=True, max_calls=args.max_calls,
+            codebook_version=args.codebook_version,
+            axolotl_mod=shadow.resolve_axolotl())
+        _write(receipt, args.out)
+        if not receipt["evaluation_complete"]:
+            raise SystemExit(2)
+        return
+
+    items, report = _corpus(args.items)
+    gold = ho.assemble_gold(report, ho.load_jsonl(args.annotations))
+    if args.holdout_command == "gold":
+        _write(gold, args.out)
+        if not gold["valid"]:
+            raise SystemExit(2)
+        return
+
+    if args.holdout_command == "evaluate":
+        log = shadow.read_eval_call_log(args.call_log)
+        result = ho.evaluate_part(args.part, items, report, gold, log)
+        _write(result, args.out)
+        return
+
+    raise SystemExit(f"unknown semantic-holdout command: {args.holdout_command}")
+
+
+def cmd_semantic_holdout_decide(args) -> None:
+    from . import semantic_shadow_holdout as ho
+
+    def _load(path):
+        if not path:
+            return None
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    print(json.dumps(ho.overall_decision(_load(args.part_h), _load(args.part_r)),
+                     indent=2))
+
+
 def main(argv: Optional[list] = None) -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -1279,6 +1515,110 @@ def main(argv: Optional[list] = None) -> None:
     p_state.add_argument("--disk-floor-gb", type=float, default=14.0, help="Abort if free disk drops below this (default 14.0)")
     p_state.add_argument("--main-wal-ceiling-gb", type=float, default=1.0, help="Abort if main DB WAL exceeds this (default 1.0)")
     p_state.set_defaults(func=cmd_state_pilot)
+
+    p_shadow = sub.add_parser(
+        "semantic-shadow",
+        help=(
+            "Live shadow semantic sidecar (LW-JEV-SHADOW-v0): structurally-"
+            "evidenced post-relation edges, author-blind Jev adjudication, "
+            "qualification evidence only. Behind config flag; env kill "
+            "switch LABELWATCH_SEMANTIC_SHADOW_DISABLED=1."
+        ),
+    )
+    shadow_sub = p_shadow.add_subparsers(dest="shadow_command", required=True)
+
+    p_shadow_status = shadow_sub.add_parser(
+        "status", help="Sidecar status: admissibility, cursor, counts, gates")
+    p_shadow_status.add_argument("--sidecar", help="Override sidecar DB path")
+    p_shadow_status.add_argument("--receipts-dir", help="Override receipts directory")
+
+    p_shadow_run = shadow_sub.add_parser(
+        "run", help="Run the shadow daemon (live; requires key + flag + confirmation)")
+    p_shadow_run.add_argument("--sidecar", help="Override sidecar DB path")
+    p_shadow_run.add_argument("--receipts-dir", help="Override receipts directory")
+    p_shadow_run.add_argument("--max-calls", type=int, default=None,
+                              help="Mandatory daily call cap for this run (§2.9)")
+    p_shadow_run.add_argument("--confirm-live-spend", action="store_true",
+                              help="Explicit confirmation of the pre-flight cost estimate")
+
+    p_shadow_eval = shadow_sub.add_parser(
+        "eval-fixtures", help="Validate + evaluate semantic_relations fixtures")
+    p_shadow_eval.add_argument("--fixtures", default="tests/fixtures/semantic_relations.jsonl",
+                               help="Fixture JSONL path")
+    p_shadow_eval.add_argument("--live", action="store_true",
+                               help="Adjudicate pairs via Jev (Phase 4; key + flag + confirmation)")
+    p_shadow_eval.add_argument("--max-calls", type=int, default=None,
+                               help="Mandatory call cap when --live (§2.9)")
+    p_shadow_eval.add_argument("--confirm-live-spend", action="store_true",
+                               help="Explicit confirmation of the pre-flight cost estimate")
+    p_shadow_eval.add_argument("--out", help="Also write the eval receipt JSON here")
+    p_shadow_eval.add_argument("--sidecar", help="Unused; accepted for symmetry")
+    p_shadow_eval.add_argument("--receipts-dir", help="Override receipts directory")
+
+    p_shadow_export = shadow_sub.add_parser(
+        "export-receipts", help="Export per-call records as JSONL (§3)")
+    p_shadow_export.add_argument("--sidecar", help="Override sidecar DB path")
+    p_shadow_export.add_argument("--receipts-dir", help="Override receipts directory")
+    p_shadow_export.add_argument("--day", help="UTC day filter (YYYY-MM-DD)")
+    p_shadow_export.add_argument("--out", help="Output file (default stdout)")
+
+    p_shadow.set_defaults(func=cmd_semantic_shadow)
+
+    p_holdout = sub.add_parser(
+        "semantic-holdout",
+        help=("Part H holdout tooling for the V0.1 rule (offline: validate, "
+              "annotation view, gold, evaluate, decide)"),
+    )
+    holdout_sub = p_holdout.add_subparsers(dest="holdout_command", required=True)
+
+    def _holdout_common(p, annotations=False, out_help="Also write the JSON result here",
+                        out_required=False):
+        p.add_argument("--items", required=True, help="Part H items JSONL")
+        p.add_argument("--l2-fixtures", default="tests/fixtures/semantic_relations.jsonl",
+                       help="L2 corpus, used only for the no-text-reuse check")
+        if annotations:
+            p.add_argument("--annotations", required=True,
+                           help="Annotation records JSONL (A, B, adjudicator)")
+        p.add_argument("--out", required=out_required, help=out_help)
+
+    _holdout_common(holdout_sub.add_parser(
+        "validate", help="Schema + composition validation (exit 2 if invalid)"))
+    _holdout_common(holdout_sub.add_parser(
+        "annotation-view", help="Write the blind annotator view (no author/category data)"),
+        out_help="Output JSONL for annotators", out_required=True)
+    _holdout_common(holdout_sub.add_parser(
+        "gold", help="Assemble gold from two annotators + adjudicator"), annotations=True)
+    p_live = holdout_sub.add_parser(
+        "eval-holdout",
+        help=("Run Jev over a frozen item corpus (live). Requires the config "
+              "flag, the API key, --max-calls and --confirm-live-spend; "
+              "--dry-run does the preflight with no network."))
+    _holdout_common(p_live)
+    p_live.add_argument("--records-dir", required=True,
+                        help="Where the durable per-call log is written")
+    p_live.add_argument("--max-calls", type=int, required=True,
+                        help="Mandatory call cap for this run (§2.9)")
+    p_live.add_argument("--confirm-live-spend", action="store_true",
+                        help="Explicit confirmation of the preflight estimate")
+    p_live.add_argument("--dry-run", action="store_true",
+                        help="Preflight only: no key, no network, no receipts")
+    p_live.add_argument("--codebook-version",
+                        help="Codebook version identifier, recorded in the header")
+
+    p_eval = holdout_sub.add_parser(
+        "evaluate", help="Pre-registered §6.4 evaluation of one part")
+    _holdout_common(p_eval, annotations=True)
+    p_eval.add_argument("--part", required=True, choices=["H", "R"])
+    p_eval.add_argument("--call-log", required=True,
+                        help="Durable eval call log (JSONL) for the part's items")
+    p_holdout.set_defaults(func=cmd_semantic_holdout)
+
+    p_decide = sub.add_parser(
+        "semantic-holdout-decide",
+        help="§6.5 overall decision from part evaluation results")
+    p_decide.add_argument("--part-h", required=True)
+    p_decide.add_argument("--part-r")
+    p_decide.set_defaults(func=cmd_semantic_holdout_decide)
 
     p_hosting = sub.add_parser("hosting-locus", help="Analyze PDS hosting distribution of labeled targets")
     p_hosting.add_argument("--days", type=int, default=7, help="Lookback window in days")

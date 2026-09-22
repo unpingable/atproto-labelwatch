@@ -1,0 +1,36 @@
+# LW-JEV-SHADOW-V0 (JEV-DUAL-SHADOW-V0): template only.
+#
+# This unit is NOT installed, enabled, or referenced by this campaign — the
+# semantic shadow is CLI-run (`labelwatch semantic-shadow run ...`). It is
+# provided for operator completeness. Do not `systemctl enable` it without
+# the campaign's final review: every run makes live paid API calls, and the
+# ExecStart below bakes in the explicit --confirm-live-spend gate.
+[Unit]
+Description=labelwatch-semantic-shadow - shadow semantic sidecar (LW-JEV-SHADOW-v0, qualification only)
+After=network.target
+
+[Service]
+Type=simple
+User=labelwatch
+Group=labelwatch
+WorkingDirectory=/opt/labelwatch
+# TYPESAFE_API_KEY must come from an operator-managed file, never this unit.
+EnvironmentFile=-/etc/labelwatch/semantic-shadow.env
+ExecStart=/opt/labelwatch/.venv/bin/labelwatch \
+    --db /var/lib/labelwatch/labelwatch.db \
+    semantic-shadow run --max-calls 600 --confirm-live-spend
+Restart=on-failure
+RestartSec=10
+Environment=JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe
+# Optional: path to a local axolotl checkout for the §5.6 ambiguity gate.
+#Environment=LABELWATCH_AXOLOTL_PATH=/opt/axolotl/src
+MemoryMax=256M
+CPUQuota=10%
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/labelwatch
+ProtectHome=true
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
