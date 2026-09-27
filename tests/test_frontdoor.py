@@ -19,8 +19,10 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pytest
@@ -1051,8 +1053,49 @@ def test_http_frontdoor_lookup_returns_result_html(seeded_db):
         assert "labeler-a.test" in body
         assert "labeler-b.test" in body
         assert "<aside class=\"use-not\">" in body
+        assert '<aside class="weather-strip">' in body
         # System-dashboard CTA points users back to the graphs surface.
         assert "system dashboard" in body
+    finally:
+        shutdown()
+
+
+def test_overlapping_frontdoor_lookups_omit_timed_out_weather(seeded_db, monkeypatch):
+    """Weather from two lookups cannot reject a third core lookup."""
+    weather_started = threading.Event()
+    weather_lock = threading.Lock()
+    weather_calls = 0
+
+    def slow_weather(conn, **kwargs):
+        nonlocal weather_calls
+        with weather_lock:
+            weather_calls += 1
+            if weather_calls == 2:
+                weather_started.set()
+        conn.execute(
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL "
+            "SELECT x+1 FROM n WHERE x<100000000) SELECT sum(x) FROM n"
+        ).fetchone()
+        return {"signals": ["calm"]}
+
+    monkeypatch.setattr(frontdoor, "network_weather", slow_weather)
+    port, shutdown = _start_test_server(seeded_db, _admissible_receipt())
+
+    def lookup():
+        return _http_get(port, f"/v1/frontdoor/{SUBJECT_DID}", expect_status=None)
+
+    try:
+        started = time.monotonic()
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            first = [pool.submit(lookup) for _ in range(2)]
+            assert weather_started.wait(timeout=5)
+            third = pool.submit(lookup)
+            results = [future.result(timeout=8) for future in (*first, third)]
+        assert time.monotonic() - started < 5
+        for status, body in results:
+            assert status == 200
+            assert "labeler-a.test" in body and "labeler-b.test" in body
+            assert 'class="weather-strip"' not in body
     finally:
         shutdown()
 

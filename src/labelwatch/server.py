@@ -55,6 +55,28 @@ def _homepage_weather(db_path: str, budget_seconds: float = 2.0) -> dict:
             conn.set_progress_handler(None, 0)
             conn.close()
 
+
+def _frontdoor_weather(db_path: str, budget_seconds: float = 2.0) -> Optional[dict]:
+    """Best-effort weather after the core lookup has released its slot."""
+    from . import frontdoor as fd
+    conn = None
+    deadline = time.monotonic() + budget_seconds
+    try:
+        conn = db.connect(db_path, readonly=True)
+        conn.execute('PRAGMA busy_timeout=250')
+        conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+        weather = fd.network_weather(conn, strict_errors=True)
+        if time.monotonic() >= deadline:
+            raise TimeoutError('frontdoor weather query budget exhausted')
+        return weather
+    except Exception as exc:
+        logger.warning('frontdoor.weather_omitted reason=%s', type(exc).__name__)
+        return None
+    finally:
+        if conn is not None:
+            conn.set_progress_handler(None, 0)
+            conn.close()
+
 # ---------------------------------------------------------------------------
 # Token bucket rate limiter
 # ---------------------------------------------------------------------------
@@ -372,7 +394,6 @@ class ClimateHandler(BaseHTTPRequestHandler):
             self._send_error(503, "Server busy")
             return
 
-        weather = None
         try:
             conn = db.connect(self.db_path, readonly=True)
             try:
@@ -381,13 +402,6 @@ class ClimateHandler(BaseHTTPRequestHandler):
                     identifier,
                     audit_receipt=self.audit_receipt,
                 )
-                # Weather strip on the result page: same small-table query as
-                # the homepage. Failure is non-fatal.
-                try:
-                    weather = fd.network_weather(conn)
-                except Exception:
-                    logger.debug("frontdoor: network_weather query failed",
-                                 exc_info=True)
             finally:
                 conn.close()
         finally:
@@ -397,6 +411,10 @@ class ClimateHandler(BaseHTTPRequestHandler):
         fmt = (query.get("format", ["html"]) or ["html"])[0]
         if fmt not in ("json", "html"):
             fmt = "html"
+
+        # JSON has no weather strip. HTML weather uses its own bounded
+        # connection after the core lookup has released its admission slot.
+        weather = _frontdoor_weather(self.db_path) if fmt == "html" else None
 
         self._last_status = 200
         headers = {"Cache-Control": "private, max-age=60"}
