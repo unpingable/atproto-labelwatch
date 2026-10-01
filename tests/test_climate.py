@@ -694,3 +694,51 @@ def test_climate_no_account_labels(tmp_path):
 
     html_content = (tmp_path / "climate.html").read_text()
     assert "No account-level labels found" in html_content
+
+
+# ---------------------------------------------------------------------------
+# Retention floor
+# ---------------------------------------------------------------------------
+
+
+def test_climate_window_crossing_floor_reports_cold_history(tmp_path, monkeypatch):
+    from labelwatch import retention
+    from labelwatch.climate import _render_html, public_climate_payload
+
+    monkeypatch.delenv("LABELWATCH_RETENTION_FLOOR", raising=False)
+    conn = _make_db()
+    floor = time.strftime("%Y-%m-%dT00:00:00Z", time.gmtime(time.time() - 10 * 86400))
+    retention.set_retention_floor(conn, floor, None)
+
+    payload = generate_climate(conn, "did:plc:nobody", window_days=30,
+                               out_dir=str(tmp_path), fmt="both")
+    assert payload["empty"] is False
+    assert payload["refusal"] == "cold_history_unavailable"
+    assert "No label activity found" not in payload["message"]
+    assert payload["account_labels"]["coverage"]["live_floor"] == floor
+    assert payload["account_labels"]["coverage"]["state_scope"] == "live_window"
+
+    public = public_climate_payload(payload)
+    assert public["cold_history"]["live_floor"] == floor
+    assert public["cold_history"]["scope"] == "partial"
+    assert public["refusal"] == "cold_history_unavailable"
+
+    html_out = _render_html(public, "did:plc:nobody", 30)
+    assert "No labelers have applied labels" not in html_out
+    assert "No post-level label activity found" not in html_out
+    assert "earlier history" in html_out
+
+
+def test_climate_window_after_floor_has_no_block(tmp_path, monkeypatch):
+    from labelwatch import retention
+
+    monkeypatch.delenv("LABELWATCH_RETENTION_FLOOR", raising=False)
+    conn = _make_db()
+    floor = time.strftime("%Y-%m-%dT00:00:00Z", time.gmtime(time.time() - 100 * 86400))
+    retention.set_retention_floor(conn, floor, None)
+
+    payload = generate_climate(conn, "did:plc:nobody", window_days=30,
+                               out_dir=str(tmp_path), fmt="json")
+    assert payload["cold_history"] is None
+    assert payload["empty"] is True
+    assert "refusal" not in payload

@@ -1133,3 +1133,63 @@ def test_http_frontdoor_query_string_form(seeded_db):
         assert payload["subject_did"] == SUBJECT_DID
     finally:
         shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Retention floor — cold history must never read as "nothing observed"
+# ---------------------------------------------------------------------------
+
+RETENTION_FLOOR = "2026-08-14T00:00:00Z"
+
+
+def _set_floor(path: str, floor: str = RETENTION_FLOOR):
+    from labelwatch import retention
+    conn = db.connect(path)
+    retention.set_retention_floor(conn, floor, "archive://test")
+    conn.commit()
+    conn.close()
+
+
+def _lookup(path: str, identifier: str):
+    conn = db.connect(path, readonly=True)
+    try:
+        return frontdoor.lookup_subject(
+            conn, identifier, audit_receipt=_admissible_receipt(),
+        )
+    finally:
+        conn.close()
+
+
+def test_floor_with_zero_rows_refuses_cold_history(seeded_db, monkeypatch):
+    monkeypatch.delenv("LABELWATCH_RETENTION_FLOOR", raising=False)
+    _set_floor(seeded_db)
+    result = _lookup(seeded_db, "did:plc:unobservedxxxxxxxxxxxxxx")
+    assert result.refusal == "cold_history_unavailable"
+    assert result.refusal != "no_observed_labels"
+    assert RETENTION_FLOOR in result.refusal_detail
+    assert result.cold_history["status"] == "unavailable"
+    payload = frontdoor.result_to_json(result)
+    assert payload["cold_history"]["live_floor"] == RETENTION_FLOOR
+    html = frontdoor.render_result_page_html(result)
+    assert "No labels observed" not in html
+    assert "earlier history unavailable" in html
+
+
+def test_floor_with_rows_reports_all_history_scope(seeded_db, monkeypatch):
+    monkeypatch.delenv("LABELWATCH_RETENTION_FLOOR", raising=False)
+    _set_floor(seeded_db)
+    result = _lookup(seeded_db, SUBJECT_DID)
+    assert result.refusal is None
+    payload = frontdoor.result_to_json(result)
+    assert payload["cold_history"]["scope"] == "all_history"
+    assert payload["cold_history"]["archive"] == "archive://test"
+    html = frontdoor.render_result_page_html(result)
+    assert f"cover {RETENTION_FLOOR} to now only" in html
+
+
+def test_no_floor_leaves_lookup_unchanged(seeded_db, monkeypatch):
+    monkeypatch.delenv("LABELWATCH_RETENTION_FLOOR", raising=False)
+    result = _lookup(seeded_db, "did:plc:unobservedxxxxxxxxxxxxxx")
+    assert result.refusal == "no_observed_labels"
+    assert result.cold_history is None
+    assert frontdoor.result_to_json(_lookup(seeded_db, SUBJECT_DID))["cold_history"] is None

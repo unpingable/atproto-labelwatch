@@ -310,3 +310,73 @@ class TestDidValidation:
 
     def test_control_chars_rejected(self):
         assert _validate_did("did:plc:abc\x00def") is not None
+
+
+# ---------------------------------------------------------------------------
+# Retention floor
+# ---------------------------------------------------------------------------
+
+RETENTION_FLOOR = "2026-08-14T00:00:00Z"
+
+
+def _start_server(db_path, cache_dir):
+    port = _free_port()
+    handler_cls = configure_handler(
+        db_path, cache_dir, max_concurrent=2, rate_limit=100,
+        generation_timeout=10,
+    )
+    from http.server import ThreadingHTTPServer
+    server = ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    return server, f"http://127.0.0.1:{port}"
+
+
+@pytest.fixture
+def floored_server(tmp_path, monkeypatch):
+    from labelwatch import retention
+
+    monkeypatch.delenv("LABELWATCH_RETENTION_FLOOR", raising=False)
+    monkeypatch.delenv("LABELWATCH_RETENTION_ARCHIVE_REF", raising=False)
+    conn, db_path = _make_db(tmp_path)
+    floor = time.strftime("%Y-%m-%dT00:00:00Z", time.gmtime(time.time() - 10 * 86400))
+    retention.set_retention_floor(conn, floor, "archive://test")
+    conn.commit()
+    conn.close()
+    server, base = _start_server(db_path, str(tmp_path / "cache"))
+    yield base, floor
+    server.shutdown()
+
+
+class TestRetentionFloor:
+    def test_climate_json_carries_cold_history(self, floored_server):
+        base, floor = floored_server
+        status, _, body = _get(f"{base}/v1/climate/{TARGET}?format=json&window=60")
+        assert status == 200
+        data = json.loads(body)
+        assert data["cold_history"]["live_floor"] == floor
+        assert data["cold_history"]["status"] == "unavailable"
+        assert data["refusal"] == "cold_history_unavailable"
+        assert data["empty"] is False
+
+    def test_health_exposes_floor(self, floored_server):
+        base, floor = floored_server
+        status, _, body = _get(f"{base}/health")
+        assert status == 200
+        data = json.loads(body)
+        assert data["retention"] == {"live_floor": floor, "archive": "archive://test"}
+
+    def test_health_without_floor(self, seeded_server, monkeypatch):
+        monkeypatch.delenv("LABELWATCH_RETENTION_FLOOR", raising=False)
+        _, _, body = _get(f"{seeded_server}/health")
+        assert json.loads(body)["retention"]["live_floor"] is None
+
+    def test_cache_key_includes_floor(self, tmp_path):
+        cache = _DiskCache(str(tmp_path / "cache"))
+        a = cache._path(TARGET, 30, "json", None)
+        b = cache._path(TARGET, 30, "json", RETENTION_FLOOR)
+        c = cache._path(TARGET, 30, "json", "2026-09-01T00:00:00Z")
+        assert len({a, b, c}) == 3
+        cache.put(TARGET, 30, "json", b"pre-floor", None)
+        assert cache.get(TARGET, 30, "json", RETENTION_FLOOR) is None
+        assert cache.get(TARGET, 30, "json", None) == b"pre-floor"

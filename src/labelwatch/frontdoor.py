@@ -39,6 +39,7 @@ from .label_family import (
     classify_authority_effect,
     normalize_family,
 )
+from . import retention
 from .config import Config
 from .utils import format_ts, now_utc
 
@@ -58,6 +59,7 @@ REFUSAL_STATES = (
     "insufficient_labeler_profile",
     "insufficient_temporal_history",
     "subject_too_dense",
+    "cold_history_unavailable",
 )
 
 # Defensive ceiling for high-volume subjects.
@@ -171,6 +173,9 @@ class FrontdoorResult:
     audit_verdict: Optional[str]
     audit_receipt_path: Optional[str]
     audit_generated_at: Optional[str]
+
+    # Retention: set when the live working set excludes archived history.
+    cold_history: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +598,9 @@ def lookup_subject(
             audit_generated_at=audit_ts,
         )
 
+    # Step 2.25: the lookup claims all history; say when part of it is cold.
+    cold_history = retention.cold_history_block(conn, None)
+
     # Step 2.5: density circuit breaker. Pre-count Q8 rows for the subject
     # using the same target_did index. If above the cap, refuse cleanly
     # rather than do O(N) Python aggregation. See MAX_EVENTS_FOR_AGGREGATION.
@@ -623,10 +631,31 @@ def lookup_subject(
             audit_verdict=audit_verdict,
             audit_receipt_path=audit_path,
             audit_generated_at=audit_ts,
+            cold_history=cold_history,
         )
 
     # Step 3: Q3 — per (labeler, val) rollup against subject.
     q3_rows = [dict(r) for r in conn.execute(_Q3_LABEL_VALUES, (did,)).fetchall()]
+    if not q3_rows and cold_history is not None:
+        return FrontdoorResult(
+            surface=SURFACE,
+            consumer_surface_version="v0",
+            generated_at=generated_at,
+            input_identifier=identifier,
+            subject_did=did,
+            subject_handle=handle,
+            labelers=[],
+            refusal="cold_history_unavailable",
+            refusal_detail=(
+                f"no label events in the live working set since "
+                f"{cold_history['live_floor']}; earlier history is archived "
+                f"and not served"
+            ),
+            audit_verdict=audit_verdict,
+            audit_receipt_path=audit_path,
+            audit_generated_at=audit_ts,
+            cold_history=cold_history,
+        )
     if not q3_rows:
         return FrontdoorResult(
             surface=SURFACE,
@@ -730,6 +759,7 @@ def lookup_subject(
         audit_verdict=audit_verdict,
         audit_receipt_path=audit_path,
         audit_generated_at=audit_ts,
+        cold_history=cold_history,
     )
 
 
@@ -1497,7 +1527,25 @@ _REFUSAL_COPY = {
         "render slowly. The labels are still observed and in the DB; just "
         "not flattened into a card view here yet.",
     ),
+    "cold_history_unavailable": (
+        "Earlier history unavailable",
+        "Labelwatch observed no labels against this subject in its live "
+        "working set. Earlier history is archived and not served here, so "
+        "this is not a statement that no labels were ever observed.",
+    ),
 }
+
+
+def _render_cold_history_banner_html(result: FrontdoorResult) -> str:
+    ch = result.cold_history
+    if not ch:
+        return ""
+    return (
+        "<p class=\"cold-history\">"
+        f"Counts and first-seen cover {_esc(ch['live_floor'])} to now only; "
+        "earlier history unavailable."
+        "</p>"
+    )
 
 
 def render_refusal_html(result: FrontdoorResult) -> str:
@@ -1507,7 +1555,8 @@ def render_refusal_html(result: FrontdoorResult) -> str:
     )
     return (
         "<section class=\"refusal\">"
-        f"<h2>{_esc(title)}</h2>"
+        + _render_cold_history_banner_html(result)
+        + f"<h2>{_esc(title)}</h2>"
         f"<p>{_esc(body)}</p>"
         + (
             f"<p class=\"refusal-detail\">{_esc(result.refusal_detail)}</p>"
@@ -1595,6 +1644,7 @@ def render_result_body_html(result: FrontdoorResult) -> str:
         "<section class=\"subject\">"
         f"<h2>Observed labels touching {subject_header}{view_subject_link}</h2>"
         f"<p class=\"did\">{_esc(result.subject_did)}</p>"
+        f"{_render_cold_history_banner_html(result)}"
         "<p class=\"scope-note\">"
         "Includes labels attached directly to the account and labels attached "
         "to posts or records authored by it."

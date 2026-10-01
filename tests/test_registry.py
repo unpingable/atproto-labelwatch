@@ -184,3 +184,37 @@ def test_hide_stats_zero_for_labeler_without_hides():
     lab = next(l for l in payload["labelers"] if l["labeler_did"] == did)
     assert lab["hide_total"] == 0
     assert lab["hide_365d"] == 0
+
+
+def test_hide_totals_unavailable_with_retention_floor(monkeypatch):
+    from labelwatch import retention
+
+    monkeypatch.delenv("LABELWATCH_RETENTION_FLOOR", raising=False)
+    conn = _make_db()
+    did = "did:plc:floorhides"
+    _seed_labelers(conn, [{"did": did, "handle": "floorhides.lab"}])
+    retention.set_retention_floor(conn, "2026-08-14T00:00:00Z", None)
+    conn.commit()
+
+    payload = generate_registry(conn)
+    lab = next(l for l in payload["labelers"] if l["labeler_did"] == did)
+    assert lab["hide_total"] is None
+    assert lab["hide_subjects_total"] is None
+    # The 365d window reaches before the floor, so it is unavailable too.
+    assert lab["hide_365d"] is None
+    assert payload["cold_history"]["scope"] == "all_history"
+    html_out = render_registry_html(payload)
+    assert "unavailable" in html_out
+
+
+def test_hide_totals_zero_without_retention_floor(monkeypatch):
+    monkeypatch.delenv("LABELWATCH_RETENTION_FLOOR", raising=False)
+    conn = _make_db()
+    did = "did:plc:nofloor"
+    _seed_labelers(conn, [{"did": did, "handle": "nofloor.lab"}])
+    conn.commit()
+
+    payload = generate_registry(conn)
+    lab = next(l for l in payload["labelers"] if l["labeler_did"] == did)
+    assert lab["hide_total"] == 0
+    assert payload["cold_history"] is None

@@ -20,7 +20,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 
-from . import db
+from . import db, retention
 from .climate import generate_climate, public_climate_payload, _render_html
 from .registry import generate_registry, render_registry_html
 from .report import _did_slug
@@ -158,18 +158,23 @@ class _DiskCache:
         self._cache_dir = os.path.realpath(cache_dir)
         self._ttl = ttl
 
-    def _path(self, did: str, window: int, fmt: str) -> str:
+    def _path(self, did: str, window: int, fmt: str,
+              floor: Optional[str] = None) -> str:
         slug = _did_slug(did)
         ext = "json" if fmt == "json" else "html"
-        p = os.path.realpath(os.path.join(self._cache_dir, "climate", slug, f"w{window}.{ext}"))
+        # The retention floor is part of the key: entries built before a
+        # floor change must never be served after it.
+        key = f"w{window}-f{floor or 'none'}".replace(":", "")
+        p = os.path.realpath(os.path.join(self._cache_dir, "climate", slug, f"{key}.{ext}"))
         # Path traversal check
         if not p.startswith(self._cache_dir + os.sep):
             raise ValueError("path traversal")
         return p
 
-    def get(self, did: str, window: int, fmt: str) -> Optional[bytes]:
+    def get(self, did: str, window: int, fmt: str,
+            floor: Optional[str] = None) -> Optional[bytes]:
         try:
-            p = self._path(did, window, fmt)
+            p = self._path(did, window, fmt, floor)
         except ValueError:
             return None
         try:
@@ -181,9 +186,10 @@ class _DiskCache:
         except FileNotFoundError:
             return None
 
-    def put(self, did: str, window: int, fmt: str, data: bytes) -> None:
+    def put(self, did: str, window: int, fmt: str, data: bytes,
+            floor: Optional[str] = None) -> None:
         try:
-            p = self._path(did, window, fmt)
+            p = self._path(did, window, fmt, floor)
         except ValueError:
             return
         d = os.path.dirname(p)
@@ -443,9 +449,19 @@ class ClimateHandler(BaseHTTPRequestHandler):
 
         # Signal health (per-labeler EPS baseline)
         signals = {"verdict": "NO_DATA"}
+        retention_info: Dict[str, Any] = {"live_floor": None, "archive": None,
+                                          "error": "db_unavailable"}
         try:
             conn = db.connect(self.db_path, readonly=True)
             try:
+                try:
+                    retention_info = {
+                        "live_floor": retention.live_floor(conn),
+                        "archive": retention.archive_ref(conn),
+                    }
+                except ValueError as e:
+                    retention_info = {"live_floor": None, "archive": None,
+                                      "error": str(e)}
                 signals = signal_health_snapshot(
                     conn,
                     flaky_reference_dids=self.flaky_reference_dids,
@@ -469,6 +485,7 @@ class ClimateHandler(BaseHTTPRequestHandler):
                 "audit_generated_at": frontdoor_receipt.get("generated_at"),
                 "refusal": frontdoor_refusal,
             },
+            "retention": retention_info,
             "reads": reads,
             "reads_degraded": reads["verdict"] in ("DEGRADED",),
             "signals": {
@@ -623,9 +640,22 @@ class ClimateHandler(BaseHTTPRequestHandler):
                                   "Cache-Control": "no-store"})
                 return
 
+        # Retention floor (fails closed on an invalid configured value).
+        try:
+            conn = db.connect(self.db_path, readonly=True)
+            try:
+                floor = retention.live_floor(conn)
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.error("Retention floor error: %s", e)
+            self._last_status = 500
+            self._send_error(500, "Internal server error")
+            return
+
         # Cache check
         if self.cache:
-            cached = self.cache.get(did, window, fmt)
+            cached = self.cache.get(did, window, fmt, floor)
             if cached is not None:
                 self._last_status = 200
                 headers = {"Cache-Control": "private, max-age=300"}
@@ -647,13 +677,14 @@ class ClimateHandler(BaseHTTPRequestHandler):
             handle = raw_input.lstrip("@")
 
         try:
-            self._generate_and_respond(did, window, fmt, handle=handle)
+            self._generate_and_respond(did, window, fmt, handle=handle,
+                                       floor=floor)
         finally:
             if self.semaphore:
                 self.semaphore.release()
 
     def _generate_and_respond(self, did: str, window: int, fmt: str,
-                              handle: str = None):
+                              handle: str = None, floor: Optional[str] = None):
         # Generation with timeout
         result: Dict[str, Any] = {}
         error = [None]
@@ -704,14 +735,14 @@ class ClimateHandler(BaseHTTPRequestHandler):
         if fmt == "json":
             body = json.dumps(public, indent=2).encode("utf-8")
             if self.cache:
-                self.cache.put(did, window, "json", body)
+                self.cache.put(did, window, "json", body, floor)
             self._last_status = 200
             self._send_json(200, public, headers)
         else:
             html_str = _render_html(public, did, window)
             body = html_str.encode("utf-8")
             if self.cache:
-                self.cache.put(did, window, "html", body)
+                self.cache.put(did, window, "html", body, floor)
             self._last_status = 200
             self._send_html(200, body, headers)
 

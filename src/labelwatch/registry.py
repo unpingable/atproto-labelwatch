@@ -12,6 +12,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from . import retention
 from .report import (
     _endpoint_dot,
     _layout,
@@ -115,9 +116,22 @@ def generate_registry(conn) -> Dict[str, Any]:
         lab["hide_subjects_365d"] = stats.get("hide_subjects_365d", 0)
         lab["hide_last_seen"] = stats.get("hide_last_seen")
 
+    # Retention: all-time !hide totals (and 365d ones while that window
+    # reaches before the live floor) are not computable from the live set.
+    cold_history = retention.cold_history_block(conn, None)
+    window_cold = retention.cold_history_block(conn, cutoff) is not None
+    if cold_history is not None:
+        for lab in labelers:
+            lab["hide_total"] = None
+            lab["hide_subjects_total"] = None
+            if window_cold:
+                lab["hide_365d"] = None
+                lab["hide_subjects_365d"] = None
+
     return {
         "summary": summary,
         "labelers": labelers,
+        "cold_history": cold_history,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -166,6 +180,13 @@ def _format_count(n: Optional[int]) -> str:
     return str(n)
 
 
+def _format_hide_count(n: Optional[int]) -> str:
+    """Like _format_count, but None means cold history is unavailable."""
+    if n is None:
+        return "unavailable"
+    return _format_count(n)
+
+
 def render_registry_html(payload: Dict[str, Any]) -> str:
     """Render the registry as a standalone HTML page."""
     summary = payload["summary"]
@@ -181,6 +202,14 @@ def render_registry_html(payload: Dict[str, Any]) -> str:
     )
 
     sections.append(_REGISTRY_INTRO)
+    ch = payload.get("cold_history")
+    if ch:
+        sections.append(
+            '<p class="small cold-history"><strong>All-time hide totals are '
+            'unavailable: the live working set covers '
+            f'{html.escape(ch["live_floor"])} to now only; earlier history '
+            'is archived and not served.</strong></p>'
+        )
 
     # Summary cards
     sections.append(f"""
@@ -262,8 +291,8 @@ def render_registry_html(payload: Dict[str, Any]) -> str:
         tgt7 = _format_count(lab.get("unique_targets_7d"))
 
         audit = _risk_badge(lab.get("auditability_risk_band"))
-        hide_total = _format_count(lab.get("hide_total"))
-        hide_365d = _format_count(lab.get("hide_365d"))
+        hide_total = _format_hide_count(lab.get("hide_total"))
+        hide_365d = _format_hide_count(lab.get("hide_365d"))
 
         test_dev = lab.get("likely_test_dev", 0)
         inactive = 1 if (lab.get("events_7d") or 0) == 0 else 0

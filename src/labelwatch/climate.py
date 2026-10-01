@@ -18,6 +18,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from . import retention
 from .report import (
     STYLE,
     THEME_JS,
@@ -43,6 +44,7 @@ _PUBLIC_KEYS = frozenset({
     "daily_series", "generated_at",
     "examples_by_labeler", "examples_by_value",
     "account_labels",
+    "cold_history", "refusal",
 })
 
 
@@ -360,6 +362,10 @@ def generate_climate(conn, target_did: str, window_days: int = 30,
         "%Y-%m-%dT00:00:00Z"
     )
 
+    # Retention: the window may reach before the live working-set floor.
+    ch = retention.cold_history_block(conn, start_iso)
+    floor = retention.live_floor(conn)
+
     summary = _query_summary(conn, target_did, start_day_epoch, end_day_epoch, start_iso)
 
     # Account-level labels (subject = DID, not post-level)
@@ -395,6 +401,14 @@ def generate_climate(conn, target_did: str, window_days: int = 30,
             ),
         },
     }
+    if floor is not None:
+        # Label state is computed only from events in the live working set.
+        acct_labels_payload["coverage"]["live_floor"] = floor
+        acct_labels_payload["coverage"]["state_scope"] = "live_window"
+        acct_labels_payload["coverage"]["note"] += (
+            f" Label state reflects only events since {floor}; earlier "
+            "history is archived and not served."
+        )
 
     if summary["label_actions"] == 0 and acct_labels_payload["total_active"] == 0:
         payload: Dict[str, Any] = {
@@ -403,8 +417,18 @@ def generate_climate(conn, target_did: str, window_days: int = 30,
             "window_days": window_days,
             "message": f"No label activity found in the last {window_days} days.",
             "account_labels": acct_labels_payload,
+            "cold_history": ch,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
+        if ch is not None:
+            # Part of the window is archived: zero here is not "nothing happened".
+            payload["empty"] = False
+            payload["refusal"] = "cold_history_unavailable"
+            payload["message"] = (
+                f"No label activity in the live working set since "
+                f"{ch['live_floor']}; earlier history in this window is "
+                f"archived and not served."
+            )
         if fmt in ("json", "both"):
             _atomic_write_json(os.path.join(out_dir, "climate.json"), payload)
         if fmt in ("html", "both"):
@@ -434,6 +458,7 @@ def generate_climate(conn, target_did: str, window_days: int = 30,
         "daily_series": daily_series,
         "recent_receipts": recent_receipts,
         "account_labels": acct_labels_payload,
+        "cold_history": ch,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -568,6 +593,27 @@ def _render_html(payload: Dict[str, Any], target_did: str,
 
     nav = '<p class="small" style="margin-bottom:0.5rem;"><a href="/">&larr; Back to dashboard</a></p>'
 
+    ch = payload.get("cold_history")
+    cold_banner = (
+        '<p class="small cold-history"><strong>Counts and first-seen cover '
+        f'{html.escape(ch["live_floor"])} to now only; earlier history '
+        'unavailable.</strong></p>'
+        if ch else ""
+    )
+
+    if payload.get("refusal") == "cold_history_unavailable":
+        parts = [
+            nav,
+            f'<p class="small">{subtitle_who} — last {window_days} days</p>',
+            cold_banner,
+            '<div class="card" style="text-align:center;padding:2rem;">'
+            '<p style="font-size:1.3rem;margin-bottom:0.5rem;">Earlier history unavailable</p>'
+            f'<p class="small">{html.escape(payload.get("message", ""))}</p>'
+            '</div>',
+        ]
+        parts.extend(_render_account_labels_section(payload))
+        return _layout(title, "\n".join(parts))
+
     if payload.get("empty"):
         other_windows = [w for w in (7, 30, 60) if w != window_days]
         try_links = " ".join(
@@ -598,6 +644,8 @@ def _render_html(payload: Dict[str, Any], target_did: str,
     sections.append(
         f'<p class="small">{subtitle_who} — last {window_days} days</p>'
     )
+    if cold_banner:
+        sections.append(cold_banner)
 
     # --- Summary cards ---
     daily = payload.get("daily_series", [])
