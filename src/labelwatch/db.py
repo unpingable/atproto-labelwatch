@@ -329,6 +329,35 @@ CREATE TABLE IF NOT EXISTS provider_registry (
 );
 """
 
+# Events refused by ingest instead of being written to label_events. Today the
+# only reason is below_retention_floor: an event whose ts sorts before the live
+# floor (string order, the same order the trim and catalog use) would be a
+# re-delivered duplicate that event_hash dedup cannot see once its original was
+# archived, or a late event that the catalog cannot count. Rows keep the full
+# event so they can be reconciled against the archive later.
+QUARANTINE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS quarantined_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reason TEXT NOT NULL,
+    live_floor TEXT,
+    first_quarantined_at TEXT NOT NULL,
+    last_quarantined_at TEXT NOT NULL,
+    seen_count INTEGER NOT NULL DEFAULT 1,
+    labeler_did TEXT NOT NULL,
+    src TEXT,
+    uri TEXT NOT NULL,
+    cid TEXT,
+    val TEXT NOT NULL,
+    neg INTEGER DEFAULT 0,
+    exp TEXT,
+    sig TEXT,
+    ts TEXT NOT NULL,
+    event_hash TEXT NOT NULL,
+    target_did TEXT,
+    UNIQUE (event_hash, reason)
+);
+"""
+
 # SCHEMA_INDEXES: all CREATE INDEX statements. Separated from tables because
 # the v0→v1 bootstrap may encounter pre-existing tables missing columns added
 # by later migrations. Indexes referencing those columns would fail. Each
@@ -474,6 +503,10 @@ def init_db(conn: sqlite3.Connection) -> None:
     if current < SCHEMA_VERSION:
         migrate(conn, current, SCHEMA_VERSION)
         conn.commit()
+
+    # Additive and version-neutral so a rollback to code without it still opens
+    # the database (an unknown extra table is ignored, a newer version is not).
+    conn.executescript(QUARANTINE_SCHEMA)
 
     set_meta(conn, "code_schema_version_seen", str(SCHEMA_VERSION))
     git_commit = get_git_commit()
@@ -1062,6 +1095,31 @@ def insert_label_events(conn: sqlite3.Connection, rows: Iterable[tuple]) -> int:
         rows,
     )
     return cur.rowcount
+
+
+def quarantine_label_events(conn: sqlite3.Connection, rows: Iterable[tuple], *,
+                            reason: str, live_floor: Optional[str],
+                            now_ts: str) -> int:
+    """Record label-event rows (insert_label_events shape) as quarantined.
+
+    A repeated delivery of the same event bumps seen_count instead of adding a
+    row. Returns the number of rows offered.
+    """
+    rows = list(rows)
+    conn.executemany(
+        """
+        INSERT INTO quarantined_events(
+            reason, live_floor, first_quarantined_at, last_quarantined_at,
+            labeler_did, src, uri, cid, val, neg, exp, sig, ts, event_hash, target_did
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(event_hash, reason) DO UPDATE SET
+            seen_count = quarantined_events.seen_count + 1,
+            last_quarantined_at = excluded.last_quarantined_at,
+            live_floor = excluded.live_floor
+        """,
+        [(reason, live_floor, now_ts, now_ts, *row) for row in rows],
+    )
+    return len(rows)
 
 
 def get_cursor(conn: sqlite3.Connection, source: str) -> str | None:

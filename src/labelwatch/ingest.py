@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import socket
 import time
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 from uuid import uuid4
 
-from . import db
+from . import db, retention
 from .config import Config
 from .db import parse_target_did
 from .utils import format_ts, hash_sha256, now_utc, sqlite_safe_text, stable_json
@@ -164,6 +165,45 @@ def _track_observed_src(conn, src_did: str, ts: str, evidence_seen: set) -> None
         evidence_seen.add(ev_key)
 
 
+BELOW_FLOOR_POLICY_ENV = "LABELWATCH_BELOW_FLOOR_POLICY"
+BELOW_FLOOR_REASON = "below_retention_floor"
+_BELOW_FLOOR_POLICIES = ("quarantine", "insert")
+
+
+def below_floor_policy(config: Optional[Config] = None) -> str:
+    value = os.environ.get(BELOW_FLOOR_POLICY_ENV, "").strip().lower()
+    if not value:
+        value = (getattr(config, "below_floor_policy", None) or "quarantine").strip().lower()
+    if value not in _BELOW_FLOOR_POLICIES:
+        raise ValueError(f"invalid below-floor policy {value!r}")
+    return value
+
+
+def store_label_events(conn, rows: List[tuple], config: Optional[Config] = None) -> int:
+    """Insert ingested rows, quarantining any whose ts sorts before the floor.
+
+    Once rows below the floor have been archived and trimmed, event_hash
+    dedup only sees the live set: a labeler cursor reset would re-insert them
+    as new rows and the cold catalog would count them twice. Comparison is by
+    stored string, the order the trim and the catalog ownership rule use.
+    Returns the number of rows inserted into label_events.
+    """
+    floor = retention.live_floor(conn)
+    if floor is None or not rows or below_floor_policy(config) == "insert":
+        return db.insert_label_events(conn, rows)
+    keep, below = [], []
+    for row in rows:
+        (below if row[8] < floor else keep).append(row)
+    if below:
+        db.quarantine_label_events(
+            conn, below, reason=BELOW_FLOOR_REASON, live_floor=floor,
+            now_ts=format_ts(now_utc()),
+        )
+        log.warning("ingest.quarantined_below_floor count=%d floor=%s",
+                    len(below), floor)
+    return db.insert_label_events(conn, keep) if keep else 0
+
+
 def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int = 10) -> int:
     total = 0
     source = _cursor_key(config)
@@ -203,7 +243,7 @@ def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int =
                 # Track observed src DID
                 src_did = event.src or event.labeler_did
                 _track_observed_src(conn, src_did, event.ts, evidence_seen)
-            total += db.insert_label_events(conn, rows)
+            total += store_label_events(conn, rows, config)
             cursor = payload.get("cursor")
             # Persist cursor only after events are committed
             if cursor:
@@ -266,7 +306,7 @@ def ingest_from_iter(conn, items: Iterable[Dict]) -> int:
         src_did = event.src or event.labeler_did
         _track_observed_src(conn, src_did, event.ts, evidence_seen)
     if rows:
-        total = db.insert_label_events(conn, rows)
+        total = store_label_events(conn, rows)
         conn.commit()
     return total
 
@@ -338,7 +378,7 @@ def ingest_multi(conn, config: Config, timeout: int | None = None,
                     db.upsert_labeler(conn, event.labeler_did, event.ts)
                     src_did = event.src or event.labeler_did
                     _track_observed_src(conn, src_did, event.ts, evidence_seen)
-                total += db.insert_label_events(conn, event_rows)
+                total += store_label_events(conn, event_rows, config)
                 cursor = payload.get("cursor")
                 if cursor:
                     db.set_cursor(conn, cursor_key, cursor)

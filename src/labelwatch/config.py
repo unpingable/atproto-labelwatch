@@ -107,6 +107,12 @@ class Config:
 
     driftwatch_facts_path: str = ""  # path to facts.sqlite, empty = disabled
 
+    # Ingest handling of events whose ts sorts before the retention floor:
+    # "quarantine" (default) records them in quarantined_events and never
+    # writes them to label_events; "insert" restores the pre-floor behavior.
+    # Env LABELWATCH_BELOW_FLOOR_POLICY overrides. No effect without a floor.
+    below_floor_policy: str = "quarantine"
+
     # Semantic shadow sidecar (LW-JEV-SHADOW-v0) — observation-only,
     # CLI-run, no enforcement authority. All bounded/default-off.
     semantic_shadow_enabled: bool = False  # behind flag

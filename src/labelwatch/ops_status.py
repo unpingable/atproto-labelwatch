@@ -349,6 +349,47 @@ def _volume(db_path: Path, now: datetime) -> dict[str, Any]:
     return _observation("PRESENT" if usage.free >= VOLUME_FREE_FLOOR else "DEGRADED", now.isoformat(), None, "free capacity is at or above the existing floor" if usage.free >= VOLUME_FREE_FLOOR else "free capacity is below the existing floor", facts)
 
 
+def _retention_extension(db_path: Path) -> dict[str, Any]:
+    """Retention floor and ingest quarantine counts (not a declared concern)."""
+    out: dict[str, Any] = {"live_floor": None, "quarantined_events": None}
+    if not db_path.exists():
+        out["error"] = "database_absent"
+        return out
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        out["error"] = str(exc)
+        return out
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='retention:live_floor'").fetchone()
+        out["live_floor"] = row[0] if row else None
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='quarantined_events'"
+        ).fetchone()
+        if not exists:
+            out["quarantined_events"] = {"table_present": False}
+            return out
+        by_reason = {
+            str(reason): {"events": int(events), "deliveries": int(deliveries or 0),
+                          "last_quarantined_at": last}
+            for reason, events, deliveries, last in conn.execute(
+                "SELECT reason, COUNT(*), SUM(seen_count), MAX(last_quarantined_at) "
+                "FROM quarantined_events GROUP BY reason")
+        }
+        out["quarantined_events"] = {
+            "table_present": True,
+            "events": sum(v["events"] for v in by_reason.values()),
+            "deliveries": sum(v["deliveries"] for v in by_reason.values()),
+            "by_reason": by_reason,
+        }
+    except sqlite3.Error as exc:
+        out["error"] = str(exc)
+    finally:
+        conn.close()
+    return out
+
+
 def build_status(db_path: str | os.PathLike[str], *, now: datetime | None = None, manifest_path: Path = MANIFEST_PATH) -> dict[str, Any]:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     manifest = load_manifest(manifest_path)
@@ -382,6 +423,7 @@ def build_status(db_path: str | os.PathLike[str], *, now: datetime | None = None
     produced["labelwatch.discovery.drain"] = _discovery_drain(meta, now)
     produced["labelwatch.processing.scan_freshness"] = _heartbeat(meta, "last_scan_ok_ts", SCAN_MAX_AGE_S, now, "scan")
     produced["labelwatch.output.report_freshness"] = _heartbeat(meta, "last_report_ok_ts", REPORT_MAX_AGE_S, now, "report")
+    retention_ext = _retention_extension(path)
     continuity, freelist = _sqlite_observations(path, now)
     produced["labelwatch.persistence.sqlite_continuity"] = continuity
     produced["labelwatch.persistence.sqlite_freelist"] = freelist
@@ -401,6 +443,7 @@ def build_status(db_path: str | os.PathLike[str], *, now: datetime | None = None
         "producer": {"id": "labelwatch.ops-status"},
         "authority": {"kind": "producer_local_observation", "does_not_establish": ["nq_admission", "pulse_qualification", "nightshift_attention"]},
         "concerns": concerns,
+        "extensions": {"labelwatch.retention": retention_ext},
     }
 
 
