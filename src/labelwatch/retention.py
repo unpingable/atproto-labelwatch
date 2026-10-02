@@ -221,6 +221,18 @@ def usable_catalog(conn, catalog):
     return _as_custody(catalog).catalog, coverage
 
 
+def quarantined_for_subject(conn, target_did: str) -> int:
+    """Quarantined (never served) events touching target_did; 0 if no table."""
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM quarantined_events WHERE target_did = ? OR uri = ?",
+            (target_did, target_did),
+        ).fetchone()
+    except Exception:  # table absent on a database not yet initialized
+        return 0
+    return int(row[0]) if row else 0
+
+
 def is_unavailable(block: Optional[dict]) -> bool:
     """True when a cold_history block means part of the claim is not served."""
     return block is not None and block.get("status") == "unavailable"
@@ -251,13 +263,17 @@ def cold_history_block(conn, requested_start: Optional[str],
             "history_start": coverage.get("history_start"),
             "catalog": coverage.get("catalog"),
         }
-    return {
+    block = {
         "status": "unavailable",
         "live_floor": floor,
         "archive": archive_ref(conn),
         "requested_start": requested_start,
         "scope": "all_history" if requested_start is None else "partial",
     }
+    if coverage is not None:
+        block["coverage"] = {"status": coverage.get("status"),
+                             "reason": coverage.get("reason")}
+    return block
 
 
 def health_block(conn, catalog) -> dict:

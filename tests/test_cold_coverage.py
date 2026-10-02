@@ -242,3 +242,19 @@ def test_health_block_consistency(live, custody, tmp_path):
     assert retention.health_block(live, None)["consistent"] is False
     bare = _db(tmp_path / "bare.db", [], "b")
     assert retention.health_block(bare, None)["consistent"] is True
+
+
+def test_quarantined_subject_events_block_complete_claim(live, custody):
+    from labelwatch import ingest
+    ingest.ingest_from_iter(live, [{
+        "src": LABELER, "uri": SUBJECT, "val": "late", "ts": "2026-08-12T05:00:00Z"}])
+    assert retention.quarantined_for_subject(live, SUBJECT) == 1
+    live.execute("DELETE FROM label_events")
+    live.commit()
+    result = lookup_subject(live, SUBJECT, audit_receipt=RECEIPT, cold_catalog=custody)
+    assert result.refusal == "cold_history_unavailable"
+    assert result.cold_history["coverage"]["reason"] == "quarantined_events_for_subject"
+    # Other subjects are still served from the complete catalog.
+    other = lookup_subject(live, "did:plc:other", audit_receipt=RECEIPT,
+                           cold_catalog=custody)
+    assert other.refusal == "no_observed_labels"

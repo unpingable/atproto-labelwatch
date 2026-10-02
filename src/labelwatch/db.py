@@ -356,6 +356,8 @@ CREATE TABLE IF NOT EXISTS quarantined_events (
     target_did TEXT,
     UNIQUE (event_hash, reason)
 );
+CREATE INDEX IF NOT EXISTS idx_quarantined_events_target ON quarantined_events(target_did);
+CREATE INDEX IF NOT EXISTS idx_quarantined_events_uri ON quarantined_events(uri);
 """
 
 # SCHEMA_INDEXES: all CREATE INDEX statements. Separated from tables because

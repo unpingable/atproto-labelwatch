@@ -606,6 +606,12 @@ def lookup_subject(
         retention.usable_catalog(conn, cold_catalog)
         if cold_catalog is not None else (None, None)
     )
+    if serving_catalog is not None and retention.quarantined_for_subject(conn, did):
+        # Events touching this subject were held back below the floor and are
+        # counted by neither side; the catalog cannot complete its history.
+        serving_catalog = None
+        coverage = {**coverage, "status": retention.COVERAGE_GAP,
+                    "reason": "quarantined_events_for_subject"}
     cold_history = retention.cold_history_block(conn, None, coverage)
 
     aggregates = None
