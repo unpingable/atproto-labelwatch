@@ -4,6 +4,8 @@ from dataclasses import asdict
 
 import pytest
 
+pytest.importorskip("pyarrow")
+
 from labelwatch import db, rules
 from labelwatch.frontdoor import (
     _Q3_LABEL_VALUES,

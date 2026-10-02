@@ -3,6 +3,8 @@ import sqlite3
 
 import pytest
 
+pytest.importorskip("pyarrow")
+
 from labelwatch import db
 from tools.label_events_cold_archive import export_day, reconstruct, verify_manifest
 

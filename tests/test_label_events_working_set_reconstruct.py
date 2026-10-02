@@ -5,6 +5,10 @@ import json
 import sqlite3
 import sys
 
+import pytest
+
+pytest.importorskip("pyarrow")
+
 from labelwatch import db
 from tools.label_events_cold_archive import export_day
 from tools.label_events_working_set_reconstruct import main

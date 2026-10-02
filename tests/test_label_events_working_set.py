@@ -6,6 +6,8 @@ import sys
 
 import pytest
 
+pytest.importorskip("pyarrow")
+
 from labelwatch import db
 from tools.label_events_working_set import _days, main
 
