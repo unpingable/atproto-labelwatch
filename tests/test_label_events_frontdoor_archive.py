@@ -355,6 +355,12 @@ def test_complete_local_catalog_drives_production_lookup_equivalently(tmp_path):
     reduced = tmp_path / "reduced.db"
     reduced_conn = db.connect(str(reduced))
     db.init_db(reduced_conn)
+    # Production serves catalog aggregates only when the catalog ends exactly
+    # at the live floor and starts at or before the recorded history start.
+    from labelwatch import retention
+    retention.set_retention_floor(reduced_conn, "2026-09-03T00:00:00Z", None)
+    db.set_meta(reduced_conn, retention.RETENTION_HISTORY_START_KEY,
+                "2026-09-01T00:00:00Z")
     reduced_conn.commit()
     receipt = {"overall_verdict": "admissible", "generated_at": "2026-09-03T00:00:00Z"}
     try:
@@ -369,6 +375,8 @@ def test_complete_local_catalog_drives_production_lookup_equivalently(tmp_path):
     observed_value = asdict(observed)
     expected_value.pop("generated_at")
     observed_value.pop("generated_at")
+    assert expected_value.pop("cold_history") is None
+    assert observed_value.pop("cold_history")["status"] == "catalog"
     assert observed_value == expected_value
     assert catalog.days == ("2026-09-01", "2026-09-02")
     assert catalog.allocated_bytes <= sum(ref.path.stat().st_blocks * 512 for ref in refs)

@@ -118,6 +118,9 @@ def generate_registry(conn) -> Dict[str, Any]:
 
     # Retention: all-time !hide totals (and 365d ones while that window
     # reaches before the live floor) are not computable from the live set.
+    # The v3 cold catalog has no per-day or !hide aggregates, so this surface
+    # cannot be completed from it; the unavailable block stays regardless of
+    # catalog coverage until a v4 catalog adds them.
     cold_history = retention.cold_history_block(conn, None)
     window_cold = retention.cold_history_block(conn, cutoff) is not None
     if cold_history is not None:

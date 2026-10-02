@@ -363,6 +363,9 @@ def generate_climate(conn, target_did: str, window_days: int = 30,
     )
 
     # Retention: the window may reach before the live working-set floor.
+    # The v3 cold catalog has no per-day or !hide aggregates, so this surface
+    # cannot be completed from it; the unavailable block stays regardless of
+    # catalog coverage until a v4 catalog adds them.
     ch = retention.cold_history_block(conn, start_iso)
     floor = retention.live_floor(conn)
 

@@ -22,6 +22,10 @@ CATALOG_TABLES = {
 }
 
 
+class CatalogNotLocal(RuntimeError):
+    """The catalog resides on a network filesystem and must not be served."""
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -136,7 +140,7 @@ def load_catalog(manifest_path: str | Path, *, filesystem_type: str | None = Non
         raise RuntimeError("cold catalog database is absent or symlinked")
     observed_type = filesystem_type if filesystem_type is not None else _filesystem_type(database)
     if observed_type in {"nfs", "nfs4", "cifs", "smb3", "fuse.sshfs"}:
-        raise RuntimeError("cold catalog must reside on the local serving filesystem")
+        raise CatalogNotLocal("cold catalog must reside on the local serving filesystem")
     if database.stat().st_size != catalog["logical_bytes"]:
         raise RuntimeError("cold catalog logical size mismatch")
     if not isinstance(catalog["allocated_bytes"], int) or catalog["allocated_bytes"] < 0:

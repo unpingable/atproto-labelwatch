@@ -219,16 +219,28 @@ def run_loop(
 ) -> None:
     conn = db.connect(cfg.db_path)
     db.init_db(conn)
-    cold_catalog = None
-    cold_catalog_manifest = os.environ.get("LABELWATCH_FRONTDOOR_COLD_CATALOG")
-    if cold_catalog_manifest:
-        from .frontdoor_archive import load_catalog
-        cold_catalog = load_catalog(cold_catalog_manifest)
+    from . import retention
+    cold_custody = retention.load_catalog_custody()
+    if cold_custody.load_status == "loaded":
         log.info(
             "cold_catalog.loaded days=%d start=%s end_exclusive=%s",
-            len(cold_catalog.days), cold_catalog.start_day,
-            cold_catalog.end_day_exclusive,
+            len(cold_custody.catalog.days), cold_custody.catalog.start_day,
+            cold_custody.catalog.end_day_exclusive,
         )
+    elif cold_custody.manifest_path:
+        log.error("cold_catalog.refused status=%s reason=%s",
+                  cold_custody.load_status, cold_custody.reason)
+
+    def _serving_catalog():
+        # Lifetime totals use the catalog only while coverage is complete;
+        # a floor move or catalog change is picked up on the next cycle.
+        if cold_custody.manifest_path is None:
+            return None
+        catalog, coverage = retention.usable_catalog(conn, cold_custody)
+        if catalog is None:
+            log.warning("cold_catalog.not_serving status=%s reason=%s",
+                        coverage["status"], coverage["reason"])
+        return catalog
 
     last_ingest = 0.0
     last_scan = 0.0
@@ -313,6 +325,7 @@ def run_loop(
         if scan_interval > 0 and now_mono - last_scan >= scan_interval:
             try:
                 scan_time = now_utc()
+                cold_catalog = _serving_catalog()
                 scan.run_scan(conn, cfg, now=scan_time, cold_catalog=cold_catalog)
                 _heartbeat(conn, "last_scan_ok_ts")
                 _release_memory(conn)

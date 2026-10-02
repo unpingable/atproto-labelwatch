@@ -599,14 +599,20 @@ def lookup_subject(
             audit_generated_at=audit_ts,
         )
 
-    # Step 2.25: the lookup claims all history; say when part of it is cold.
-    cold_history = retention.cold_history_block(conn, None)
+    # Step 2.25: the lookup claims all history. Catalog aggregates are served
+    # only when the verified catalog exactly completes history below the live
+    # floor; otherwise part of the claim is cold and is said to be so.
+    serving_catalog, coverage = (
+        retention.usable_catalog(conn, cold_catalog)
+        if cold_catalog is not None else (None, None)
+    )
+    cold_history = retention.cold_history_block(conn, None, coverage)
 
     aggregates = None
-    if cold_catalog is not None:
+    if serving_catalog is not None:
         from .frontdoor_archive import query_subject as query_cold_subject
         aggregates = query_cold_subject(
-            cold_catalog,
+            serving_catalog,
             did,
             live_conn=conn,
             top_n=MAX_LABELED_RECORDS_PER_LABELER,
@@ -651,7 +657,7 @@ def lookup_subject(
         aggregates["label_values"] if aggregates is not None else
         [dict(r) for r in conn.execute(_Q3_LABEL_VALUES, (did,)).fetchall()]
     )
-    if not q3_rows and cold_history is not None:
+    if not q3_rows and retention.is_unavailable(cold_history):
         return FrontdoorResult(
             surface=SURFACE,
             consumer_surface_version="v0",
@@ -1564,7 +1570,7 @@ _REFUSAL_COPY = {
 
 def _render_cold_history_banner_html(result: FrontdoorResult) -> str:
     ch = result.cold_history
-    if not ch:
+    if not retention.is_unavailable(ch):
         return ""
     return (
         "<p class=\"cold-history\">"

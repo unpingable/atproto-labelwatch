@@ -457,10 +457,7 @@ class ClimateHandler(BaseHTTPRequestHandler):
             conn = db.connect(self.db_path, readonly=True)
             try:
                 try:
-                    retention_info = {
-                        "live_floor": retention.live_floor(conn),
-                        "archive": retention.archive_ref(conn),
-                    }
+                    retention_info = retention.health_block(conn, self.cold_catalog)
                 except ValueError as e:
                     retention_info = {"live_floor": None, "archive": None,
                                       "error": str(e)}
@@ -486,13 +483,6 @@ class ClimateHandler(BaseHTTPRequestHandler):
                 "audit_verdict": frontdoor_receipt.get("overall_verdict"),
                 "audit_generated_at": frontdoor_receipt.get("generated_at"),
                 "refusal": frontdoor_refusal,
-                "cold_catalog": ({
-                    "loaded": True,
-                    "start_day": self.cold_catalog.start_day,
-                    "end_day_exclusive": self.cold_catalog.end_day_exclusive,
-                    "days": len(self.cold_catalog.days),
-                    "allocated_bytes": self.cold_catalog.allocated_bytes,
-                } if self.cold_catalog is not None else {"loaded": False}),
             },
             "retention": retention_info,
             "reads": reads,
@@ -781,15 +771,21 @@ def configure_handler(db_path: str, cache_dir: str, max_concurrent: int = 2,
             audit_receipt.get("generated_at"),
         )
 
-    cold_catalog = None
-    cold_catalog_manifest = os.environ.get("LABELWATCH_FRONTDOOR_COLD_CATALOG")
-    if cold_catalog_manifest:
-        from .frontdoor_archive import load_catalog
-        cold_catalog = load_catalog(cold_catalog_manifest)
+    # Cold catalog custody: verified once here (full SHA-256). A missing,
+    # tampered or network-hosted catalog does not stop the server; coverage
+    # is re-checked per request and anything short of complete keeps the
+    # cold_history_unavailable refusal.
+    cold_catalog = retention.load_catalog_custody()
+    if cold_catalog.load_status == "loaded":
+        cat = cold_catalog.catalog
         logger.info(
             "frontdoor: loaded local cold catalog days=%d range=%s..%s bytes=%d",
-            len(cold_catalog.days), cold_catalog.start_day,
-            cold_catalog.end_day_exclusive, cold_catalog.allocated_bytes,
+            len(cat.days), cat.start_day, cat.end_day_exclusive, cat.allocated_bytes,
+        )
+    elif cold_catalog.manifest_path:
+        logger.error(
+            "frontdoor: cold catalog not served status=%s reason=%s",
+            cold_catalog.load_status, cold_catalog.reason,
         )
 
     # Refill rate: rate_limit per minute → rate_limit/60 per second

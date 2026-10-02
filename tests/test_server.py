@@ -338,6 +338,7 @@ def floored_server(tmp_path, monkeypatch):
 
     monkeypatch.delenv("LABELWATCH_RETENTION_FLOOR", raising=False)
     monkeypatch.delenv("LABELWATCH_RETENTION_ARCHIVE_REF", raising=False)
+    monkeypatch.delenv("LABELWATCH_FRONTDOOR_COLD_CATALOG", raising=False)
     conn, db_path = _make_db(tmp_path)
     floor = time.strftime("%Y-%m-%dT00:00:00Z", time.gmtime(time.time() - 10 * 86400))
     retention.set_retention_floor(conn, floor, "archive://test")
@@ -364,7 +365,45 @@ class TestRetentionFloor:
         status, _, body = _get(f"{base}/health")
         assert status == 200
         data = json.loads(body)
-        assert data["retention"] == {"live_floor": floor, "archive": "archive://test"}
+        assert data["retention"] == {
+            "live_floor": floor, "archive": "archive://test",
+            "history_start": None, "catalog": None,
+            "coverage": "absent", "reason": "not_configured",
+            "consistent": False,
+        }
+
+    def test_health_reports_complete_catalog_coverage(self, tmp_path, monkeypatch):
+        from datetime import date, timedelta
+        from labelwatch import retention
+        from _cold_catalog_fixture import build_test_catalog
+
+        monkeypatch.delenv("LABELWATCH_RETENTION_FLOOR", raising=False)
+        monkeypatch.delenv("LABELWATCH_RETENTION_ARCHIVE_REF", raising=False)
+        floor_day = date.today() - timedelta(days=40)
+        start_day = floor_day - timedelta(days=3)
+        manifest = build_test_catalog(
+            tmp_path / "catalog",
+            [("did:plc:l", "did:plc:s", "spam", 0,
+              f"{start_day.isoformat()}T01:00:00Z", "did:plc:s")],
+            start_day=start_day.isoformat(),
+            end_day_exclusive=floor_day.isoformat(), watermark=10,
+        )
+        monkeypatch.setenv("LABELWATCH_FRONTDOOR_COLD_CATALOG", str(manifest))
+        conn, db_path = _make_db(tmp_path)
+        retention.set_retention_floor(conn, f"{floor_day.isoformat()}T00:00:00Z", None)
+        db.set_meta(conn, retention.RETENTION_HISTORY_START_KEY,
+                    f"{start_day.isoformat()}T00:00:00Z")
+        conn.commit()
+        conn.close()
+        server, base = _start_server(db_path, str(tmp_path / "cache"))
+        try:
+            _, _, body = _get(f"{base}/health")
+        finally:
+            server.shutdown()
+        block = json.loads(body)["retention"]
+        assert block["coverage"] == "complete"
+        assert block["consistent"] is True
+        assert block["catalog"]["end_day_exclusive"] == floor_day.isoformat()
 
     def test_health_without_floor(self, seeded_server, monkeypatch):
         monkeypatch.delenv("LABELWATCH_RETENTION_FLOOR", raising=False)
