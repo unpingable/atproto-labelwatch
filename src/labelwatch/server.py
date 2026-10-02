@@ -246,6 +246,7 @@ class ClimateHandler(BaseHTTPRequestHandler):
     # Frontdoor audit-gate: loaded at configure time; refused state causes
     # every frontdoor lookup to return a refusal rather than silently scan.
     audit_receipt: Optional[dict] = None
+    cold_catalog = None
 
     def log_message(self, format, *args):
         # Suppress default stderr logging — we do our own
@@ -407,6 +408,7 @@ class ClimateHandler(BaseHTTPRequestHandler):
                     conn,
                     identifier,
                     audit_receipt=self.audit_receipt,
+                    cold_catalog=self.cold_catalog,
                 )
             finally:
                 conn.close()
@@ -484,6 +486,13 @@ class ClimateHandler(BaseHTTPRequestHandler):
                 "audit_verdict": frontdoor_receipt.get("overall_verdict"),
                 "audit_generated_at": frontdoor_receipt.get("generated_at"),
                 "refusal": frontdoor_refusal,
+                "cold_catalog": ({
+                    "loaded": True,
+                    "start_day": self.cold_catalog.start_day,
+                    "end_day_exclusive": self.cold_catalog.end_day_exclusive,
+                    "days": len(self.cold_catalog.days),
+                    "allocated_bytes": self.cold_catalog.allocated_bytes,
+                } if self.cold_catalog is not None else {"loaded": False}),
             },
             "retention": retention_info,
             "reads": reads,
@@ -772,6 +781,17 @@ def configure_handler(db_path: str, cache_dir: str, max_concurrent: int = 2,
             audit_receipt.get("generated_at"),
         )
 
+    cold_catalog = None
+    cold_catalog_manifest = os.environ.get("LABELWATCH_FRONTDOOR_COLD_CATALOG")
+    if cold_catalog_manifest:
+        from .frontdoor_archive import load_catalog
+        cold_catalog = load_catalog(cold_catalog_manifest)
+        logger.info(
+            "frontdoor: loaded local cold catalog days=%d range=%s..%s bytes=%d",
+            len(cold_catalog.days), cold_catalog.start_day,
+            cold_catalog.end_day_exclusive, cold_catalog.allocated_bytes,
+        )
+
     # Refill rate: rate_limit per minute → rate_limit/60 per second
     handler = type("ConfiguredClimateHandler", (ClimateHandler,), {
         "db_path": db_path,
@@ -783,6 +803,7 @@ def configure_handler(db_path: str, cache_dir: str, max_concurrent: int = 2,
         "generation_timeout": generation_timeout,
         "flaky_reference_dids": tuple(flaky_reference_dids or ()),
         "audit_receipt": audit_receipt,
+        "cold_catalog": cold_catalog,
     })
     return handler
 

@@ -93,8 +93,13 @@ def cmd_scan(args) -> None:
     conn = db.connect(cfg.db_path)
     db.init_db(conn)
     now = _resolve_now(conn, args.now)
-    total = scan.run_scan(conn, cfg, now=now)
-    scan.run_derive(conn, cfg, now=now)
+    cold_catalog = None
+    cold_catalog_manifest = os.environ.get("LABELWATCH_FRONTDOOR_COLD_CATALOG")
+    if cold_catalog_manifest:
+        from .frontdoor_archive import load_catalog
+        cold_catalog = load_catalog(cold_catalog_manifest)
+    total = scan.run_scan(conn, cfg, now=now, cold_catalog=cold_catalog)
+    scan.run_derive(conn, cfg, now=now, cold_catalog=cold_catalog)
     print(json.dumps({"alerts": total}))
 
 

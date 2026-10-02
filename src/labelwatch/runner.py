@@ -219,6 +219,16 @@ def run_loop(
 ) -> None:
     conn = db.connect(cfg.db_path)
     db.init_db(conn)
+    cold_catalog = None
+    cold_catalog_manifest = os.environ.get("LABELWATCH_FRONTDOOR_COLD_CATALOG")
+    if cold_catalog_manifest:
+        from .frontdoor_archive import load_catalog
+        cold_catalog = load_catalog(cold_catalog_manifest)
+        log.info(
+            "cold_catalog.loaded days=%d start=%s end_exclusive=%s",
+            len(cold_catalog.days), cold_catalog.start_day,
+            cold_catalog.end_day_exclusive,
+        )
 
     last_ingest = 0.0
     last_scan = 0.0
@@ -303,7 +313,7 @@ def run_loop(
         if scan_interval > 0 and now_mono - last_scan >= scan_interval:
             try:
                 scan_time = now_utc()
-                scan.run_scan(conn, cfg, now=scan_time)
+                scan.run_scan(conn, cfg, now=scan_time, cold_catalog=cold_catalog)
                 _heartbeat(conn, "last_scan_ok_ts")
                 _release_memory(conn)
 
@@ -318,7 +328,9 @@ def run_loop(
                     if pressure_reason:
                         _record_derive_deferred(conn, pressure_reason)
                     else:
-                        outcome = scan.run_derive(conn, cfg, now=scan_time)
+                        outcome = scan.run_derive(
+                            conn, cfg, now=scan_time, cold_catalog=cold_catalog
+                        )
                         _record_derive_outcome(conn, outcome)
                         last_derive = now_mono
                         _release_memory(conn)

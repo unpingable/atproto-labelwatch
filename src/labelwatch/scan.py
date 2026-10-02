@@ -107,20 +107,45 @@ def _derive_step(conn, name: str, fn) -> dict:
     return outcome
 
 
-def _fetch_event_stats(conn, ts_24h: str, ts_7d: str, ts_30d: str) -> dict:
+def _fetch_event_stats(conn, ts_24h: str, ts_7d: str, ts_30d: str,
+                       cold_catalog=None) -> dict:
     """One query: per-labeler event counts (24h/7d/30d/total) + last event ts."""
+    ownership = ""
+    params = [ts_24h, ts_7d, ts_30d]
+    if cold_catalog is not None:
+        if ts_30d < cold_catalog.end_day_exclusive:
+            raise RuntimeError("cold catalog overlaps the active 30-day derive window")
+        ownership = "WHERE id > ? OR ts IS NULL OR ts < ? OR ts >= ?"
+        params.extend([
+            cold_catalog.source_event_id_upper_bound,
+            cold_catalog.start_day,
+            cold_catalog.end_day_exclusive,
+        ])
     rows = conn.execute(
-        """SELECT labeler_did,
+        f"""SELECT labeler_did,
                   SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS cnt_24h,
                   SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS cnt_7d,
                   SUM(CASE WHEN ts >= ? THEN 1 ELSE 0 END) AS cnt_30d,
                   COUNT(*) AS cnt_total,
                   MAX(ts) AS last_event_ts
            FROM label_events
+           {ownership}
            GROUP BY labeler_did""",
-        (ts_24h, ts_7d, ts_30d),
+        params,
     ).fetchall()
-    return {r["labeler_did"]: dict(r) for r in rows}
+    result = {r["labeler_did"]: dict(r) for r in rows}
+    if cold_catalog is not None:
+        from .frontdoor_archive import query_labeler_totals
+        for did, historical in query_labeler_totals(cold_catalog).items():
+            current = result.setdefault(did, {
+                "labeler_did": did, "cnt_24h": 0, "cnt_7d": 0,
+                "cnt_30d": 0, "cnt_total": 0, "last_event_ts": None,
+            })
+            current["cnt_total"] += int(historical["event_count"])
+            if (current["last_event_ts"] is None
+                    or historical["last_seen"] > current["last_event_ts"]):
+                current["last_event_ts"] = historical["last_seen"]
+    return result
 
 
 def _fetch_hourly_counts(conn, ts_7d: str) -> dict:
@@ -288,7 +313,8 @@ def _fetch_reach_stats(conn, ts_7d: str, ts_30d: str) -> dict[str, dict]:
     return {r["labeler_did"]: dict(r) for r in rows}
 
 
-def _build_all_signals(conn, config: Config, now: datetime) -> dict[str, LabelerSignals]:
+def _build_all_signals(conn, config: Config, now: datetime,
+                       cold_catalog=None) -> dict[str, LabelerSignals]:
     """Build LabelerSignals for all labelers using batched queries.
 
     ~6 grouped queries instead of ~10 per labeler.
@@ -298,7 +324,7 @@ def _build_all_signals(conn, config: Config, now: datetime) -> dict[str, Labeler
     ts_30d = format_ts(now - timedelta(days=30))
 
     # Batch queries (7 total)
-    event_stats = _fetch_event_stats(conn, ts_24h, ts_7d, ts_30d)
+    event_stats = _fetch_event_stats(conn, ts_24h, ts_7d, ts_30d, cold_catalog)
     hourly_map = _fetch_hourly_counts(conn, ts_7d)
     interarrival_map = _fetch_interarrival_secs(conn, ts_7d)
     probe_stats = _fetch_probe_history(conn, ts_7d, ts_30d)
@@ -408,7 +434,7 @@ def _emit_receipt_if_changed(conn, did: str, receipt_type: str,
     return True
 
 
-def _run_derive_pass(conn, config: Config, now: datetime) -> None:
+def _run_derive_pass(conn, config: Config, now: datetime, cold_catalog=None) -> None:
     """Run regime/risk/coherence derivation for all labelers.
 
     Uses batched queries (~6 total) instead of per-labeler queries.
@@ -416,7 +442,7 @@ def _run_derive_pass(conn, config: Config, now: datetime) -> None:
     ts = format_ts(now)
 
     # Build all signals in one pass (6 grouped queries)
-    signals_map = _build_all_signals(conn, config, now)
+    signals_map = _build_all_signals(conn, config, now, cold_catalog)
 
     # Fetch reach stats (unique targets/subjects) in one pass
     ts_7d = format_ts(now - timedelta(days=7))
@@ -568,10 +594,10 @@ def _build_budget_counts(conn, budget_cutoff: str) -> dict[tuple[str, str], int]
     return {(r["rule_id"], r["labeler_did"]): r["c"] for r in rows}
 
 
-def run_scan(conn, config: Config, now: datetime | None = None) -> int:
+def run_scan(conn, config: Config, now: datetime | None = None, *, cold_catalog=None) -> int:
     if now is None:
         now = now_utc()
-    alerts = run_rules(conn, config, now)
+    alerts = run_rules(conn, config, now, cold_catalog=cold_catalog)
     cfg_hash = config_hash(config.to_receipt_dict())
 
     # Budget gate: count existing alerts per (rule, labeler) in window
@@ -1591,7 +1617,7 @@ def _compute_boundary_load_7d(conn) -> None:
     conn.execute("DROP TABLE IF EXISTS tmp_boundary_load")
 
 
-def run_derive(conn, config: Config, now: datetime | None = None) -> dict:
+def run_derive(conn, config: Config, now: datetime | None = None, *, cold_catalog=None) -> dict:
     """Run regime/risk/coherence derivation (expensive — call less often than scan).
 
     See gap-spec-derive-workload-isolation.md. Each sub-step commits independently
@@ -1610,7 +1636,7 @@ def run_derive(conn, config: Config, now: datetime | None = None) -> dict:
     outcomes = {}
     def step(name, fn):
         outcomes[name] = _derive_step(conn, name, fn)
-    step("run_derive_pass", lambda: _run_derive_pass(conn, config, now))
+    step("run_derive_pass", lambda: _run_derive_pass(conn, config, now, cold_catalog))
     step("update_coverage_columns", lambda: _update_coverage_columns(conn, config, now))
     step("cleanup_ingest_outcomes", lambda: _cleanup_ingest_outcomes(conn, now))
 

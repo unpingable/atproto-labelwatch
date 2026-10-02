@@ -550,6 +550,7 @@ def lookup_subject(
     *,
     audit_receipt: Optional[dict] = None,
     handle_resolver=None,
+    cold_catalog=None,
 ) -> FrontdoorResult:
     """Run the frontdoor lookup for a handle or DID.
 
@@ -601,17 +602,28 @@ def lookup_subject(
     # Step 2.25: the lookup claims all history; say when part of it is cold.
     cold_history = retention.cold_history_block(conn, None)
 
-    # Step 2.5: density circuit breaker. Pre-count Q8 rows for the subject
-    # using the same target_did index. If above the cap, refuse cleanly
-    # rather than do O(N) Python aggregation. See MAX_EVENTS_FOR_AGGREGATION.
-    try:
-        event_count_row = conn.execute(
-            "SELECT COUNT(*) AS c FROM label_events WHERE target_did = ?",
-            (did,),
-        ).fetchone()
-        event_count = int(event_count_row["c"]) if event_count_row else 0
-    except sqlite3.Error:
-        event_count = 0
+    aggregates = None
+    if cold_catalog is not None:
+        from .frontdoor_archive import query_subject as query_cold_subject
+        aggregates = query_cold_subject(
+            cold_catalog,
+            did,
+            live_conn=conn,
+            top_n=MAX_LABELED_RECORDS_PER_LABELER,
+        )
+        event_count = sum(row["event_count"] for row in aggregates["label_values"])
+    else:
+        # Step 2.5: density circuit breaker. Pre-count Q8 rows for the subject
+        # using the same target_did index. If above the cap, refuse cleanly
+        # rather than do O(N) Python aggregation. See MAX_EVENTS_FOR_AGGREGATION.
+        try:
+            event_count_row = conn.execute(
+                "SELECT COUNT(*) AS c FROM label_events WHERE target_did = ?",
+                (did,),
+            ).fetchone()
+            event_count = int(event_count_row["c"]) if event_count_row else 0
+        except sqlite3.Error:
+            event_count = 0
     if event_count > MAX_EVENTS_FOR_AGGREGATION:
         return FrontdoorResult(
             surface=SURFACE,
@@ -635,7 +647,10 @@ def lookup_subject(
         )
 
     # Step 3: Q3 — per (labeler, val) rollup against subject.
-    q3_rows = [dict(r) for r in conn.execute(_Q3_LABEL_VALUES, (did,)).fetchall()]
+    q3_rows = (
+        aggregates["label_values"] if aggregates is not None else
+        [dict(r) for r in conn.execute(_Q3_LABEL_VALUES, (did,)).fetchall()]
+    )
     if not q3_rows and cold_history is not None:
         return FrontdoorResult(
             surface=SURFACE,
@@ -678,14 +693,21 @@ def lookup_subject(
         by_labeler.setdefault(r["labeler_did"], []).append(r)
 
     # Step 4: Q8a — distinct (val, neg) states per labeler (classification flips).
+    distinct_rows = (
+        aggregates["distinct_states"] if aggregates is not None else
+        conn.execute(_Q8A_DISTINCT_STATES, (did,)).fetchall()
+    )
     distinct_states_by_labeler: dict[str, int] = {
-        r["labeler_did"]: int(r["distinct_states"])
-        for r in conn.execute(_Q8A_DISTINCT_STATES, (did,)).fetchall()
+        r["labeler_did"]: int(r["distinct_states"]) for r in distinct_rows
     }
 
     # Step 5: Q8b — locus bucket counts per labeler (account/post/profile/...).
     locus_by_labeler: dict[str, dict[str, int]] = {}
-    for r in conn.execute(_Q8B_LOCUS, (did,)).fetchall():
+    locus_rows = (
+        aggregates["loci"] if aggregates is not None else
+        conn.execute(_Q8B_LOCUS, (did,)).fetchall()
+    )
+    for r in locus_rows:
         locus_by_labeler.setdefault(r["labeler_did"], {})[r["locus"]] = int(r["event_count"])
 
     # Step 6: Q8c — top-N URI rollup per labeler (non-account loci, val breakdown).
@@ -693,9 +715,13 @@ def lookup_subject(
     # the same labeler/uri may appear multiple times (one row per val) — we
     # assemble entries client-side.
     records_by_labeler: dict[str, dict[str, dict]] = {}  # labeler -> uri -> entry
-    for r in conn.execute(
-        _Q8C_LABELED_RECORDS, (did, MAX_LABELED_RECORDS_PER_LABELER)
-    ).fetchall():
+    record_rows = (
+        aggregates["uri_values"] if aggregates is not None else
+        conn.execute(
+            _Q8C_LABELED_RECORDS, (did, MAX_LABELED_RECORDS_PER_LABELER)
+        ).fetchall()
+    )
+    for r in record_rows:
         labeler = r["labeler_did"]
         uri = r["uri"]
         per_uri = records_by_labeler.setdefault(labeler, {})
