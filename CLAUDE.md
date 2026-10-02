@@ -8,7 +8,7 @@ Public at https://labelwatch.neutral.zone. Bluesky account: @labelwatch.neutral.
 
 - **Observation only** — no content moderation, no truth adjudication, no "bad labeler" verdicts.
 - **Aggregate-first** — ecosystem-level and labeler-level analysis, not per-account profiling.
-- **Append-only events** — `label_events` rows are never updated or deleted.
+- **Append-only events** — `label_events` rows are never updated. The only deletion is the operator-run retention trim below the live floor (`docs/retention.md`).
 - **Receipt hashing** — every alert includes a SHA-256 receipt hash for audit trail integrity.
 - **Pure classifier** — `classify.py` is a pure function (no network, no DB).
 - **Sticky evidence** — once a labeler evidence field is set to true, never downgraded by transient failures.
