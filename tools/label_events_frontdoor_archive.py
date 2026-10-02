@@ -19,16 +19,12 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-
 from labelwatch.frontdoor import attachment_locus
 from labelwatch.frontdoor_archive import (
     FORMAT as CATALOG_FORMAT,
     FORMAT_VERSION as CATALOG_FORMAT_VERSION,
     load_catalog,
 )
-from tools.label_events_cold_archive import verify_manifest
 
 
 FORMAT = "labelwatch.frontdoor-cold-summary"
@@ -49,6 +45,30 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _atomic_json(path: Path, value: dict) -> None:
+    """Same contract as label_events_cold_archive._atomic_json, without pyarrow."""
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, raw = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".incomplete",
+                               dir=path.parent)
+    tmp = Path(raw)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, sort_keys=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def _min(current: str | None, value: str) -> str:
     return value if current is None or value < current else current
 
@@ -59,7 +79,33 @@ def _max(current: str | None, value: str) -> str:
 
 def build_summary(manifest_path: Path, destination: Path) -> dict:
     """Build an immutable per-partition summary through an atomic destination."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from tools.label_events_cold_archive import verify_manifest
+
     manifest = verify_manifest(manifest_path)
+    parquet = manifest_path.parent / manifest["partition"]["file"]
+
+    def rows():
+        for batch in pq.ParquetFile(parquet).iter_batches(batch_size=50_000):
+            yield from pa.Table.from_batches([batch]).to_pylist()
+
+    metadata = {
+        "format": FORMAT,
+        "format_version": str(FORMAT_VERSION),
+        "day": manifest["day"],
+        "manifest_sha256": _sha256(manifest_path),
+        "partition_sha256": manifest["partition"]["sha256"],
+        "source_database_sha256": manifest["source"]["database_sha256"],
+    }
+    return write_summary(rows(), destination, metadata)
+
+
+def write_summary(rows, destination: Path, metadata: dict) -> dict:
+    """Aggregate one day's event rows (dicts) into an atomic v2 summary.
+
+    rows yields mappings with labeler_did, uri, val, neg, ts and target_did.
+    """
     if destination.exists() or destination.is_symlink():
         raise FileExistsError("summary destination must not exist")
     tmp = destination.with_name(f".{destination.name}.{os.getpid()}.incomplete")
@@ -71,36 +117,34 @@ def build_summary(manifest_path: Path, destination: Path) -> dict:
     states: set[tuple[str, str, str, int | None]] = set()
     loci: defaultdict[tuple[str, str, str], int] = defaultdict(int)
     uri_values: dict[tuple[str, str, str, str], list] = {}
-    parquet = manifest_path.parent / manifest["partition"]["file"]
     included = 0
     skipped_without_target = 0
-    for batch in pq.ParquetFile(parquet).iter_batches(batch_size=50_000):
-        for row in pa.Table.from_batches([batch]).to_pylist():
-            labeler = row["labeler_did"]
-            ts = row["ts"]
-            labeler_total = labeler_totals.setdefault(labeler, [0, None, None])
-            labeler_total[0] += 1
-            labeler_total[1] = _min(labeler_total[1], ts)
-            labeler_total[2] = _max(labeler_total[2], ts)
-            target = row["target_did"]
-            if target is None:
-                skipped_without_target += 1
-                continue
-            val = row["val"]
-            key = (target, labeler, val)
-            aggregate = label_values.setdefault(key, [0, None, None])
-            aggregate[0] += 1
-            aggregate[1] = _min(aggregate[1], ts)
-            aggregate[2] = _max(aggregate[2], ts)
-            states.add((target, labeler, val, row["neg"]))
-            loci[(target, labeler, attachment_locus(row["uri"], target))] += 1
-            if not row["uri"].startswith("did:"):
-                uri_key = (target, labeler, row["uri"], val)
-                uri_aggregate = uri_values.setdefault(uri_key, [0, None, None])
-                uri_aggregate[0] += 1
-                uri_aggregate[1] = _min(uri_aggregate[1], ts)
-                uri_aggregate[2] = _max(uri_aggregate[2], ts)
-            included += 1
+    for row in rows:
+        labeler = row["labeler_did"]
+        ts = row["ts"]
+        labeler_total = labeler_totals.setdefault(labeler, [0, None, None])
+        labeler_total[0] += 1
+        labeler_total[1] = _min(labeler_total[1], ts)
+        labeler_total[2] = _max(labeler_total[2], ts)
+        target = row["target_did"]
+        if target is None:
+            skipped_without_target += 1
+            continue
+        val = row["val"]
+        key = (target, labeler, val)
+        aggregate = label_values.setdefault(key, [0, None, None])
+        aggregate[0] += 1
+        aggregate[1] = _min(aggregate[1], ts)
+        aggregate[2] = _max(aggregate[2], ts)
+        states.add((target, labeler, val, row["neg"]))
+        loci[(target, labeler, attachment_locus(row["uri"], target))] += 1
+        if not row["uri"].startswith("did:"):
+            uri_key = (target, labeler, row["uri"], val)
+            uri_aggregate = uri_values.setdefault(uri_key, [0, None, None])
+            uri_aggregate[0] += 1
+            uri_aggregate[1] = _min(uri_aggregate[1], ts)
+            uri_aggregate[2] = _max(uri_aggregate[2], ts)
+        included += 1
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(tmp)
@@ -138,14 +182,6 @@ def build_summary(manifest_path: Path, destination: Path) -> dict:
                 PRIMARY KEY (target_did, labeler_did, uri, val)
             ) WITHOUT ROWID;
         """)
-        metadata = {
-            "format": FORMAT,
-            "format_version": str(FORMAT_VERSION),
-            "day": manifest["day"],
-            "manifest_sha256": _sha256(manifest_path),
-            "partition_sha256": manifest["partition"]["sha256"],
-            "source_database_sha256": manifest["source"]["database_sha256"],
-        }
         conn.executemany("INSERT INTO metadata(key,value) VALUES(?,?)", metadata.items())
         conn.executemany(
             "INSERT INTO label_values VALUES(?,?,?,?,?,?)",
@@ -184,12 +220,12 @@ def build_summary(manifest_path: Path, destination: Path) -> dict:
     return {
         "format": FORMAT,
         "format_version": FORMAT_VERSION,
-        "day": manifest["day"],
+        "day": metadata["day"],
         "included_events": included,
         "events_without_target_did": skipped_without_target,
         "summary_bytes": destination.stat().st_size,
         "summary_sha256": _sha256(destination),
-        "manifest_sha256": _sha256(manifest_path),
+        "manifest_sha256": metadata["manifest_sha256"],
     }
 
 
@@ -442,7 +478,6 @@ def build_catalog(references: list[SummaryRef], destination: Path, *,
         },
         "sources": sources,
     }
-    from tools.label_events_cold_archive import _atomic_json
     _atomic_json(manifest_path, manifest)
     load_catalog(manifest_path)
     return manifest_path
