@@ -806,6 +806,33 @@ def cmd_db_optimize(args) -> None:
     print(json.dumps(result, indent=2))
 
 
+def cmd_retention_trim(args) -> None:
+    """Move the live floor to --floor and delete the rows bound by --manifest."""
+    from . import retention, trim
+    cfg = load_config(args.config)
+    if args.db_path:
+        cfg.db_path = args.db_path
+    conn = db.connect(cfg.db_path)
+    db.init_db(conn)
+    custody = retention.load_catalog_custody(args.catalog)
+    try:
+        receipt = trim.run_trim(
+            conn, args.floor, args.manifest,
+            catalog_custody=custody,
+            archive_ref=args.archive_ref,
+            min_age_days=args.min_age_days,
+            batch_ids=args.batch_ids,
+            checkpoint=args.checkpoint,
+            dry_run=args.dry_run,
+        )
+    except trim.TrimRefused as exc:
+        print(json.dumps({"refused": str(exc)}, indent=2))
+        raise SystemExit(2)
+    finally:
+        conn.close()
+    print(json.dumps(receipt, indent=2, sort_keys=True))
+
+
 def cmd_weather_digest(args) -> None:
     from . import weather_digest as wd
     cfg = load_config(args.config)
@@ -1338,6 +1365,31 @@ def main(argv: Optional[list] = None) -> None:
 
     p_dbopt = sub.add_parser("db-optimize", help="Run ANALYZE and query planner optimization")
     p_dbopt.set_defaults(func=cmd_db_optimize)
+
+    p_trim = sub.add_parser(
+        "retention-trim",
+        help=("Move the retention floor and delete rows exported by "
+              "tools/label_events_trim_export.py (refuses unless the "
+              "manifest matches the live rows and an installed catalog "
+              "covers the new floor; never VACUUMs)"),
+    )
+    p_trim.add_argument("--floor", required=True,
+                        help="New floor, a UTC midnight (e.g. 2026-08-21T00:00:00Z)")
+    p_trim.add_argument("--manifest", required=True, help="Partition manifest JSON")
+    p_trim.add_argument("--catalog",
+                        help="Cold catalog manifest (default $LABELWATCH_FRONTDOOR_COLD_CATALOG)")
+    p_trim.add_argument("--archive-ref",
+                        help="Value for retention:archive_ref (default: manifest path + sha256)")
+    p_trim.add_argument("--min-age-days", type=int, default=31,
+                        help="Refuse a floor newer than this many days (default 31)")
+    p_trim.add_argument("--batch-ids", type=int, default=50_000,
+                        help="Id-range width of each delete batch (default 50000)")
+    p_trim.add_argument("--checkpoint", default="PASSIVE",
+                        choices=["PASSIVE", "FULL", "RESTART", "TRUNCATE"],
+                        help="WAL checkpoint mode between batches (default PASSIVE)")
+    p_trim.add_argument("--dry-run", action="store_true",
+                        help="Check every precondition; change nothing")
+    p_trim.set_defaults(func=cmd_retention_trim)
 
     p_digest = sub.add_parser(
         "weather-digest",
