@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly Labelwatch archive/catalog extension
+
+[Timer]
+OnCalendar=Mon *-*-* 06:00:00 UTC
+Persistent=true
+RandomizedDelaySec=900
+Unit=labelwatch-retention.service
+
+[Install]
+WantedBy=timers.target

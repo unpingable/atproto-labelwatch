@@ -1,0 +1,16 @@
+{
+  "host": "root@EXISTING_LABELWATCH_HOST",
+  "ssh_key": "/private/operator/existing-linode-key",
+  "source": "/data/git/labelwatch",
+  "tools_revision": "PIN_EXACT_ACCEPTED_SOURCE_REVISION",
+  "host_python": "/opt/labelwatch/releases/b5e1a5dac29733b2d83920d1737c35873446a6a9/venv/bin/python",
+  "host_source": "/opt/labelwatch/releases/b5e1a5dac29733b2d83920d1737c35873446a6a9/source",
+  "host_work_root": "/root/labelwatch-retention",
+  "zone_work_root": "/mnt/zonestorage/labelwatch-maintenance",
+  "archive_root": "/tank/nfs/labelwatch-archive/deltas",
+  "summaries_root": "/tank/nfs/archive/atproto/labelwatch-v3-qualification-20260920/full/summaries",
+  "current_catalog_record": "/private/operator/labelwatch-current-catalog.json",
+  "occurrence_root": "/data/git/.scratch/labelwatch-retention",
+  "live_days": 40,
+  "max_delta_days": 7
+}

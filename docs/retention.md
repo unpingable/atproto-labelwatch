@@ -1,8 +1,9 @@
 # Retention floor, cold catalog and trim
 
-Status: implemented on `phase2-cold-history-20261002`, not deployed. The
-deployed release (795bc44) has the floor and the `cold_history: unavailable`
-refusal only.
+Status: Phase 2 deployed on 2026-10-03 at `b5e1a5d`. The weekly
+archive/catalog/trim coordinator and host apply tools implement the operational
+procedure below. Runtime acceptance records bind the exact active catalog and
+floor; an enabled timer alone is not evidence of a completed cycle.
 
 ## The invariant
 
@@ -27,12 +28,12 @@ below `2026-08-21T00:00:00Z`. The catalog extender refuses partitions that
 contain one (see below).
 
 `meta['retention:history_start']` is the earliest instant Labelwatch claims
-history for. The operator sets it by hand after confirming the earliest
-archived `ts`. For generation 1 that is expected to be
+history for. It is selected from the earliest verified
+archived `ts`, rather than a separate owner preference. Generation 1 establishes
 `2026-02-24T20:09:49.538634Z` (event 1, verified by indexed reads of the
 retained October 1 archive on crow and NFS): the v3 catalog covers
 [2026-02-24, 2026-08-14), and
-total − working − cold = 0 rows. Confirm before setting it. If the key is
+total − working − cold = 0 rows. This value was selected and deployed. If the key is
 absent, coverage is reported as `gap`.
 
 ## Coverage rule (`retention.catalog_coverage`)
@@ -154,23 +155,111 @@ sees a hole, and nothing is counted twice.
 Without a catalog, the trim still runs. Pre-floor history is then reported as
 unavailable, never as absent.
 
-## Operational limits
+## Scheduled production procedure
 
-- The first trim (planned for 2026-10-08) is deferred until this tooling is
-  deployed and qualified. Root grows about 1.25 GB/day, which leaves a few
-  weeks. The trim frees pages inside the file but does not shrink it.
-- The catalog is about 6–8 GB on root and grows 0.3–0.5 GB/week. A swap
-  needs twice that while both copies exist. Startup hashes the whole catalog.
-- The v3 catalog's lineage (source sha `f9f2…`) differs from generation 1.
-  Rebuild from generation 1 or record the mix before installing it. Trim
-  partitions record their canonical row digest in `source_database_sha256`,
-  because the live database is not hashed.
-- Late events below the floor (quarantined) are not served. They are visible
-  in ops-status.
-- v3 has no URI-pruning marker. A subject/labeler with at least the catalog's
-  URI bound and live record events is refused with
-  `cold_uri_pruning_cross_boundary`, because omitted cold contributions can
-  change counts and ranking. Cold-only and sparse merges remain available.
+`tools/label_events_retention_cycle.py` runs on crow under the existing durable
+user systemd manager. `deploy/labelwatch-retention.service.example`, its weekly
+timer and the private-config example describe installation. Keep the SSH
+identity outside source and use the exact existing identity without an agent or
+forwarding. Keep the config and occurrence directories owner-only. Pin the
+coordinator source revision; its host interpreter and export tool remain bound
+to the deployed release. No new provider, bridge volume or generation is needed.
+
+The default policy advances at most seven UTC days per occurrence, retaining
+at least forty complete days live (the underlying minimum is thirty-one).
+A backlog is consumed in bounded weekly deltas. Derive stays disabled; climate
+and registry retain their explicit incomplete-history refusals.
+
+The coordinator requires a mounted NFS archive, exports one snapshot into
+explicit temporary Zone storage, copies and verifies the full partition on
+NFS, and rebuilds the catalog from all unpruned daily summaries. It publishes
+the new catalog and daily summaries to NFS, with full readback verification,
+before the host apply unit is admitted. The NFS receipt also binds the old
+catalog needed for pre-floor rollback. A missing archive dependency refuses
+before database or service mutation. Merge logs record verified/merged days,
+ranking, compaction and the final verified identity.
+
+`tools/label_events_retention_apply.py` first proves that the old installed
+catalog refuses the proposed floor because its coverage ends too early. It
+preserves release dropins and exact old catalog bytes on Zone. All collector,
+discovery, API and watcher consumers are stopped before retiring the duplicated
+old root catalog. Open descriptors, unexpected files and multiple hard links
+refuse retirement. The new catalog is copied to a new digest-named root
+directory, verified and selected coherently for API and collector. Current
+writes and the cold catalog continue to reside on root.
+
+Collector/discovery remain stopped across the final partition/catalog checks,
+floor commit, delete batches and late-row quarantine. The catalog file remains
+immutable during this interval. The live-row check assumes the ordinary
+append-only collector history; count/min/max are not a proof against arbitrary
+content mutation. After restart, complete API coverage must join the exact new
+floor. Trim frees SQLite pages for reuse; it does **not** return filesystem
+blocks. Capacity receipts must report both facts separately.
+
+After accepted health and renewed NFS verification, the host tool retires only
+the exact duplicated Zone partition/catalog/old-copy files. The old catalog
+cannot roll back a committed newer floor. Root receipts and NFS archive material
+remain. Occurrences keep a named replay/diagnosis dependency and review date;
+failed occurrences are preserved. Before unlink, the host seals an exact
+staging-retirement inventory. If cleanup is interrupted before its final
+receipt, the next occurrence refuses: reconcile only the remaining named files
+against that inventory, NFS/root custody, open descriptors and link counts,
+then finish cleanup and seal the receipt. Do not repeat the floor move.
+
+Crow retains the newest completed local catalog for one bounded replay check
+through the next weekly occurrence. The weekly operator closeout must verify
+NFS/root custody and exact local consumers/mounts/links, then retire superseded
+reproducible catalog directories while retaining their small source/manifest/
+receipt records. A failed or ambiguous consumer check retains the exact output
+with owner, allocated bytes, review date and next action. This is an explicit
+weekly storage-custody task, not a permanent catalog retention policy.
+
+Review compiler/scratch output independently
+of durable evidence, and never perform broad cleanup.
+
+### Recovery and bounded resource limits
+
+An occurrence records its source/config, producer unit, logs, terminal and
+checkpoint. The coordinator holds an exclusive file lock, inherited by the
+merge child, and an unfinished ACTIVE occurrence blocks successors. On
+supervisor loss, inspect the original systemd service and checkpoint; do not
+restart or duplicate a running producer. An explicit `--resume <exact path>`
+requires the registered occurrence and its original configuration.
+
+A missing transient unit is not proof that execution never happened. Existing
+terminal/log evidence is reconciled first. A genuinely missing dispatch can be
+filled mechanically; an indeterminate or failed producer preserves its evidence
+before a named retry. A failed merge's output is preserved before a bounded
+replacement merge, only when the original durable producer/child lock is gone.
+Never overwrite staged inputs of an already-launched apply unit.
+
+Before the floor commit, a failed host transition restores the old root catalog
+and release selections before resuming collection. After the floor commit,
+keep the new catalog and resume the same partition manifest: the pending record
+binds its exact digest. If deletion already committed and cleared pending, the
+same occurrence recovers `retention:last_trim` instead of deleting again. Fresh
+NFS custody is required for first admission; a recorded exact occurrence can
+resume after the original receipt ages, while revalidating its staged bytes.
+
+Admission preserves 32 GiB on host root and Zone, a 15 GiB transient Zone
+allocation, and 200 GiB unallocated on crow plus a 40 GiB merge allowance.
+Reconcile other tenants before admission. The export monitor stops its exact
+producer if root reserve fails; the merge monitor stops its exact child at the
+recorded allocation/reserve boundary. Export/apply have one-hour deadlines;
+the durable coordinator has a six-hour deadline. A partial failure never moves
+the floor without verified archive/catalog custody. API outage during the
+serialized host swap/trim is bounded by these maintenance deadlines; restore
+or same-manifest continuation follows the recorded floor state.
+
+The first installed v3 catalog was 5,505,589,248 logical bytes and covered
+171 days. Daily summaries retain explicit source digests; original summaries
+have the earlier archive lineage and new summaries bind each delta's canonical
+row digest. Catalog growth and full remerge cost are measured per occurrence,
+not inferred from these initial sizes. v3 lacks a URI-pruning completeness
+marker: dense cold/live merges continue to refuse with
+`cold_uri_pruning_cross_boundary`, while cold-only and sparse merges remain
+available. Late below-floor deliveries remain quarantined and visible in
+operational status.
 
 ## TODO: catalog v4
 

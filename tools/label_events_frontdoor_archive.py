@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import sqlite3
 from collections import defaultdict
@@ -29,6 +30,7 @@ from labelwatch.frontdoor_archive import (
 
 FORMAT = "labelwatch.frontdoor-cold-summary"
 FORMAT_VERSION = 2
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -275,8 +277,9 @@ def build_catalog(references: list[SummaryRef], destination: Path, *,
         raise FileExistsError("catalog manifest destination must not exist")
 
     verified = []
-    for reference in references:
+    for index, reference in enumerate(references, 1):
         metadata = verify_summary(reference)
+        LOGGER.info("verified summary %s/%s day=%s", index, len(references), metadata["day"])
         verified.append((metadata["day"], reference, metadata))
     verified.sort(key=lambda item: item[0])
     days = [item[0] for item in verified]
@@ -340,7 +343,8 @@ def build_catalog(references: list[SummaryRef], destination: Path, *,
             "source_event_id_upper_bound": str(source_event_id_upper_bound),
             "uri_top_n": str(uri_top_n),
         }.items())
-        for _, reference, _ in verified:
+        for index, (day, reference, _) in enumerate(verified, 1):
+            LOGGER.info("merging summary %s/%s day=%s", index, len(verified), day)
             conn.execute("ATTACH DATABASE ? AS source_summary", (
                 f"file:{reference.path}?mode=ro&immutable=1",
             ))
@@ -379,6 +383,8 @@ def build_catalog(references: list[SummaryRef], destination: Path, *,
                 conn.commit()
             finally:
                 conn.execute("DETACH DATABASE source_summary")
+            LOGGER.info("merged summary %s/%s day=%s bytes=%s", index, len(verified), day, tmp.stat().st_size)
+        LOGGER.info("ranking and pruning URI aggregates")
         # The public reader exposes only the top N record URIs for each
         # subject/labeler after counts have been merged across every day.
         # Pruning earlier would be incorrect because a URI can accumulate
@@ -429,6 +435,7 @@ def build_catalog(references: list[SummaryRef], destination: Path, *,
     if compact.exists() or compact.is_symlink():
         tmp.unlink(missing_ok=True)
         raise FileExistsError("compact catalog destination already exists")
+    LOGGER.info("compacting catalog intermediate_bytes=%s", tmp.stat().st_size)
     compact_conn = sqlite3.connect(tmp)
     try:
         escaped = str(compact).replace("'", "''")
@@ -480,6 +487,7 @@ def build_catalog(references: list[SummaryRef], destination: Path, *,
     }
     _atomic_json(manifest_path, manifest)
     load_catalog(manifest_path)
+    LOGGER.info("verified catalog sha256=%s bytes=%s", manifest["catalog"]["sha256"], destination.stat().st_size)
     return manifest_path
 
 

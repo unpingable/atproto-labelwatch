@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import sqlite3
 import sys
 from datetime import date, timedelta
@@ -155,6 +156,7 @@ def main(argv=None) -> int:
     parser.add_argument("--partition-manifest", required=True, type=Path)
     parser.add_argument("--out-dir", required=True, type=Path)
     args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         receipt = extend_catalog(args.base_manifest, args.summaries_dir,
                                  args.partition_manifest, args.out_dir)

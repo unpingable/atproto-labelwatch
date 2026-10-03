@@ -1,0 +1,12 @@
+[Unit]
+Description=Labelwatch archive-first weekly delta/catalog/trim
+
+[Service]
+Type=oneshot
+WorkingDirectory=/data/git/labelwatch
+Environment=PYTHONPATH=/data/git/labelwatch:/data/git/labelwatch/src:/data/git/labelwatch/.venv/lib/python3.12/site-packages
+ExecStart=/usr/bin/python3 /data/git/labelwatch/tools/label_events_retention_cycle.py --config %h/.config/labelwatch/retention-cycle.json
+TimeoutStartSec=21600
+MemoryMax=12G
+CPUQuota=200%
+UMask=0077
