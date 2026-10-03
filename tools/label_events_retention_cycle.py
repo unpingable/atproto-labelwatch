@@ -56,7 +56,7 @@ class Cycle:
         self.lock_fd = lock_fd
         self.path.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.ssh = ["ssh", "-i", config["ssh_key"], "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "AddKeysToAgent=no", "-o", "ForwardAgent=no", "-o", "BatchMode=yes", config["host"]]
-        self.scp = ["scp", "-i", config["ssh_key"], "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "AddKeysToAgent=no", "-o", "ForwardAgent=no", "-o", "BatchMode=yes"]
+        self.scp = ["scp", "-C", "-i", config["ssh_key"], "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "AddKeysToAgent=no", "-o", "ForwardAgent=no", "-o", "BatchMode=yes"]
         self.state = json.loads((self.path / "checkpoint.json").read_text()) if (self.path / "checkpoint.json").exists() else {}
 
     def remote(self, *args):
@@ -112,11 +112,11 @@ class Cycle:
     def poll(self, unit, terminal, deadline, root_reserve=True):
         until = time.monotonic() + deadline
         while time.monotonic() < until:
-            status = self.remote("systemctl", "show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "MainPID", "-p", "Result")
+            status = self.remote("systemctl", "show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "MainPID", "-p", "Result", "-p", "LoadState")
             self.phase("monitor-" + unit, unit=unit, status=status)
             if "ActiveState=activating" not in status and "ActiveState=active" not in status:
                 terminal_text = self.remote("cat", terminal).strip()
-                if terminal_text != "exit=0":
+                if terminal_text != "exit=0" or ("LoadState=not-found" not in status and "Result=success" not in status):
                     raise RuntimeError(f"original producer failed: {unit}: {terminal_text}")
                 return
             if root_reserve:

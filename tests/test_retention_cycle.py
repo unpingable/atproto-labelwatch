@@ -59,3 +59,15 @@ def test_archive_checks_backing_mount_and_refuses_local_or_readonly_substitution
     else:
         with pytest.raises(TrimRefused, match='NFS'):
             cycle.mounted_archive()
+
+
+@pytest.mark.parametrize('result,accepted', [('signal', False), ('exit-code', False), ('success', True)])
+def test_zero_shell_terminal_does_not_accept_failed_original_unit(tmp_path, monkeypatch, result, accepted):
+    cycle = module.Cycle({'ssh_key': '/existing/key', 'host': 'root@existing'}, tmp_path, 3)
+    status = f'LoadState=loaded\nActiveState=inactive\nMainPID=0\nResult={result}\n'
+    monkeypatch.setattr(cycle, 'remote', lambda *args: status if args[0] == 'systemctl' else 'exit=0\n')
+    if accepted:
+        cycle.poll('original.service', '/original/TERMINAL', 1)
+    else:
+        with pytest.raises(RuntimeError, match='original producer failed'):
+            cycle.poll('original.service', '/original/TERMINAL', 1)
