@@ -69,6 +69,8 @@ Only `complete` authorizes catalog aggregates:
   the 30-day window, so the floor must stay at least 31 days back.
   Production runs with `LABELWATCH_DERIVE_DISABLE=1`. Keep it that way until
   that path has been qualified against generation 1.
+  Threshold-only scan decisions combine cold totals with bounded live reads;
+  they do not run a full live-history census each cadence.
 - **`/health`** has one `retention` block: `live_floor`, `archive`,
   `history_start`, `catalog` (range, watermark, sha256), `coverage`,
   `reason`, and `consistent`. `consistent` is true when coverage is complete,

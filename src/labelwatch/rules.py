@@ -64,6 +64,28 @@ def _build_event_count_cache(conn, *, cap: int | None = None,
     if cold_catalog is not None:
         from .frontdoor_archive import query_labeler_totals
         cold = query_labeler_totals(cold_catalog)
+        if cap is not None:
+            # Warm-up decisions only need the threshold. Loading a catalog
+            # must not turn this bounded cadence path into a live-history
+            # census every scan cycle.
+            dids = set(cold) | {
+                row["labeler_did"] for row in conn.execute(
+                    "SELECT labeler_did FROM labelers")
+            }
+            combined = {}
+            for did in dids:
+                count = min(cap, int(cold.get(did, {}).get("event_count", 0)))
+                if count < cap:
+                    count += conn.execute(
+                        "SELECT COUNT(*) FROM (SELECT 1 FROM label_events "
+                        "WHERE labeler_did=? AND (id > ? OR ts IS NULL "
+                        "OR ts < ? OR ts >= ?) LIMIT ?)",
+                        (did, cold_catalog.source_event_id_upper_bound,
+                         cold_catalog.start_day, cold_catalog.end_day_exclusive,
+                         cap - count),
+                    ).fetchone()[0]
+                combined[did] = count
+            return combined
         rows = conn.execute(
             "SELECT labeler_did,COUNT(*) AS c FROM label_events "
             "WHERE id > ? OR ts IS NULL OR ts < ? OR ts >= ? GROUP BY labeler_did",
@@ -76,8 +98,6 @@ def _build_event_count_cache(conn, *, cap: int | None = None,
         combined = {did: int(value["event_count"]) for did, value in cold.items()}
         for row in rows:
             combined[row["labeler_did"]] = combined.get(row["labeler_did"], 0) + int(row["c"])
-        if cap is not None:
-            return {did: min(value, cap) for did, value in combined.items()}
         return combined
     if cap is not None:
         return {

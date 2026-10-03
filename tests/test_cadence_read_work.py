@@ -48,6 +48,35 @@ def test_threshold_cache_preserves_rule_decisions_and_bounds_work():
     assert counts[1] < counts[0]/10
 
 
+def test_catalog_threshold_cache_does_not_census_live_history(tmp_path):
+    from _cold_catalog_fixture import build_test_catalog
+    from labelwatch.frontdoor_archive import load_catalog
+
+    did = 'did:plc:threshold'
+    manifest = build_test_catalog(tmp_path / 'catalog', [
+        (did, did, 'test', 0, '2025-12-01T12:00:00Z', did),
+        (did, did, 'test', 0, '2025-12-01T13:00:00Z', did),
+    ], start_day='2025-12-01', end_day_exclusive='2025-12-02', watermark=0)
+    catalog = load_catalog(manifest, filesystem_type='ext4')
+    conn = database()
+    add_events(conn, did, 10000)
+    work = []
+    results = []
+    for cap in (None, 5):
+        ticks = [0]
+        def progress():
+            ticks[0] += 1
+            return 0
+        conn.set_progress_handler(progress, 100)
+        results.append(rules._build_event_count_cache(conn, cap=cap, cold_catalog=catalog))
+        work.append(ticks[0])
+    conn.set_progress_handler(None, 0)
+    assert results == [{did: 10002}, {did: 5}]
+    assert work[1] < work[0] / 10
+    assert rules._build_event_count_cache(conn, cap=0, cold_catalog=catalog) == {did: 0}
+    conn.close()
+
+
 def record(conn,ts,defs,operation='update'):
     conn.execute('INSERT INTO discovery_events(labeler_did,operation,source,record_json,discovered_at) VALUES(?,?,?,?,?)',
                  ('did:plc:fixture',operation,'fixture',json.dumps({'policies':{'labelValueDefinitions':defs}}),ts))
