@@ -109,6 +109,15 @@ class Cycle:
         if shutil.disk_usage(archive).free < 20 * 1024**3:
             raise TrimRefused("verified NFS mount/capacity unavailable; no trim")
 
+    def admit_apply_memory(self):
+        # Catalog verification uses a bounded reclaimable file cache. Do not
+        # infer today's host capacity for a later scheduled occurrence.
+        available = int(self.remote(self.config["host_python"], "-c",
+            "from pathlib import Path; print(next(int(row.split()[1])*1024 for row in Path('/proc/meminfo').read_text().splitlines() if row.startswith('MemAvailable:')))"))
+        if available < 5 * 1024**3:
+            raise TrimRefused("host5GiB available-memory gate failed before apply")
+        self.phase("apply-memory-admitted", host_available_bytes=available, apply_memory_max_bytes=4 * 1024**3)
+
     def poll(self, unit, terminal, deadline, root_reserve=True):
         until = time.monotonic() + deadline
         while time.monotonic() < until:
@@ -237,6 +246,7 @@ class Cycle:
         unit = "labelwatch-delta-apply-" + name
         script = self.path / "apply.sh"
         if not self.state.get("apply_launched"):
+            self.admit_apply_memory()
             self.remote("mkdir", "-p", zone + "/catalog", remote_dir)
             for source in (archived_new_db, archive / new_manifest.name):
                 run(self.scp + [source, c["host"] + ":" + zone + "/catalog/"])
@@ -248,9 +258,10 @@ class Cycle:
             run(self.scp + [self.path / "apply-config.json", Path(c["source"]) / "tools/label_events_retention_apply.py", c["host"] + ":" + remote_dir + "/"])
             script.write_text("#!/bin/bash\nset -euo pipefail\nexec >" + shlex.quote(remote_dir + "/apply.log") + " 2>&1\ntrap 'printf \"exit=%s\\n\" \"$?\" > " + shlex.quote(remote_dir + "/APPLY-TERMINAL") + "' EXIT\n" + shlex.join([c["host_python"], remote_dir + "/label_events_retention_apply.py", "--config", remote_dir + "/apply-config.json"]) + "\n")
             run(self.scp + [script, c["host"] + ":" + remote_dir + "/apply.sh"])
+            self.admit_apply_memory()
             self.phase("apply-launch-recorded", apply_launched=True, apply_unit=unit, apply_terminal=remote_dir + "/APPLY-TERMINAL")
-        self.dispatch(unit, remote_dir + "/apply.sh", remote_dir + "/APPLY-TERMINAL", remote_dir + "/apply.log", 3600, "100%", "1G")
-        self.poll(unit, remote_dir + "/APPLY-TERMINAL", 3700, root_reserve=False)
+        self.dispatch(unit, remote_dir + "/apply.sh", remote_dir + "/APPLY-TERMINAL", remote_dir + "/apply.log", 7200, "100%", "4G")
+        self.poll(unit, remote_dir + "/APPLY-TERMINAL", 7300, root_reserve=False)
         run(self.scp + [c["host"] + ":/opt/labelwatch/deployment-receipts/" + name + "/trim.json", self.path])
         result = json.loads((self.path / "trim.json").read_text())
         if result["floor"] != pm["floor"] or result["catalog"]["sha256"] != nm["catalog"]["sha256"]:

@@ -243,13 +243,27 @@ resume after the original receipt ages, while revalidating its staged bytes.
 
 Admission preserves 32 GiB on host root and Zone, a 15 GiB transient Zone
 allocation, and 200 GiB unallocated on crow plus a 40 GiB merge allowance.
-Reconcile other tenants before admission. The export monitor stops its exact
+Reconcile other tenants before admission. Before a new host apply, require
+at least 5 GiB MemAvailable; the apply has a 4 GiB memory ceiling to bound
+reclaimable catalog-verification cache. A lower-capacity host refuses before
+launch. The initial real occurrence hit the previous 1 GiB cache limit without
+an OOM; the same producer continued after a measured 4 GiB resource adjustment.
+This changes neither catalog verification nor retention semantics. The export monitor stops its exact
 producer if root reserve fails; the merge monitor stops its exact child at the
-recorded allocation/reserve boundary. Export/apply have one-hour deadlines;
-the durable coordinator has a six-hour deadline. A partial failure never moves
-the floor without verified archive/catalog custody. API outage during the
-serialized host swap/trim is bounded by these maintenance deadlines; restore
-or same-manifest continuation follows the recorded floor state.
+recorded allocation/reserve boundary. Export has a one-hour deadline; apply has a two-hour deadline, and the
+durable coordinator has a six-hour deadline. The first real trim measured
+roughly 38 seconds per 50,000-row deletion batch. A seven-day delta can
+therefore require about 40 minutes of deletion in addition to catalog
+verification and restart. The two-hour apply limit admits that bounded path;
+it is an execution deadline, not an availability or duration guarantee.
+Total outage may extend until recorded rollback or same-manifest recovery
+completes.
+A denser future delta can still exceed the deadline; after a committed floor,
+retain the new catalog and resume the exact pending partition occurrence. A partial failure never moves
+the floor without verified archive/catalog custody. API service is stopped during the serialized host swap/trim. Execution
+deadlines bound the admitted producer, while total outage may extend until
+recorded rollback or same-manifest recovery completes; that recovery follows
+the recorded floor state.
 
 The first installed v3 catalog was 5,505,589,248 logical bytes and covered
 171 days. Daily summaries retain explicit source digests; original summaries

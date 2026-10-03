@@ -71,3 +71,22 @@ def test_zero_shell_terminal_does_not_accept_failed_original_unit(tmp_path, monk
     else:
         with pytest.raises(RuntimeError, match='original producer failed'):
             cycle.poll('original.service', '/original/TERMINAL', 1)
+
+
+@pytest.mark.parametrize('available,accepted', [(5 * 1024**3 - 1, False), (5 * 1024**3, True)])
+def test_host_apply_memory_gate_refuses_before_launch(tmp_path, monkeypatch, available, accepted):
+    from labelwatch.trim import TrimRefused
+    cycle = module.Cycle({'ssh_key': '/existing/key', 'host': 'root@existing', 'host_python': '/deployed/python'}, tmp_path, 3)
+    calls = []
+    def remote(*args):
+        calls.append(args)
+        return str(available)
+    monkeypatch.setattr(cycle, 'remote', remote)
+    if accepted:
+        cycle.admit_apply_memory()
+        assert cycle.state['apply_memory_max_bytes'] == 4 * 1024**3
+    else:
+        with pytest.raises(TrimRefused, match='available-memory gate failed'):
+            cycle.admit_apply_memory()
+        assert not (tmp_path / 'checkpoint.json').exists()
+    assert len(calls) == 1 and calls[0][0] == '/deployed/python'
