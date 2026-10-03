@@ -12,5 +12,6 @@
   "current_catalog_record": "/private/operator/labelwatch-current-catalog.json",
   "occurrence_root": "/data/git/.scratch/labelwatch-retention",
   "live_days": 40,
-  "max_delta_days": 7
+  "max_delta_days": 7,
+  "archive_source": "EXISTING_NFS_SERVER:/EXISTING_EXPORT"
 }

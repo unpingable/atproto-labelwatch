@@ -39,3 +39,23 @@ def test_archive_copy_recovers_incomplete_name_and_refuses_mutating_published_id
     with pytest.raises(RuntimeError, match='published archive identity differs'):
         module.publish(source, destination)
     assert destination.read_bytes() == b'complete retained bytes'
+
+
+@pytest.mark.parametrize('rows,accepted', [
+    ('autofs systemd-1 rw\nnfs4 existing:/archive rw,hard,vers=4.2\n', True),
+    ('autofs systemd-1 rw\n', False),
+    ('ext4 /dev/local rw\n', False),
+    ('autofs systemd-1 rw\nnfs4 existing:/archive ro,hard\n', False),
+    ('nfs4 unexpected:/archive rw,hard\n', False),
+])
+def test_archive_checks_backing_mount_and_refuses_local_or_readonly_substitution(tmp_path, monkeypatch, rows, accepted):
+    from labelwatch.trim import TrimRefused
+    cycle = module.Cycle({'archive_root': str(tmp_path), 'archive_source': 'existing:/archive',
+                          'ssh_key': '/existing/key', 'host': 'root@existing'}, tmp_path / 'occurrence', 3)
+    monkeypatch.setattr(module, 'run', lambda *a, **k: SimpleNamespace(stdout=rows))
+    monkeypatch.setattr(module.shutil, 'disk_usage', lambda path: SimpleNamespace(free=100 * 1024**3))
+    if accepted:
+        cycle.mounted_archive()
+    else:
+        with pytest.raises(TrimRefused, match='NFS'):
+            cycle.mounted_archive()

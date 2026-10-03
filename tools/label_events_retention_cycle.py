@@ -98,8 +98,15 @@ class Cycle:
 
     def mounted_archive(self):
         archive = Path(self.config["archive_root"])
-        kind = run(["findmnt", "-n", "-o", "FSTYPE", "-T", archive], capture_output=True).stdout.strip()
-        if kind not in ("nfs", "nfs4") or shutil.disk_usage(archive).free < 20 * 1024**3:
+        archive.stat()  # activate the configured automount before inspection
+        rows = run(["findmnt", "-n", "-o", "FSTYPE,SOURCE,OPTIONS", "-T", archive], capture_output=True).stdout.strip().splitlines()
+        # findmnt emits both the automount and its overmounted NFS mount.
+        fields = rows[-1].split() if rows else []
+        if len(fields) != 3 or fields[0] not in ("nfs", "nfs4") or "rw" not in fields[2].split(","):
+            raise TrimRefused("writable NFS backing mount unavailable; no trim")
+        if self.config.get("archive_source") and fields[1] != self.config["archive_source"]:
+            raise TrimRefused("NFS source differs from admitted archive identity")
+        if shutil.disk_usage(archive).free < 20 * 1024**3:
             raise TrimRefused("verified NFS mount/capacity unavailable; no trim")
 
     def poll(self, unit, terminal, deadline, root_reserve=True):
