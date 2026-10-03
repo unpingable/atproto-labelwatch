@@ -26,6 +26,10 @@ class CatalogNotLocal(RuntimeError):
     """The catalog resides on a network filesystem and must not be served."""
 
 
+class ColdMergeIncomplete(RuntimeError):
+    """A pruned catalog cannot establish exact URI counts across the floor."""
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -245,6 +249,23 @@ def query_subject(catalog: ColdCatalog, target_did: str, *, live_conn=None,
             target_did, catalog.source_event_id_upper_bound,
             catalog.start_day, catalog.end_day_exclusive,
         )
+        # v3 retains only the top N cold URIs. A live URI can therefore have
+        # omitted cold contributions, changing both its count and its rank.
+        # Exactly N retained URIs is ambiguous too: v3 records no pruning
+        # marker. Refuse that merge until the catalog carries exactness data.
+        cold_uris: defaultdict[str, set[str]] = defaultdict(set)
+        for labeler, uri, _ in uris:
+            cold_uris[labeler].add(uri)
+        for labeler, candidates in cold_uris.items():
+            if len(candidates) < catalog.uri_top_n:
+                continue
+            if live_conn.execute(
+                "SELECT 1 FROM label_events WHERE target_did=? "
+                f"AND {live_owned} AND labeler_did=? "
+                "AND uri NOT LIKE 'did:%' LIMIT 1",
+                (*live_params, labeler),
+            ).fetchone():
+                raise ColdMergeIncomplete("cold_uri_pruning_cross_boundary")
         for labeler, val, count, first_seen, last_seen in live_conn.execute(
             "SELECT labeler_did,val,COUNT(*),MIN(ts),MAX(ts) FROM label_events "
             f"WHERE target_did=? AND {live_owned} GROUP BY labeler_did,val",

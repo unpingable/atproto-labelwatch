@@ -616,13 +616,28 @@ def lookup_subject(
 
     aggregates = None
     if serving_catalog is not None:
-        from .frontdoor_archive import query_subject as query_cold_subject
-        aggregates = query_cold_subject(
-            serving_catalog,
-            did,
-            live_conn=conn,
-            top_n=MAX_LABELED_RECORDS_PER_LABELER,
-        )
+        from .frontdoor_archive import ColdMergeIncomplete, query_subject as query_cold_subject
+        try:
+            aggregates = query_cold_subject(
+                serving_catalog,
+                did,
+                live_conn=conn,
+                top_n=MAX_LABELED_RECORDS_PER_LABELER,
+            )
+        except ColdMergeIncomplete as exc:
+            coverage = {**coverage, "status": retention.COVERAGE_GAP,
+                        "reason": str(exc)}
+            return FrontdoorResult(
+                surface=SURFACE, consumer_surface_version="v0",
+                generated_at=generated_at, input_identifier=identifier,
+                subject_did=did, subject_handle=handle, labelers=[],
+                refusal="cold_history_unavailable",
+                refusal_detail="The cold catalog prunes URI history for this subject; "
+                               "exact counts across the live floor are unavailable.",
+                audit_verdict=audit_verdict, audit_receipt_path=audit_path,
+                audit_generated_at=audit_ts,
+                cold_history=retention.cold_history_block(conn, None, coverage),
+            )
         event_count = sum(row["event_count"] for row in aggregates["label_values"])
     else:
         # Step 2.5: density circuit breaker. Pre-count Q8 rows for the subject

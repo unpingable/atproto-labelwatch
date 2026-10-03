@@ -29,7 +29,9 @@ contain one (see below).
 `meta['retention:history_start']` is the earliest instant Labelwatch claims
 history for. The operator sets it by hand after confirming the earliest
 archived `ts`. For generation 1 that is expected to be
-`2026-02-24T00:00:00Z`: the v3 catalog covers [2026-02-24, 2026-08-14), and
+`2026-02-24T20:09:49.538634Z` (event 1, verified by indexed reads of the
+retained October 1 archive on crow and NFS): the v3 catalog covers
+[2026-02-24, 2026-08-14), and
 total − working − cold = 0 rows. Confirm before setting it. If the key is
 absent, coverage is reported as `gap`.
 
@@ -163,6 +165,10 @@ unavailable, never as absent.
   because the live database is not hashed.
 - Late events below the floor (quarantined) are not served. They are visible
   in ops-status.
+- v3 has no URI-pruning marker. A subject/labeler with at least the catalog's
+  URI bound and live record events is refused with
+  `cold_uri_pruning_cross_boundary`, because omitted cold contributions can
+  change counts and ranking. Cold-only and sparse merges remain available.
 
 ## TODO: catalog v4
 
