@@ -111,13 +111,21 @@ Three systemd services, one SQLite database (WAL mode):
 └──────────────────┘
 ```
 
-### Services
+### Current operation (2026-10-03)
 
-| Service | Purpose | Resources |
-|---------|---------|-----------|
-| `labelwatch.service` | Main loop: ingest, scan, derive, report | 2GB / 50% CPU |
-| `labelwatch-discovery.service` | Jetstream sidecar for real-time labeler discovery | 256MB / 10% CPU |
-| `labelwatch-api.service` | HTTP API: climate, whatsonme (`/v1/*`) | 512MB / 25% CPU |
+Generation 2 writes to root; a verified local v3 catalog covers cold history
+and the full archive plus deltas are retained on home NFS. Live floor is
+`2026-08-15T00:00:00Z`; history start is
+`2026-02-24T20:09:49.538634Z`. Bridge exit, Phase 2 and one real
+archive/catalog-extension/trim cycle are accepted. The weekly maintenance
+procedure is [retention-cycle](docs/retention.md).
+
+Collector, API, discovery and watcher remain active. Scheduled derive/report
+are disabled (`LABELWATCH_DERIVE_DISABLE=1`); climate/registry answers refuse
+when their cold coverage is incomplete. This diagram describes implemented
+capabilities, not permission to enable every consumer. `report --labeler`
+returns a verified cold/live lifetime total or an explicit refusal, including
+ambiguous quarantined events for that labeler.
 
 ## CLI
 

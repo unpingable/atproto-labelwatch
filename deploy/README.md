@@ -59,7 +59,10 @@ artifacts and do not belong in the wheel. The audit uses bounded
 - No log rotation configured; add `StandardOutput=journal` or pipe to a file
   with logrotate
 - No HTTPS in the nginx config; add certbot or your own certs
-- SQLite file grows unbounded; consider periodic `VACUUM` or archival
+- Current storage uses archive-first delta/catalog extension and bounded trim;
+  see the retention-cycle runbook. Trim frees SQLite pages for reuse; it does
+  not shrink the database file. Whole-file `VACUUM` is not the deployed
+  maintenance procedure. Scheduled derive/report remain disabled.
 - No alerting/notification; check reports manually or add a cron health check
 - Report regeneration is atomic (directory swap) but not zero-downtime for
   concurrent readers during the swap

@@ -134,9 +134,46 @@ def cmd_report(args) -> None:
         if not row:
             print(json.dumps({"error": "labeler not found"}))
             return
-        total_events = conn.execute(
-            "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=?", (args.labeler,)
-        ).fetchone()["c"]
+        from . import retention
+        from .frontdoor_archive import query_labeler_totals
+
+        # Pin the floor and live count to one SQLite read snapshot. A lifetime
+        # total may use only verified catalog coverage joined exactly to it.
+        conn.execute("BEGIN")
+        try:
+            catalog, coverage = retention.usable_catalog(
+                conn, retention.load_catalog_custody()
+            )
+            cold_history = retention.cold_history_block(conn, None, coverage)
+            if conn.execute(
+                "SELECT 1 FROM quarantined_events WHERE labeler_did=? LIMIT 1",
+                (args.labeler,),
+            ).fetchone():
+                # Quarantine can contain both redeliveries and new late events.
+                # It cannot establish an exact lifetime count for this labeler.
+                cold_history = {"status": "unavailable", "scope": "all_history",
+                                "reason": "quarantined_labeler_events"}
+            if retention.is_unavailable(cold_history):
+                print(json.dumps({"error": "cold_history_unavailable",
+                                  "cold_history": cold_history}))
+                raise SystemExit(2)
+            ownership = ""
+            params = [args.labeler]
+            cold_total = 0
+            if catalog is not None:
+                ownership = " AND (id > ? OR ts IS NULL OR ts < ? OR ts >= ?)"
+                params.extend([catalog.source_event_id_upper_bound,
+                               catalog.start_day + "T00:00:00Z",
+                               catalog.end_day_exclusive + "T00:00:00Z"])
+                cold_total = query_labeler_totals(catalog).get(
+                    args.labeler, {}
+                ).get("event_count", 0)
+            total_events = cold_total + conn.execute(
+                "SELECT COUNT(*) AS c FROM label_events WHERE labeler_did=?" + ownership,
+                params,
+            ).fetchone()["c"]
+        finally:
+            conn.rollback()
         total_alerts = conn.execute(
             "SELECT COUNT(*) AS c FROM alerts WHERE labeler_did=?", (args.labeler,)
         ).fetchone()["c"]
@@ -147,6 +184,8 @@ def cmd_report(args) -> None:
             "total_events": total_events,
             "total_alerts": total_alerts,
         }
+        if cold_history is not None:
+            output["cold_history"] = cold_history
         print(json.dumps(output, indent=2))
         return
 
