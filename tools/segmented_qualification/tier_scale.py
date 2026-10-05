@@ -4,7 +4,7 @@ import datetime as dt,json,statistics,sys,time
 from pathlib import Path
 from storage import Store,ROOT,atomic,connect,db,ingest,sha,retention
 from tier import TierSession
-from labelwatch import frontdoor
+from labelwatch import frontdoor,report
 
 
 def main(occurrence,primary):
@@ -39,7 +39,25 @@ def main(occurrence,primary):
         count=reader.execute('SELECT COUNT(*) AS c FROM label_events').fetchone()['c'];assert count==result['events']+100
         dense_count=reader.execute('SELECT COUNT(*) AS c FROM label_events WHERE target_did = ?',(p['dense'],)).fetchone()['c']
         report=reader.execute('SELECT labeler_did,val,COUNT(*) AS c FROM label_events GROUP BY labeler_did,val').fetchall()
-    atomic(occurrence/'RESULT.json',{'result':'PASS','source_primary_result_sha256':sha(primary/'RESULT.json'),'source_archive_receipt_sha256':sha(archive/'2026-09-28.receipt.json'),'events_queried':count,'hot_added':100,'dense_events':dense_count,'frontdoor':measures,'report_groups':len(report),'no_duckdb_synchronous_ingest':True,'scope':'Complete current-scale retired Parquet plus active SQLite. Restored global state is query-only, not a collector cutover; synthetic floor unchanged in production. Frontdoor keeps existing cold-history and density behavior.'})
+    # Execute the actual report helpers without activating a report job.
+    # Hourly distribution, activity, top-target and evidence reads are batch
+    # consumers; their timings have no invented interactive SLA.
+    report_reads={}
+    with TierSession(s,archive,include_below_floor=True) as reader:
+        helpers=[('report_hourly_counts',lambda:report._hourly_counts(reader,p['labeler'],'2026-09-28T00:00:00Z','2026-10-05T00:00:00Z')),
+                 ('report_labeler_activity',lambda:report._labeler_activity(reader,p['labeler'],'2026-09-28T00:00:00Z','2026-10-05T00:00:00Z')),
+                 ('report_top_targets',lambda:report._top_targets(reader,p['labeler'],'2026-09-28T00:00:00Z','2026-10-05T00:00:00Z'))]
+        for name,fn in helpers:
+            times=[];previous=None
+            for i in range(7):
+                start=time.perf_counter();answer=fn();times.append(time.perf_counter()-start)
+                if name!='report_top_targets' and previous is not None:assert answer==previous
+                previous=answer
+            report_reads[name]={'p50_seconds':statistics.median(times),'p95_seconds':max(times),'observations':7,'result_count':len(answer) if isinstance(answer,list) else answer,'actual_helper':True}
+        evidence=report._alert_events(reader,[rows[0][9]])
+        assert len(evidence)==1 and evidence[0]['event_hash']==rows[0][9]
+        report_reads['report_alert_events_cross_tier']={'result':'PASS','hot_event_found':True}
+    atomic(occurrence/'RESULT.json',{'result':'PASS','source_primary_result_sha256':sha(primary/'RESULT.json'),'source_archive_receipt_sha256':sha(archive/'2026-09-28.receipt.json'),'events_queried':count,'hot_added':100,'dense_events':dense_count,'frontdoor':measures,'report_groups':len(report),'actual_report_reads':report_reads,'no_duckdb_synchronous_ingest':True,'scope':'Complete current-scale retired Parquet plus active SQLite. Restored global state is query-only, not a collector cutover; synthetic floor unchanged in production. Frontdoor keeps existing cold-history and density behavior.'})
 
 
 if __name__=='__main__':
