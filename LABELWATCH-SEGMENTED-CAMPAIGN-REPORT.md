@@ -72,7 +72,7 @@ pre-expiry state stay in private custody. Qualified exact source worktree and
 corpus have explicit independent-review/replay dependencies. Exact-object classification and initial closeout census identify approximately
 9.39 GB runtime plus16.1 MB evidence locally,8.54 MB lane worktree, and4.06 GB
 allocated on NFS (physical allocation differs from apparent file length).
-Payload lifecycle reclaimed11,113,271,296bytes; administrative cleanup reclaimed0.
+Payload lifecycle reclaimed11,113,271,296 bytes; administrative cleanup reclaimed0.
 The failed535,146,496byte partial is exactly a prefix of the verified full
 checkpoint and DISPOSABLE_STAGING, with the failed receipt retained. It stays
 because this lane explicitly forbids destructive cleanup. Remaining qualified
@@ -99,3 +99,28 @@ above; immediate retention/API recovery and Monitor#18 remain independent.
 No alternative database was added, no duplicate issue was created, and no merge
 into main or production deployment occurred. The qualified G source lineage is
 preserved in the published lane history without changing its final source bytes.
+
+
+## Final custody measurements and board change
+
+Final closeout classified 36 campaign objects and checked 21 dispatched producer/reviewer
+units: all have MainPID 0 or never launched. Runtime allocation 9,644,240,896 bytes;
+NFS allocated 4,062,313,472bytes, distinguished from apparent lengths and shared
+server compression. Final free bytes: root 84,271,206,400; /data 785,551,368,192;
+archive 35,269,241,733,120. Free blocks/inodes and exact objects are timestamped in
+private STORAGE-CLOSEOUT.json. Both independent 60 GiB host reserves remain intact.
+New retained plus known retired source is only a lower bound on bytes created;
+cumulative transient I/O and other-tenant free-space changes are not attributed.
+No admin cleanup/branch/worktree deletion occurred; no new VM/container/compiler
+cache or SSH identity was created. The 535 MB partial is classified disposable,
+not evidence custody, and remains under the lane's no-destructive-cleanup rule.
+
+Existing #7 title/body now describe segmented adoption gates, preserving the prior
+engine comparison as historical details. Project changed In Progress → Qualification,
+Exploratory → Candidate; Qualification work type and Next priority retained. Gate text
+names precisely the three missing envelopes. Readback verified actual fields;
+comment: https://github.com/unpingable/atproto-labelwatch/issues/7#issuecomment-6002764741.
+No issue closed and no duplicate created. The independent cold-storage-transition
+obligation remains undischarged; incident #6 / API #1 / Monitor #18 are unaffected.
+Canonical private ATPROTO-RESUME.md points here and preserves previous bytes/hash.
+It is outside a component Git repository; no unrelated civild commit is made.
