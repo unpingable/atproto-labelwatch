@@ -120,3 +120,12 @@ report/derive activation, destructive cleanup and new engine comparison: **NONE*
 [full horizon evidence](LABELWATCH-SEGMENTED-HORIZON-QUALIFICATION.md) are the
 operator-readable artifacts. Private checkpoint is the exact supervision/custody
 resume pointer; GitHub Project remains authoritative for execution.
+
+## Measured closeout sample
+
+Distinct-inode retained allocation across new runtime/evidence/source: 73396224 bytes.
+Known isolated qualification source disposition: 34562048 bytes; administrative cleanup0.
+Final-sample free bytes: `/` 84230651904, `/data` 785472679936.
+Final free inodes: `/` 54966041, `/data` 120718891.
+Subsequent terminal/board/resume receipt metadata adds small bytes; no further large allocation.
+The exact final terminal sample is in private TERMINAL-CAMPAIGN-REPORT.json.
