@@ -53,8 +53,15 @@ remain separately identified. No fixes are production repairs.
 
 ## Acceptance and terminal disposition
 
-Independent review is required after the producer seal. Final decision and
-acceptance identity will be recorded in LABELWATCH-SEGMENTED-DECISION.md.
+Independent review completed. Terminal decision:
+**NO_DECISION — SPECIFIC EVIDENCE MISSING**. Original acceptance27ee66da
+reproduced silent historical omission and rejected source29f3f76. Corrected
+sourcef0161ecc44e38985e390211e0e3882f5cbb0e232 independently passes in record
+17b2ab45; adoption remains unaccepted for complete40+7dayglobal-state capacity,
+full40daycurrent-volumequeries and required-historycatalog admission. Exact
+acceptance hashes and prerequisites are in [decision](LABELWATCH-SEGMENTED-DECISION.md).
+Producer f2e430a4 passes the added coverage commit-cut/missing/corrupt-object
+cases plus full finite/guard/schema regression. No engine reopening.
 The one-week results do not prove full40+7day global-state capacity; no deployment
 budget, arbitrary schema compatibility or physical power-loss proof is claimed.
 
@@ -62,9 +69,16 @@ budget, arbitrary schema compatibility or physical power-loss proof is claimed.
 
 Unique receipts, logs, raw private samples, provenance, source identities and
 pre-expiry state stay in private custody. Qualified exact source worktree and
-corpus have explicit independent-review/replay dependencies. Final exact-object
-classification, allocated bytes, cleanup receipts and free blocks/inodes are
-recorded separately in the private closeout. No other tenant's artifacts or
+corpus have explicit independent-review/replay dependencies. Exact-object classification and initial closeout census identify approximately
+9.39GB runtime plus16.1MB evidence locally,8.54MB lane worktree, and4.06GB
+allocated on NFS (physical allocation differs from apparent file length).
+Payload lifecycle reclaimed11,113,271,296bytes; administrative cleanup reclaimed0.
+The failed535,146,496byte partial is exactly a prefix of the verified full
+checkpoint and DISPOSABLE_STAGING, with the failed receipt retained. It stays
+because this lane explicitly forbids destructive cleanup. Remaining qualified
+corpora/source/fixtures have named #7acceptance/horizon replay dependencies and
+October12disposition review; review is not automatic deletion authority.
+Final measurements are in STORAGE-CLOSEOUT.json and the artifact ledger. No other tenant's artifacts or
 source worktree are cleanup targets. No SSH key/agent was generated/enrolled;
 no unrelated identities were enumerated or modified.
 
@@ -72,3 +86,16 @@ GitHub execution owner remains existing Labelwatch #7 in private ATProto Project
 #2. No duplicate architecture issue. Canonical private resume points outward to
 this lane and preserves prior reports as historical evidence. Source repository
 owns prototype/release claims; Project owns sequencing; Cartography owns mapping.
+
+
+## Follow-on and tracking
+
+Existing#7stays OPEN, Qualification / Qualification / Candidate / Next. Old engine
+comparison title/status is superseded by explicit segmented adoption gates;
+previous issue text is archived in a historical details block. Project remains
+canonical for sequencing. The exact successor is
+`lane/labelwatch-segmented-horizon-capacity-20261005` with the three evidence gates
+above; immediate retention/API recovery and Monitor#18 remain independent.
+No alternative database was added, no duplicate issue was created, and no merge
+into main or production deployment occurred. The qualified Gsource lineage is
+preserved in the published lane history without changing its final source bytes.
