@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from functools import lru_cache
 from pathlib import Path
 from . import db, retention
 from .utils import stable_json, format_ts, now_utc
@@ -80,11 +81,22 @@ def index_path(receipt):
     return Path(receipt['archive_root']) / receipt['identity_index']['file']
 
 
+def fingerprint(path):
+    st = Path(path).stat()
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
+@lru_cache(maxsize=256)
+def _admit_index(path, expected, stamp):
+    # Same immutable fingerprint admission pattern as the existing cold catalog.
+    # Not a bit-rot or concurrent nonconforming-writer guarantee.
+    if file_sha(path) != expected or fingerprint(path) != stamp:
+        raise Refused('labelwatch.custody.indeterminate: archive identity index unavailable/corrupt')
+
+
 def verify_index(receipt):
     path = index_path(receipt)
-    if file_sha(path) != receipt['identity_index']['sha256']:
-        raise Refused('labelwatch.custody.indeterminate: archive identity index unavailable/corrupt')
-    # Metadata and count were checked against the source at custody transfer.
+    _admit_index(str(path), receipt['identity_index']['sha256'], fingerprint(path))
     return path
 
 
@@ -101,7 +113,7 @@ def lookup(conn, row):
         finally: c.close()
         if result:
             if result[1] != payload_digest(row): raise Refused('archived record identity content conflict')
-            if answer is not None and answer != result[0]: raise Refused('conflicting historical acceptance identity')
+            if answer is not None: raise Refused('multiple committed custody owners for one record identity')
             answer = result[0]
     return answer
 
@@ -120,7 +132,10 @@ def stage(conn, rows, owner, death=None):
         floor = retention.live_floor(conn)
         if floor and row[8] < floor:
             raise Refused('labelwatch.replay.identity_unavailable: unaccepted below-floor record; cursor preserved')
-        db.insert_label_events(conn, [row])
+        if conn.execute('SELECT 1 FROM custody_archives WHERE identity=?', (owner,)).fetchone():
+            raise Refused('sealed custody owner cannot accept a new event; advance active owner explicitly')
+        if db.insert_label_events(conn, [row]) != 1:
+            raise Refused('payload exists without its required acceptance identity; reconciliation required')
         event_id = conn.execute('SELECT id FROM label_events WHERE event_hash=?', (row[9],)).fetchone()[0]
         if death: death('after_effect_before_identity')
         conn.execute('INSERT INTO q_hot_keys VALUES (?,?,?,?,?)', (row[9], format_ts(now_utc()), event_id, owner, payload_digest(row)))
@@ -129,10 +144,11 @@ def stage(conn, rows, owner, death=None):
     return accepted, duplicates
 
 
-def accept(conn, rows, source, cursor, owner='single-file', death=None):
+def accept(conn, rows, source, cursor, owner=None, death=None):
     """Actual single-file event insert/cursor path, opt-in only."""
     conn.execute('PRAGMA synchronous=FULL')
     conn.execute('BEGIN IMMEDIATE')
+    owner = owner or db.get_meta(conn, 'custody:active_owner') or 'single-file'
     try:
         fresh, duplicates = stage(conn, rows, owner, death)
         from .ingest import _track_observed_src
@@ -184,12 +200,18 @@ def build_index(source, destination, owner):
 
 def commit_archive(conn, receipt_path, receipt, death=None):
     """Commit owner/index binding; receipt projection must be published afterward."""
+    previous = conn.execute('SELECT receipt_json FROM custody_archives WHERE identity=?', (receipt['identity'],)).fetchone()
     path = verify_index(receipt)
     idx = sqlite3.connect(f'file:{path}?mode=ro&immutable=1', uri=True)
     try:
         count = idx.execute('SELECT COUNT(*) FROM identities').fetchone()[0]
         if count != receipt['content']['rows'] or count != receipt['identity_index']['rows']:
             raise Refused('archive identity coverage count mismatch')
+        if not previous:
+            for key, event_id, payload in idx.execute('SELECT event_hash,event_id,payload_sha256 FROM identities'):
+                binding = conn.execute('SELECT event_id,segment,payload_sha256 FROM q_hot_keys WHERE event_hash=?', (key,)).fetchone()
+                if binding is None or tuple(binding) != (event_id, receipt['identity'], payload):
+                    raise Refused('archive source includes an identity not exclusively owned by this custody object')
         for key, event_id, payload in conn.execute('SELECT event_hash,event_id,payload_sha256 FROM q_hot_keys WHERE segment=?', (receipt['identity'],)):
             if idx.execute('SELECT event_id,payload_sha256 FROM identities WHERE event_hash=?', (key,)).fetchone() != (event_id, payload):
                 raise Refused('archive identity coverage incomplete')
@@ -229,7 +251,7 @@ def replay(conn, rows, mode='verification', expected_checkpoint=None):
 
 def checkpoint(conn):
     return {'lineage': db.get_meta(conn, 'custody:lineage'), 'generation': db.get_meta(conn, 'custody:generation'),
-            'archives': [(owner, hashlib.sha256(stable_json(receipt).encode()).hexdigest()) for owner, _, receipt in committed(conn)],
+            'archives': [[owner, hashlib.sha256(stable_json(receipt).encode()).hexdigest()] for owner, _, receipt in committed(conn)],
             'cursors': dict(conn.execute("SELECT key,value FROM meta WHERE key LIKE 'ingest_cursor:%' ORDER BY key"))}
 
 
@@ -239,8 +261,16 @@ def validate_resume(conn, expected):
 
 
 def receipt(conn, rows, path, publisher, death=None):
-    ids = replay(conn, rows, 'verification')
+    if conn.in_transaction:
+        raise Refused('success publication requires committed acceptance outside the staging transaction')
+    ids = sorted(set(replay(conn, rows, 'verification')))
+    value = {'lineage': db.get_meta(conn, 'custody:lineage'), 'accepted_ids': ids, 'status': 'ACCEPTED_ONCE'}
+    path = Path(path)
+    if path.exists():
+        if json.loads(path.read_text()) != value:
+            raise Refused('receipt identity conflict; previous publication preserved')
+        return ids
     if death: death('before_receipt')
-    publisher(path, {'lineage': db.get_meta(conn, 'custody:lineage'), 'accepted_ids': ids, 'status': 'ACCEPTED_ONCE'})
+    publisher(path, value)
     if death: death('after_receipt_before_ack')
     return ids

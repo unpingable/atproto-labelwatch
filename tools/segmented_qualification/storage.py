@@ -377,8 +377,12 @@ class Store:
                 self.recover(c)
                 record = c.execute('SELECT status FROM q_segments WHERE identity=?', (identity,)).fetchone()
                 if not record or record[0] not in ('ARCHIVED', 'RETIRED'): raise RuntimeError('unverified retirement refused')
-                receipt_path = c.execute('SELECT receipt FROM q_archive WHERE identity=?', (identity,)).fetchone()[0]
-                receipt = json.loads(Path(receipt_path).read_text()); dest = Path(receipt['archive_root']) / (identity + '.parquet')
+                authority = {owner:(path, body) for owner,path,body in custody.committed(c)}
+                if identity not in authority: raise RuntimeError('retirement requires committed custody authority')
+                receipt_path, receipt = authority[identity]
+                if json.loads(Path(receipt_path).read_text()) != receipt: raise RuntimeError('retirement receipt projection conflict')
+                custody.verify_index(receipt)
+                dest = Path(receipt['archive_root']) / (identity + '.parquet')
                 if sha(dest) != receipt['parquet_sha256']: raise RuntimeError('archive corrupted; source preserved')
                 source = self.root / (identity + '.sqlite')
                 if injected == 'retirement_failed': raise OSError('retirement blocked')

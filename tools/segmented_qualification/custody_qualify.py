@@ -90,7 +90,8 @@ def qualify(base):
     receipt,manifest=single_archive(c,base/'single');c.execute('DELETE FROM label_events');assert custody.expire_owner(c,'single-file')==2;c.commit()
     assert ingest.ingest_from_iter(c,[a,raw(2)])==0
     assert c.execute('SELECT COUNT(*) FROM quarantined_events').fetchone()[0]==0
-    cp=custody.checkpoint(c);assert custody.replay(c,[row(a)],'recovery',cp)==[1]
+    cp=json.loads(json.dumps(custody.checkpoint(c)));assert custody.replay(c,[row(a)],'recovery',cp)==[1]
+    record('serialized-authoritative-checkpoint','VALIDATED','VALIDATED',checkpoint_roundtrip=True)
     assert custody.replay(c,[row(a)]*2)==[1,1]
     restored=base/'single'/'restored-history.sqlite';reconstruct(manifest,restored)
     r=connect(restored)
@@ -99,6 +100,7 @@ def qualify(base):
     else:result='UNSAFE_ENROLLMENT'
     record('history-only-restore-inactive','REFUSED',result,restore_rows=r.execute('SELECT COUNT(*) FROM label_events').fetchone()[0]);r.close()
     backup=base/'single'/'complete-backup.sqlite';bconn=sqlite3.connect(backup);c.backup(bconn);bconn.close()
+    db.set_meta(c,'custody:active_owner','next-single-owner');c.commit()
     ingest.ingest_from_iter(c,[raw(3)]);latest=custody.checkpoint(c);bconn=connect(backup)
     try:custody.validate_resume(bconn,latest)
     except custody.Refused:result='REFUSED'
@@ -106,6 +108,40 @@ def qualify(base):
     record('stale-complete-backup','REFUSED',result,authoritative_checkpoint=latest);bconn.close()
     c.close()
     record('single-file-archive-identity-transfer','ACCEPTED_ONCE','ACCEPTED_ONCE',retired_keys=2,duplicate_archive_replay=0,quarantine_delta=0)
+    # Permanent regressions discovered by independent review of the first repair.
+    p=base/'uncommitted-publication';c=new_single(p);rs=[event()];c.execute('BEGIN IMMEDIATE');custody.stage(c,rs,'single-file')
+    try:custody.receipt(c,rs,p/'MUST_NOT_EXIST.json',atomic)
+    except custody.Refused:result='REFUSED'
+    else:result='UNCOMMITTED_SUCCESS'
+    c.rollback();assert not (p/'MUST_NOT_EXIST.json').exists();assert c.execute('SELECT COUNT(*) FROM label_events').fetchone()[0]==0;c.close()
+    record('success-before-acceptance-commit','REFUSED',result,external_receipt=False,accepted_after_rollback=0)
+    p=base/'overlap';c=new_single(p);custody.accept(c,[event()],'source','1',owner='A');dest=p/'archive';dest.mkdir()
+    idx=custody.build_index(c,dest/'A.identities.sqlite','A');ra={'identity':'A','archive_root':str(dest),'content':{'rows':1},'identity_index':idx}
+    c.execute('BEGIN IMMEDIATE');custody.commit_archive(c,dest/'A.receipt.json',ra);c.commit();atomic(dest/'A.receipt.json',ra)
+    custody.accept(c,[event(2)],'source','2',owner='B');idx=custody.build_index(c,dest/'B.identities.sqlite','B');rb={'identity':'B','archive_root':str(dest),'content':{'rows':2},'identity_index':idx}
+    c.execute('BEGIN IMMEDIATE')
+    try:custody.commit_archive(c,dest/'B.receipt.json',rb)
+    except custody.Refused:result='REFUSED';c.rollback()
+    else:result='OVERLAPPING_COMMIT';c.commit()
+    assert c.execute('SELECT COUNT(*) FROM custody_archives').fetchone()[0]==1
+    try:custody.accept(c,[event(3)],'source','3',owner='A')
+    except custody.Refused:reuse='REFUSED'
+    else:reuse='REOPENED_OWNER'
+    record('overlapping-archive-ownership','REFUSED',result,committed_owners=1,sealed_owner_reuse=reuse);assert reuse=='REFUSED'
+    cp=json.loads(json.dumps(custody.checkpoint(c)));custody.validate_resume(c,cp)
+    assert custody.receipt(c,[event(),event()],p/'once.json',atomic)==[1]
+    original=(p/'once.json').read_bytes()
+    try:custody.receipt(c,[event(2)],p/'once.json',atomic)
+    except custody.Refused:result='REFUSED'
+    else:result='OVERWROTE_RECEIPT'
+    assert (p/'once.json').read_bytes()==original
+    record('receipt-conflict-and-unique-ids','REFUSED',result,first_receipt_ids=[1],original_preserved=True)
+    # Schema generation change leaves record/custody identity intact.
+    before=globals_digest(c);c.execute('ALTER TABLE label_events ADD COLUMN optional_projection TEXT');c.commit()
+    assert custody.replay(c,[event()])==[1];after=globals_digest(c)
+    assert before['q_hot_keys']==after['q_hot_keys'];assert before['quarantined_events']==after['quarantined_events'];c.close()
+    record('replay-after-additive-schema-change','ACCEPTED_ONCE','ACCEPTED_ONCE',identity_and_quarantine_delta='NONE')
+
     # Crash acceptance on both layout paths; rollback plus retry must preserve one effect.
     for layout in ('single','segmented'):
         for phase in ('after_effect_before_identity','before_global_commit','after_global_commit'):
