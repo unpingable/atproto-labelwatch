@@ -67,3 +67,12 @@ library with NORMAL synchronization and repeats PostgreSQL ingest with every
 live event-index shape. It requires the primary occurrence's terminal PASS
 and exact stopped fixture cluster identity; its own source/run/paths must be
 dispatched before use. It preserves the primary occurrence's original receipts.
+
+
+`sample_ingest.py /exact/new-owned-occurrence` supplies the final matched
+180k insert comparison. `supplement.py --resume-pretrim ORIGINAL_OCCURRENCE`
+was used only after the failed supplement's source, unchanged floor, complete
+export and no-pending-trim facts were reconciled. Exact recorded commands are
+in immutable DISPATCH JSON and CHECKPOINT; do not infer resume authorization
+from directory existence. Source identities differ by occurrence and are listed
+in CAMPAIGN-REPORT.md. Read the decision gates before interpreting timings.
