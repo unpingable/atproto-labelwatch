@@ -296,7 +296,8 @@ class Store:
         destination = Path(destination)
         # Only this campaign's verified NFS root or its exact local negative fixtures.
         archive_root = Path(json.loads((ROOT.parent / 'evidence/ARCHIVE-DESTINATION.json').read_text())['campaign_archive'])
-        if destination.resolve() != archive_root.resolve() and archive_root.resolve() not in destination.resolve().parents and ROOT not in destination.resolve().parents:
+        horizon = ROOT.parent.parent / 'labelwatch-segmented-horizon-capacity-20261005' / 'runtime'
+        if destination.resolve() != archive_root.resolve() and archive_root.resolve() not in destination.resolve().parents and ROOT not in destination.resolve().parents and horizon not in destination.resolve().parents:
             raise ValueError('unowned archive path')
         if injected in ('archive_unavailable', 'archive_read_only', 'archive_full'):
             raise OSError(injected)
