@@ -59,7 +59,13 @@ No architecture adoption or production enrollment is implied. Before deployment,
 legacy identity/enrollment must be proven; missing historical canonical fields
 cannot be reconstructed by pretending older ingestion time was source cts.
 
-No artifacts are deleted. Exact qualified and known-bad fixtures/source/scripts,
+No retained evidence is deleted at closeout. Qualification itself retires only
+campaign-owned SQLite vessels after verified archive custody, and replaces
+reproducible incomplete staging through the tested retry protocol. Those normal
+fixture lifecycle operations are not production deletion or evidence cleanup.
+Their source-allocation receipts/retirement markers are enumerated separately
+in QUALIFICATION-RETIREMENT-CLARIFICATION.json; no host-wide free-space claim
+is inferred from them. Exact qualified and known-bad fixtures/source/scripts,
 terminal logs, seals and independent records retain a named #7 replay dependency;
 review 2026-10-12 or successor horizon acceptance, with no automatic deletion.
 Pre-work reserve/admission, final allocated bytes, free blocks/inodes, precise
