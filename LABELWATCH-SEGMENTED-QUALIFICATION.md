@@ -244,8 +244,8 @@ published. Independent acceptance is a separate record, never a producer notice.
 ## Independent coverage counterexample and scoped fix
 
 Independent review of29f3f76 found an actual historical completeness failure after
-local retry-ring pruning: removing the oldest archive pair yielded9of10 accepted
-events without refusal. Successorf0161ec commits expected archive-manifest identity
+local retry-ring pruning: removing the oldest archive pair yielded9 of 10 accepted
+events without refusal. Successor f0161ec commits expected archive-manifest identity
 in stable global state before pruning. Missing expected manifest/receipt/Parquet
 then refuses; publication-before-commit death retains prior authority. This is
 qualified with a separate successor receipt and full finite/schema regression.

@@ -155,7 +155,7 @@ pruning the ninth old local retry record erased its expected-coverage obligation
 If its receipt and Parquet disappeared, a new historical reader returned9 accepted
 events instead of10 without refusal. Original evidence is preserved.
 
-Successorf0161ec retains a compact hot-global coverage path/hash. Before deleting
+Successor f0161ec retains a compact hot-global coverage path/hash. Before deleting
 old local retry rows, it writes an immutable archive-side generation listing
 expected identities and receipt/Parquet hashes; the anchor and local pruning
 commit in one SQLite transaction. Death before commit leaves an unreferenced

@@ -69,14 +69,14 @@ acceptance are reported separately from these finite controls.
 
 ## Independently discovered coverage failure and successor
 
-Original acceptance27ee66da reproduces ten accepted events across nine retired
+Original acceptance 27ee66da reproduces ten accepted events across nine retired
 periods plus active. Prune the oldest local retry record, then remove that old
 receipt/Parquet from the fixture catalog: historical count silently falls10→9.
-The original source29f3f76 is NOT_ACCEPTED_COUNTEREXAMPLE.
+The original source 29f3f76 is NOT_ACCEPTED_COUNTEREXAMPLE.
 
-Successorf0161ec and runf2e430a4 introduce anchored expected historical custody.
+Successor f0161ec and run f2e430a4 introduce anchored expected historical custody.
 Five new cases PASS: death after immutable manifest publication before prune
 commit, missing pruned receipt, missing pruned Parquet, missing manifest and
-corrupted manifest. Retry retains all10 accepted events. Full27finite/10guard
-regression and15schema cases also pass. Independent successor acceptance remains
+corrupted manifest. Retry retains all10 accepted events. Full27 finite/10 guard
+regression and15 schema cases also pass. Independent successor acceptance remains
 a separate record; a producer fix never overwrites the original counterexample.

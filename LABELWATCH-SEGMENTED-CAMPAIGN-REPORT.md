@@ -27,12 +27,12 @@ bounded-query timing limitations explicitly recorded. Incident remains #6.
 | 82434791 | 12M-event scale ingest/archive/query | FAILED_QUERY_OOM; ingest/archive/cursor receipts retained, not rewritten. |
 | 5b6facf4 | Durable capacity sampler | Terminal after primary;7426 samples, initial500k unobserved. |
 | b7ce9425 | Global state, concurrent writers, real90-day sample | PASS_WITH_COUNTEREXAMPLE for insufficient local-only coverage. |
-| 5931697e / 08ddf301 / 5f53b75c / e2c02083 / 4cc9d2b6 | Successive explicit guard qualifications | PASS; latest27finite plus10resource/schema/concurrency/expiry guards. |
+| 5931697e / 08ddf301 / 5f53b75c / e2c02083 / 4cc9d2b6 | Successive explicit guard qualifications | PASS; latest27 finite plus10resource/schema/concurrency/expiry guards. |
 | f1036f6e | Exact report SQL memory controls | PASS_CONTROLS; one-worker configuration retained. |
 | 349c7ce8 | Unique state replication | Resource kill; partial never custody, failure reconciled. |
 | 996f0498 | Invalid copy dispatch | REFUSED before execution; corrected attempt gets new identity. |
 | 4a9bd356 | Bounded streaming state replication | PASS; full source/destination SHA equality and link/mode receipt. |
-| 01e6bd13 | Qualified handoff of original fixture | PASS_CONTINUATION; exact query parity,11.113GB retirement, global/cursor preservation. |
+| 01e6bd13 | Qualified handoff of original fixture | PASS_CONTINUATION; exact query parity,11.113 GB retirement, global/cursor preservation. |
 | 1ecd6b04 / db40d84b | Immutable catalog negative controls | PASS; mutation/replacement/new-entry refusal and explicit readmission. |
 | abb81a17 | Corrected12M replay-key expiry with ingestion | PASS;11,999,880 expired,5,985 new events exact cursor/payload/sequence. |
 | 073fd2bf | Actual frontdoor/report current-scale reads | PASS;12,000,100 cross-tier events; existing10-second budget preserved. |
@@ -54,15 +54,15 @@ remain separately identified. No fixes are production repairs.
 ## Acceptance and terminal disposition
 
 Independent review completed. Terminal decision:
-**NO_DECISION — SPECIFIC EVIDENCE MISSING**. Original acceptance27ee66da
-reproduced silent historical omission and rejected source29f3f76. Corrected
-sourcef0161ecc44e38985e390211e0e3882f5cbb0e232 independently passes in record
-17b2ab45; adoption remains unaccepted for complete40+7dayglobal-state capacity,
-full40daycurrent-volumequeries and required-historycatalog admission. Exact
+**NO_DECISION — SPECIFIC EVIDENCE MISSING**. Original acceptance 27ee66da
+reproduced silent historical omission and rejected source 29f3f76. Corrected
+source f0161ecc44e38985e390211e0e3882f5cbb0e232 independently passes in record
+17b2ab45; adoption remains unaccepted for complete 40+7-day global-state capacity,
+full 40-day current-volume queries and required-history catalog admission. Exact
 acceptance hashes and prerequisites are in [decision](LABELWATCH-SEGMENTED-DECISION.md).
 Producer f2e430a4 passes the added coverage commit-cut/missing/corrupt-object
 cases plus full finite/guard/schema regression. No engine reopening.
-The one-week results do not prove full40+7day global-state capacity; no deployment
+The one-week results do not prove full 40+7day global-state capacity; no deployment
 budget, arbitrary schema compatibility or physical power-loss proof is claimed.
 
 ## Custody / closeout
@@ -70,14 +70,14 @@ budget, arbitrary schema compatibility or physical power-loss proof is claimed.
 Unique receipts, logs, raw private samples, provenance, source identities and
 pre-expiry state stay in private custody. Qualified exact source worktree and
 corpus have explicit independent-review/replay dependencies. Exact-object classification and initial closeout census identify approximately
-9.39GB runtime plus16.1MB evidence locally,8.54MB lane worktree, and4.06GB
+9.39 GB runtime plus16.1 MB evidence locally,8.54 MB lane worktree, and4.06 GB
 allocated on NFS (physical allocation differs from apparent file length).
 Payload lifecycle reclaimed11,113,271,296bytes; administrative cleanup reclaimed0.
 The failed535,146,496byte partial is exactly a prefix of the verified full
 checkpoint and DISPOSABLE_STAGING, with the failed receipt retained. It stays
 because this lane explicitly forbids destructive cleanup. Remaining qualified
-corpora/source/fixtures have named #7acceptance/horizon replay dependencies and
-October12disposition review; review is not automatic deletion authority.
+corpora/source/fixtures have named #7 acceptance/horizon replay dependencies and
+October 12 disposition review; review is not automatic deletion authority.
 Final measurements are in STORAGE-CLOSEOUT.json and the artifact ledger. No other tenant's artifacts or
 source worktree are cleanup targets. No SSH key/agent was generated/enrolled;
 no unrelated identities were enumerated or modified.
@@ -90,12 +90,12 @@ owns prototype/release claims; Project owns sequencing; Cartography owns mapping
 
 ## Follow-on and tracking
 
-Existing#7stays OPEN, Qualification / Qualification / Candidate / Next. Old engine
+Existing #7 stays OPEN, Qualification / Qualification / Candidate / Next. Old engine
 comparison title/status is superseded by explicit segmented adoption gates;
 previous issue text is archived in a historical details block. Project remains
 canonical for sequencing. The exact successor is
 `lane/labelwatch-segmented-horizon-capacity-20261005` with the three evidence gates
 above; immediate retention/API recovery and Monitor#18 remain independent.
 No alternative database was added, no duplicate issue was created, and no merge
-into main or production deployment occurred. The qualified Gsource lineage is
+into main or production deployment occurred. The qualified G source lineage is
 preserved in the published lane history without changing its final source bytes.

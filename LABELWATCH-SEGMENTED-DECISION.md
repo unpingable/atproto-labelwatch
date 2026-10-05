@@ -2,17 +2,17 @@
 
 **NO_DECISION — SPECIFIC EVIDENCE MISSING**
 
-The12M-event candidate earns substantial isolated correctness and performance
+The 12M-event candidate earns substantial isolated correctness and performance
 evidence. It does not yet earn adoption. There is no demonstrated engine property
 that justifies reopening PostgreSQL or another storage-engine comparison.
 
 | Adoption gate | Disposition | Evidence / remaining boundary |
 |---|---|---|
-| State/cursor continuity | Established within isolated adapter | Stable global owner,19tables/412meta-key names, four cursor sources, journal/ID recovery and independent process cuts. Full production collector integration remains future implementation. |
+| State/cursor continuity | Established within isolated adapter | Stable global owner,19 tables/412 meta-key names, four cursor sources, journal/ID recovery and independent process cuts. Full production collector integration remains future implementation. |
 | Archive-only dedupe | Finite semantics pass; capacity incomplete | Hot live-floor hashes; below-floor quarantine, no synchronous DuckDB.47-day keys and future-timestamp/global-state envelope not qualified. |
 | Schema evolution | Finite contract passes | Explicit23–26reader window, actual SQLite changes, NULL/Unicode vectors, older/unknown reader refusal. No arbitrary/perpetual schemas. |
-| Real query behavior | One current-scale week passes; full horizon missing | Actual frontdoor/report helpers on12M+hot, exact SQL parity, existing dense refusal.90-day180k sample proves range semantics only. |
-| Current-scale specimen | Pass |12,000,000accepted events with60,000separate replay offers; measured30ksample shapes, seven live indexes, disclosed synthetic timing/replay controls. |
+| Real query behavior | One current-scale week passes; full horizon missing | Actual frontdoor/report helpers on12M + hot, exact SQL parity, existing dense refusal.90-day 180k sample proves range semantics only. |
+| Current-scale specimen | Pass |12,000,000 accepted events with60,000 separate replay offers; measured30k sample shapes, seven live indexes, disclosed synthetic timing/replay controls. |
 | Local capacity bounded and operable | Not established for production horizon | File/page/queue/WAL/spill caps prove finite refusal; they do not prove40+7days of complete global state or historical catalog fits. |
 | Failure/restart no silent loss | Finite successor passes | Original silent-history omission preserved; anchored expected coverage fixes it. Independent replay/cursor/retirement negatives pass. No physical power-loss claim. |
 | Independent qualification | Finite claims accepted; adoption withheld | Separate reviewer reproduces original failure, falsifies corrected successor and names three remaining evidence gaps. |
@@ -20,19 +20,19 @@ that justifies reopening PostgreSQL or another storage-engine comparison.
 ## Exactly missing evidence, and why
 
 1. **Complete admitted global-state envelope over the existing40-day horizon plus
-   seven-day catch-up.** The12Mweek contains3.221GB of hash/global state with tiny
-   seeded ordinary tables. Projected47-day keys alone require21.63GB at specimen
-   density. Bounded live observations establish only a2.927GB lower bound on
+   seven-day catch-up.** The 12M week contains3.221 GB of hash/global state with tiny
+   seeded ordinary tables. Projected47-day keys alone require21.63 GB at specimen
+   density. Bounded live observations establish only a2.927 GB lower bound on
    non-event tables, excluding many indexes/remaining tables. A complete sanitized
    global-state specimen or current restore/capacity receipt is unavailable in
    retained evidence; two bounded dbstat attempts were incomplete. Unknown
    append/quarantine/derived growth and future timestamp lifetimes prevent a
-   credible worst-case normal-operation bound. A hard8GiBfixture cap demonstrates
+   credible worst-case normal-operation bound. A hard8 GiB fixture cap demonstrates
    refusal, not production operability. No broader production copy, policy change
    or emergency capacity allocation was performed to fill that gap.
-2. **Actual current-volume query behavior across the full40-day live horizon.**
-   Actual product helpers pass on one12Mweek plus hot state. The only retained
-   multi-month distribution is a180kstratified90-day sample; no sanitized
+2. **Actual current-volume query behavior across the full 40-day live horizon.**
+   Actual product helpers pass on one 12M week plus hot state. The only retained
+   multi-month distribution is a180k stratified90-day sample; no sanitized
    current-volume multi-week query specimen/distribution is available. Those
    fixtures cannot establish the10-second frontdoor budget over roughly six to
    seven current-rate weeks, especially sparse lookups, changing density and late
@@ -57,11 +57,11 @@ measured provenance, durable dispatch and independent review, not another guesse
 
 ## Earned results
 
-12Mevents: rollover0.0359s; direct Parquet conversion153.18s; verification372.37s.
-Full verified retirement32.28s, including0.886s source unlink, returns11.113GB.
-Actual sparse frontdoor p95=4.090s; dense refusal p95=1.045s. Corrected paged key
-expiry admits5,985new events with exact cursor/payload/sequence preservation;
-p95five-event ingest probe0.724s. Key expiry still deletes hash rows and creates
+12Mevents: rollover0.0359s; direct Parquet conversion153.18 s; verification372.37 s.
+Full verified retirement32.28 s, including0.886 s source unlink, returns11.113 GB.
+Actual sparse frontdoor p95 = 4.090s; dense refusal p95 = 1.045s. Corrected paged key
+expiry admits5,985 new events with exact cursor/payload/sequence preservation;
+p95 five-event ingest probe0.724s. Key expiry still deletes hash rows and creates
 reusable pages. Payload disposition is O(files); verification is O(bytes).
 
 See [qualification](LABELWATCH-SEGMENTED-QUALIFICATION.md),
@@ -71,16 +71,16 @@ See [qualification](LABELWATCH-SEGMENTED-QUALIFICATION.md),
 
 ## Independent identities
 
-Original source29f3f76dd51cf5973615fcb5bce255f15c31ac31:
+Original source 29f3f76dd51cf5973615fcb5bce255f15c31ac31:
 `ACCEPTANCE-27ee66da-0bb4-4e93-a338-687a281baeff.json`,
 SHA256`bf85c9a623295cfdb325c4c876e7a372b89ac510b93071fd0593f3b71882dc44`:
-NOT_ACCEPTED_COUNTEREXAMPLE. Original158sealed hashes verified; changed live
+NOT_ACCEPTED_COUNTEREXAMPLE. Original 158sealed hashes verified; changed live
 source/doc paths are frozen from exact Git blobs, with a reconciliation receipt.
 
-Corrected sourcef0161ecc44e38985e390211e0e3882f5cbb0e232:
+Corrected source f0161ecc44e38985e390211e0e3882f5cbb0e232:
 `ACCEPTANCE-17b2ab45-7898-4eda-a2a6-6aea1f59518b.json`,
 SHA256`fe4091d20067dfcaaa358ecc6099fed0f181c96d4b3e50dc2840b3cb439494c3`:
-independent finite successor PASS; adoption not accepted. All25successor seal
+independent finite successor PASS; adoption not accepted. All 25 successor seal
 hashes verified. Reviewer is the independently dispatched acceptance owner,
 separate from the producer; full identity/scope/time live in private custody.
 
