@@ -9,7 +9,7 @@ import contextlib,json,sqlite3
 from pathlib import Path
 import duckdb
 import pyarrow as pa
-from storage import Store,ARROW_SCHEMA,FIELDS,COLS,sha,retention,lock,connect,db
+from storage import Store,ARROW_SCHEMA,FIELDS,COLS,sha,retention,lock,connect,db,custody
 from schemas import relation
 
 
@@ -90,9 +90,18 @@ class TierSession:
         try:
             catalog=self.catalog or VerifiedCatalog(self.archive)
             if catalog.archive.resolve()!=self.archive.resolve():raise RuntimeError('catalog namespace mismatch')
+            committed = {owner: (path, receipt) for owner,path,receipt in custody.committed(self.sqlite)}
+            for identity,status in records:
+                if identity in committed and status in ('ACTIVE','SEALED'):
+                    raise RuntimeError('custody/layout ownership inconsistent; query refused')
             for identity,output in catalog.files():
+                if identity not in committed: continue  # Orphan receipt is never authority.
+                path, expected_receipt = committed[identity]
+                if not path.exists() or json.loads(path.read_text()) != expected_receipt:
+                    raise RuntimeError('committed receipt publication incomplete/conflicting')
                 if identity in identities:raise RuntimeError('duplicate catalog identity')
                 identities.add(identity);paths.append(output)
+            if set(committed) != identities: raise RuntimeError('committed archive coverage unavailable')
             for identity,status in records:
                 if status in ('ARCHIVED','RETIRED') and identity not in identities:raise RuntimeError('catalog coverage missing for retired/archived vessel')
             # Local retry-ring pruning never removes expected-history authority.

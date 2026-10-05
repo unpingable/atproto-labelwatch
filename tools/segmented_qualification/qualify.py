@@ -11,7 +11,7 @@ from storage import Store, ROOT, atomic, connect, db, digest, FIELDS, COLS, inge
 
 def event(i=1, timestamp='2026-09-28T12:00:00Z'):
     raw={'src':'did:plc:fixturelabeler','uri':'at://did:plc:fixturesubject/app.bsky.feed.post/'+str(i), 'val':'test', 'ts':timestamp}
-    r=ingest.normalize_label(raw)
+    r=ingest.normalize_label(raw, strict_identity=True)
     return (r.labeler_did,r.src,r.uri,r.cid,r.val,r.neg,r.exp,r.sig,r.ts,r.event_hash,'did:plc:fixturesubject')
 
 

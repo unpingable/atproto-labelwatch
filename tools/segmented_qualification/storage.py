@@ -22,7 +22,7 @@ import pyarrow.parquet as pq
 REPO = Path(__file__).parents[2]
 sys.path.insert(0, str(REPO / 'src'))
 sys.path.insert(0, str(REPO))
-from labelwatch import db, ingest, retention
+from labelwatch import db, ingest, retention, custody
 from tools.label_events_cold_archive import ARROW_SCHEMA
 
 FIELDS = ('id', 'labeler_did', 'src', 'uri', 'cid', 'val', 'neg', 'exp', 'sig', 'ts', 'event_hash', 'target_did')
@@ -34,7 +34,8 @@ RESERVE = 64424509440
 def owned(root):
     root = Path(root).resolve()
     horizon = ROOT.parent.parent / 'labelwatch-segmented-horizon-capacity-20261005' / 'runtime'
-    if ROOT not in root.parents and horizon not in root.parents:
+    repair = ROOT.parent.parent / 'labelwatch-global-lifetime-custody-20261005' / 'runtime'
+    if ROOT not in root.parents and horizon not in root.parents and repair not in root.parents:
         raise ValueError('only new campaign-owned child fixtures are admitted')
     return root
 
@@ -135,12 +136,10 @@ class Store:
         CREATE TABLE q_segments(identity TEXT PRIMARY KEY, status TEXT NOT NULL, schema_generation INTEGER NOT NULL);
         CREATE UNIQUE INDEX q_one_active ON q_segments(status) WHERE status='ACTIVE';
         CREATE TABLE q_pending(id INTEGER PRIMARY KEY, segment TEXT NOT NULL);
-        CREATE TABLE q_hot_keys(event_hash TEXT PRIMARY KEY, ts TEXT NOT NULL, event_id INTEGER NOT NULL, segment TEXT NOT NULL);
-        CREATE INDEX q_hot_keys_ts ON q_hot_keys(ts);
-        CREATE INDEX q_hot_keys_segment ON q_hot_keys(segment);
         CREATE TABLE q_transition(singleton INTEGER PRIMARY KEY CHECK(singleton=1), old TEXT NOT NULL, new TEXT NOT NULL);
         CREATE TABLE q_archive(identity TEXT PRIMARY KEY, receipt TEXT NOT NULL);
         ''')
+        custody.initialize(c, str(root))
         db.set_meta(c, retention.RETENTION_FLOOR_KEY, floor)
         db.set_meta(c, 'q:max_pending', '10000'); db.set_meta(c, 'q:max_local_segments', '2')
         db.set_meta(c, 'q:active', period)
@@ -232,27 +231,19 @@ class Store:
             try:
                 self.recover(c); c.execute('BEGIN IMMEDIATE')
                 identity = db.get_meta(c, 'q:active')
-                fresh = []
-                for row in rows:
-                    # Same below-floor lexical comparison as current ingest.
-                    floor = retention.live_floor(c)
-                    if floor and row[8] < floor:
-                        fresh.append(row); continue
-                    if c.execute('SELECT 1 FROM q_hot_keys WHERE event_hash=?', (row[9],)).fetchone() is None:
-                        fresh.append(row)
-                n = ingest.store_label_events(c, fresh)
-                for row in c.execute('SELECT id,event_hash,ts FROM label_events').fetchall():
-                    c.execute('INSERT OR IGNORE INTO q_hot_keys VALUES (?,?,?,?)', (row[1], row[2], row[0], identity))
-                    c.execute('INSERT OR IGNORE INTO q_pending VALUES (?,?)', (row[0], identity))
+                accepted, duplicate_ids = custody.stage(c, rows, identity, lambda phase: cut(death, phase))
+                for event_id, row in accepted:
+                    c.execute('INSERT INTO q_pending VALUES (?,?)', (event_id, identity))
                 evidence_seen = set()
-                for row in rows:
+                for event_id, row in accepted:
                     db.upsert_labeler(c, row[0], row[8])
                     ingest._track_observed_src(c, row[1] or row[0], row[8], evidence_seen)
+                n = len(accepted)
                 cut(death, 'before_global_commit')
-                db.set_cursor(c, source, cursor)  # Actual runtime helper commits this transaction.
+                db.set_cursor(c, source, cursor)
                 cut(death, 'after_global_commit')
                 self.flush(c, death)
-                return {'inserted': n, 'cursor': db.get_cursor(c, source)}
+                return {'inserted': n, 'cursor': db.get_cursor(c, source), 'accepted_ids': [r[0] for r in accepted], 'duplicate_ids': duplicate_ids}
             finally: c.close()
 
     def rotate(self, period, death=None):
@@ -297,7 +288,8 @@ class Store:
         # Only this campaign's verified NFS root or its exact local negative fixtures.
         archive_root = Path(json.loads((ROOT.parent / 'evidence/ARCHIVE-DESTINATION.json').read_text())['campaign_archive'])
         horizon = ROOT.parent.parent / 'labelwatch-segmented-horizon-capacity-20261005' / 'runtime'
-        if destination.resolve() != archive_root.resolve() and archive_root.resolve() not in destination.resolve().parents and ROOT not in destination.resolve().parents and horizon not in destination.resolve().parents:
+        repair = ROOT.parent.parent / 'labelwatch-global-lifetime-custody-20261005' / 'runtime'
+        if destination.resolve() != archive_root.resolve() and archive_root.resolve() not in destination.resolve().parents and ROOT not in destination.resolve().parents and horizon not in destination.resolve().parents and repair not in destination.resolve().parents:
             raise ValueError('unowned archive path')
         if injected in ('archive_unavailable', 'archive_read_only', 'archive_full'):
             raise OSError(injected)
@@ -338,7 +330,9 @@ class Store:
             os.replace(temp, output); syncdir(destination)
         cut(death, 'after_parquet_before_checkpoint')
         conversion_seconds = time.perf_counter() - started; verify_started = time.perf_counter()
-        expected = digest(sql.execute('SELECT ' + COLS + ' FROM label_events ORDER BY id')); sql.close()
+        expected = digest(sql.execute('SELECT ' + COLS + ' FROM label_events ORDER BY id'))
+        identity_index = custody.build_index(sql, destination / (identity + '.identities.sqlite'), identity)
+        sql.close()
         def parquet_rows():
             pf = pq.ParquetFile(output)
             if pf.schema_arrow.metadata.get(b'labelwatch.schema_generation') != b'23' or not pf.schema_arrow.remove_metadata().equals(ARROW_SCHEMA.remove_metadata()):
@@ -352,15 +346,26 @@ class Store:
         result = {'identity': identity, 'schema_generation': 23, 'source_sha256': source_hash, 'parquet_sha256': sha(output),
                   'content': actual, 'conversion_seconds': conversion_seconds, 'verification_seconds': time.perf_counter() - verify_started,
                   'source_bytes': source.stat().st_size, 'source_allocated_bytes': source.stat().st_blocks * 512, 'parquet_bytes': output.stat().st_size,
-                  'archive_admitted_bytes': need, 'archive_root': str(destination)}
-        if receipt.exists():
-            previous = json.loads(receipt.read_text())
-            for field in ('identity', 'schema_generation', 'source_sha256', 'parquet_sha256', 'content', 'archive_root'):
-                if previous[field] != result[field]: raise RuntimeError('existing receipt provenance mismatch; original evidence preserved')
-            result = previous  # Preserve the original verified occurrence, including timing.
-        else: atomic(receipt, result)
-        c = connect(self.state); c.execute('INSERT OR REPLACE INTO q_archive VALUES (?,?)', (identity, str(receipt)))
-        c.execute("UPDATE q_segments SET status='ARCHIVED' WHERE identity=?", (identity,)); c.commit(); c.close()
+                  'archive_admitted_bytes': need, 'archive_root': str(destination), 'identity_index': identity_index}
+        c = connect(self.state)
+        try:
+            previous = c.execute('SELECT receipt_json FROM custody_archives WHERE identity=?', (identity,)).fetchone()
+            if previous:
+                committed = json.loads(previous[0])
+                for field in ('identity','schema_generation','source_sha256','parquet_sha256','content','archive_root','identity_index'):
+                    if committed[field] != result[field]: raise RuntimeError('committed receipt provenance mismatch')
+                result = committed
+            if receipt.exists() and json.loads(receipt.read_text()) != result:
+                raise RuntimeError('receipt projection conflict; original evidence preserved')
+            c.execute('BEGIN IMMEDIATE')
+            custody.commit_archive(c, receipt, result, lambda phase: cut(death, phase))
+            c.execute('INSERT OR REPLACE INTO q_archive VALUES (?,?)', (identity, str(receipt)))
+            c.execute("UPDATE q_segments SET status='ARCHIVED' WHERE identity=?", (identity,))
+            c.commit()
+            cut(death, 'after_archive_commit_before_receipt')
+            if not receipt.exists(): atomic(receipt, result)
+            cut(death, 'after_receipt_before_ack')
+        finally: c.close()
         cut(death, 'after_checkpoint_before_retirement')
         return result
 
@@ -421,12 +426,13 @@ class Store:
                     self.recover(c)
                     if retention.live_floor(c) != floor:
                         raise RuntimeError('key_expiry_occurrence_superseded; extra keys retained')
-                    result = c.execute('DELETE FROM q_hot_keys WHERE event_hash IN (SELECT event_hash FROM q_hot_keys WHERE ts<? ORDER BY ts LIMIT 10000)', (floor,))
-                    c.commit(); deleted += result.rowcount; cut(death, 'during_key_gc')
+                    owners = [r[0] for r in c.execute("SELECT DISTINCT k.segment FROM q_hot_keys k JOIN q_segments s ON s.identity=k.segment WHERE s.status='RETIRED'")]
+                    removed = sum(custody.expire_owner(c, owner) for owner in owners)
+                    c.commit(); deleted += removed; cut(death, 'during_key_gc')
                     c.execute('PRAGMA wal_checkpoint(PASSIVE)')
                 finally: c.close()
             if observer: observer(deleted)
-            if result.rowcount == 0: break
+            if removed == 0: break
             time.sleep(0)  # Yield after a durable page; no accepted-data effect.
         with lock(self.root):
             c = connect(self.state)
