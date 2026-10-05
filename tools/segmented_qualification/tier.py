@@ -5,12 +5,37 @@ Point queries use the existing hot target index; historical scans are batched.
 One engine handles archival partitions, not application fanout across history.
 """
 from __future__ import annotations
-import json
+import contextlib,json,sqlite3
 from pathlib import Path
 import duckdb
 import pyarrow as pa
-from storage import Store,ARROW_SCHEMA,FIELDS,COLS,sha,retention
+from storage import Store,ARROW_SCHEMA,FIELDS,COLS,sha,retention,lock,connect
 from schemas import relation
+
+
+@contextlib.contextmanager
+def tier_queries(store):
+    # DuckDB Arrow callbacks use a worker thread even with threads=1. A
+    # serialized SQLite build supports this connection handoff; execute waits
+    # for callbacks, and no other thread is given this connection. The same
+    # fenced snapshots/reader lease are established before releasing writer.
+    if sqlite3.threadsafety!=3:raise RuntimeError('serialized SQLite required for Arrow reader handoff')
+    lease=lock(store.root,'reader.lock',shared=True)
+    with lock(store.root):
+        writable=connect(store.state)
+        try:store.recover(writable)
+        finally:writable.close()
+        lease.__enter__()
+        c=sqlite3.connect(f'file:{store.state}?mode=ro',uri=True,check_same_thread=False,timeout=2);c.row_factory=sqlite3.Row
+        c.execute('PRAGMA cache_size=-16384');c.execute('PRAGMA temp_store=FILE')
+        files=c.execute("SELECT identity FROM q_segments WHERE status!='RETIRED' ORDER BY identity").fetchall();pieces=[]
+        for i,(identity,) in enumerate(files):
+            c.execute(f'ATTACH DATABASE ? AS s{i}',(f'file:{store.root/(identity+".sqlite")}?mode=ro',))
+            pieces.append(f'SELECT {COLS} FROM s{i}.label_events')
+        c.execute('CREATE TEMP VIEW label_events AS '+' UNION ALL '.join(pieces));c.execute('PRAGMA query_only=ON');c.execute('BEGIN');c.execute('SELECT 1 FROM main.meta LIMIT 1').fetchone()
+        for i in range(len(files)):c.execute(f'SELECT id FROM s{i}.label_events LIMIT 1').fetchone()
+    try:yield c
+    finally:c.close();lease.__exit__(None,None,None)
 
 
 class Row(dict):
@@ -31,7 +56,7 @@ class TierSession:
     def __init__(self,store,archive,subject=None,include_below_floor=False):
         self.store=store;self.archive=Path(archive);self.subject=subject;self.all_history=include_below_floor
     def __enter__(self):
-        self.lease=self.store.queries();self.sqlite=self.lease.__enter__();self.duck=duckdb.connect()
+        self.lease=tier_queries(self.store);self.sqlite=self.lease.__enter__();self.duck=duckdb.connect()
         self.duck.execute("SET memory_limit='256MB'");self.duck.execute('SET threads=1')
         spill=self.store.root/'query-scratch';spill.mkdir(exist_ok=True);self.duck.execute('SET temp_directory=?',[str(spill)]);self.duck.execute("SET max_temp_directory_size='1GB'")
         records=[tuple(r) for r in self.sqlite.execute("SELECT identity,status FROM q_segments ORDER BY identity")];local=[r for r in records if r[1]!='RETIRED'];self.hot_aliases=['s'+str(i) for i,r in enumerate(local) if r[1] in ('ACTIVE','SEALED')]
