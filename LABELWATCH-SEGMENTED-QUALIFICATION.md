@@ -240,3 +240,16 @@ Primary 82434791, continuation 01e6bd13, corrected expiry abb81a17 and actual ti
 are in the producer evidence seal. Parquet custody and unique pre-expiry global
 checkpoint are on the verified NFS campaign path. No private sample values are
 published. Independent acceptance is a separate record, never a producer notice.
+
+## Independent coverage counterexample and scoped fix
+
+Independent review of29f3f76 found an actual historical completeness failure after
+local retry-ring pruning: removing the oldest archive pair yielded9of10 accepted
+events without refusal. Successorf0161ec commits expected archive-manifest identity
+in stable global state before pruning. Missing expected manifest/receipt/Parquet
+then refuses; publication-before-commit death retains prior authority. This is
+qualified with a separate successor receipt and full finite/schema regression.
+The original158-pointer seal is unchanged; its old source/doc bytes are frozen
+from exact29f3f76 Git blobs in an explicit path-reconciliation record. Original
+acceptance and all counterexamples remain evidence. The final decision names
+independent successor acceptance and all remaining exact gates.

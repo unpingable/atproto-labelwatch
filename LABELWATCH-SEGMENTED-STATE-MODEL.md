@@ -147,3 +147,20 @@ physical power failure, arbitrary concurrent writers or future schema adapters.
 Practical process-cut, concurrent-writer, mutation and finite-schema cases provide
 bounded correspondence. The independent acceptance record names the decision
 owner and any counterexamples; producer completion alone does not accept a claim.
+
+## Historical expected coverage after retry-ring pruning
+
+Independent acceptance found a missing-history counterexample at29f3f76:
+pruning the ninth old local retry record erased its expected-coverage obligation.
+If its receipt and Parquet disappeared, a new historical reader returned9 accepted
+events instead of10 without refusal. Original evidence is preserved.
+
+Successorf0161ec retains a compact hot-global coverage path/hash. Before deleting
+old local retry rows, it writes an immutable archive-side generation listing
+expected identities and receipt/Parquet hashes; the anchor and local pruning
+commit in one SQLite transaction. Death before commit leaves an unreferenced
+generation and the previous expected authority. Required history includes that
+anchored manifest plus unpruned ARCHIVED/RETIRED local records. Missing or changed
+manifest, old receipt or old Parquet causes refusal, never an empty-history answer.
+Archive catalog metadata grows on archive storage; startup/read admission and
+scratch at long horizon remain explicitly unqualified capacity evidence.
