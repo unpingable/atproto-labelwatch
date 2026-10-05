@@ -388,7 +388,8 @@ class Store:
             finally: c.close()
 
     def advance_floor(self, floor, death=None, observer=None):
-        # Qualification clock/floor, not a production retention policy change.
+        # Floor commit is fenced; each retryable expiry page releases the
+        # writer so present ingestion never waits for the whole historical GC.
         retention._validate_floor(floor)
         with lock(self.root):
             c = connect(self.state)
@@ -408,14 +409,29 @@ class Store:
                         older = s.execute('SELECT 1 FROM label_events WHERE ts<? LIMIT 1', (floor,)).fetchone(); s.close()
                         if older: raise RuntimeError('unarchived accepted data below proposed floor')
                 db.set_meta(c, retention.RETENTION_FLOOR_KEY, floor); c.commit(); cut(death, 'after_floor_commit')
-                deleted = 0
-                while True:
-                    self.check_local()  # Refuse another GC page while a reader pins oversized WAL.
+            finally: c.close()
+        deleted = 0
+        while True:
+            with lock(self.root):
+                self.check_local()
+                c = connect(self.state)
+                try:
+                    self.recover(c)
+                    if retention.live_floor(c) != floor:
+                        raise RuntimeError('key_expiry_occurrence_superseded; extra keys retained')
                     result = c.execute('DELETE FROM q_hot_keys WHERE event_hash IN (SELECT event_hash FROM q_hot_keys WHERE ts<? ORDER BY ts LIMIT 10000)', (floor,))
                     c.commit(); deleted += result.rowcount; cut(death, 'during_key_gc')
-                    if observer and deleted % 500000 == 0: observer(deleted)
                     c.execute('PRAGMA wal_checkpoint(PASSIVE)')
-                    if result.rowcount == 0: break
+                finally: c.close()
+            if observer: observer(deleted)
+            if result.rowcount == 0: break
+            time.sleep(0)  # Yield after a durable page; no accepted-data effect.
+        with lock(self.root):
+            c = connect(self.state)
+            try:
+                self.recover(c)
+                if retention.live_floor(c) != floor:
+                    raise RuntimeError('key_expiry_occurrence_superseded; retry custody retained')
                 # Keep only cache-relevant history and a bounded retry ring locally.
                 keep = [r[0] for r in c.execute("SELECT identity FROM q_segments WHERE status='RETIRED' ORDER BY identity DESC LIMIT 8")]
                 retired = [r[0] for r in c.execute("SELECT identity FROM q_segments WHERE status='RETIRED' AND NOT EXISTS(SELECT 1 FROM q_hot_keys WHERE segment=q_segments.identity)")]

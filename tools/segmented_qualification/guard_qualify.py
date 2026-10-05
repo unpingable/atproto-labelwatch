@@ -89,6 +89,15 @@ def main(base):
     c=connect(s.state,readonly=True);remaining=c.execute('SELECT COUNT(*) FROM q_hot_keys').fetchone()[0];assert 0<remaining<20000;assert db.get_meta(c,'retention:live_floor')=='2026-10-05T00:00:00Z';c.close()
     wal_bytes=(s.root/'state.sqlite-wal').stat().st_size;pin.close();s.advance_floor('2026-10-05T00:00:00Z');assert s.snapshot()['keys']==0
     cases.append({'case':'key_expiry_pinned_reader_backpressure','result':'PASS_REFUSAL_AND_RETRY','remaining_on_refusal':remaining,'fixture_wal_budget_bytes':65536,'observed_wal_after_one_bounded_gc_page':wal_bytes,'scope':'Owned small negative-control budget tests the same default 256MiB guard; no production limit changed.'})
+    s=Store.create(base/'gc_interleave')
+    for offset in [0,10000]:s.ingest([event(i+offset) for i in range(10000)],'fixture-provider',str(offset))
+    s.rotate('2026-10-05');dest=base/'gc-interleave-archive';dest.mkdir();s.archive('2026-09-28',dest);s.retire('2026-09-28');between=[]
+    def accepted_between_pages(deleted):
+        if deleted==10000:
+            assert s.ingest([event(999999,'2026-10-05T01:00:00Z')],'fixture-new-provider','1')['inserted']==1
+            between.append(deleted)
+    assert s.advance_floor('2026-10-05T00:00:00Z',observer=accepted_between_pages)==20000;assert between==[10000];assert s.snapshot()['keys']==1
+    cases.append({'case':'ingestion_between_expiry_pages','result':'PASS','events_expired':20000,'new_event_accepted_before_last_expiry_page':True,'new_live_key_preserved':True})
     atomic(base/'RESULT.json',{'result':'PASS','finite_cases':len(finite),'supplement':sup,'guard_cases':cases,'production_mutations':[],'scope':'Page caps are applied to each writer; resource-full accepted journal has explicit <=8MiB fixture recovery, never loss. No production limit changed.'})
 
 
