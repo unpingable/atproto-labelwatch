@@ -1,126 +1,122 @@
-# Labelwatch segmented decision-closure campaign report
+# Labelwatch horizon-capacity terminal campaign report
 
-Lane: `lane/labelwatch-segmented-storage-qualification-20261005`.
-Owner/storage owner: Codex /root. Registry is the private campaign root named in
-[qualification](LABELWATCH-SEGMENTED-QUALIFICATION.md). Root run identity:
-`a5e6e1b8-2276-4c42-a521-3fd43b105c21`.
+Decision: **REJECT_SEGMENTED_SQLITE_PARQUET_DUCKDB**, current state/custody design.
+Existing issue: [Labelwatch #7](https://github.com/unpingable/atproto-labelwatch/issues/7).
+Lane: `lane/labelwatch-segmented-horizon-capacity-20261005`.
+Root run: `3fcdf829-e8d8-4a30-b8d7-400775a92d4e`.
 
-Starting source: `999b349845c6066ee5f839ede34b423761c9be36`.
-Primary scale source: `011a8d646247affe85988c984ee1bbe69cae9773`.
-Continuation source: `84270e50cb204c413d2527ff510d349c07c623df`.
-Final corrected prototype qualified source:
-`31e5b871ef3133746e728288d5b256c59f795419` in an isolated linked worktree.
-Exact qualified core integrated into the lane branch at `321280b`; final document
-revision is recorded by the terminal notice rather than a self-referential SHA.
+## Source and execution custody
 
-Production mutations: **NONE**. No migration, deployment, production retention,
-policy change, incident capacity allocation, reporting/derive activation, new
-engine, production service restart, DNS/TLS change or database write occurred.
-Read-only production observations establish shape/index/state evidence, with
-bounded-query timing limitations explicitly recorded. Incident remains #6.
+- Starting source: `b2b9a416761b6e9daace4c8f4d5beef3ca282f2c`.
+- Final executed/accepted qualification source: `01cb5f610796fefdf5e2a783b626424001ccb559`.
+- Final documentation/publication HEAD is separately recorded exactly in the
+  private terminal receipt, completion notice, existing #7 and canonical resume;
+  no qualification source bytes change after independent acceptance.
+- Source worktree: `/data/git/.worktrees/labelwatch-segmented-horizon-capacity-20261005`.
+- Common repository/canonical tree: `/data/git/atproto-nutrition/labelwatch`;
+  tree HEAD `490b17290e5c3a8c0f2de0f7e4b9741b0ad8a417` stays unchanged.
+- Private registry/custody: `portfolio-private/campaigns/labelwatch-segmented-horizon-capacity-20261005`.
+- Producer `225859f1-ea73-4ad5-9af5-747229cc8ba0`, crow user-systemd,
+  launch invocation `df3c3ab01d26426498f531c0d482391c`.
+  Terminal PASS_COUNTEREXAMPLE_REPRODUCTION, MainPID0/exit0. Final collected
+  invocation/MemoryPeak are unavailable; launch and process RSS receipts remain.
+- Earlier attempt `46fe81f3-2b6b-4b0e-a399-32a97bdcbb56` refused the new fixture
+  archive namespace before any product gate; failed source/terminal preserved.
+- Independent runs `d1246d42`, `e6f08c73`, `4534598a` all terminal success/MainPID0.
+  Independent source edits NONE; separate acceptance hash
+  `08e1b7e410fdc50264abd1022757bc7b8c6214e062af6bc7d57cc4ece065a1ef`.
 
-## Producer chain
+## Evidence obtained and limits
 
-| Run prefix | Purpose | Terminal / important evidence |
-|---|---|---|
-| d072f662 | Finite process cuts and schema vectors | PASS; original misplaced precommit counterexample preserved separately. |
-| 82434791 | 12M-event scale ingest/archive/query | FAILED_QUERY_OOM; ingest/archive/cursor receipts retained, not rewritten. |
-| 5b6facf4 | Durable capacity sampler | Terminal after primary;7426 samples, initial500k unobserved. |
-| b7ce9425 | Global state, concurrent writers, real90-day sample | PASS_WITH_COUNTEREXAMPLE for insufficient local-only coverage. |
-| 5931697e / 08ddf301 / 5f53b75c / e2c02083 / 4cc9d2b6 | Successive explicit guard qualifications | PASS; latest27 finite plus10resource/schema/concurrency/expiry guards. |
-| f1036f6e | Exact report SQL memory controls | PASS_CONTROLS; one-worker configuration retained. |
-| 349c7ce8 | Unique state replication | Resource kill; partial never custody, failure reconciled. |
-| 996f0498 | Invalid copy dispatch | REFUSED before execution; corrected attempt gets new identity. |
-| 4a9bd356 | Bounded streaming state replication | PASS; full source/destination SHA equality and link/mode receipt. |
-| 01e6bd13 | Qualified handoff of original fixture | PASS_CONTINUATION; exact query parity,11.113 GB retirement, global/cursor preservation. |
-| 1ecd6b04 / db40d84b | Immutable catalog negative controls | PASS; mutation/replacement/new-entry refusal and explicit readmission. |
-| abb81a17 | Corrected12M replay-key expiry with ingestion | PASS;11,999,880 expired,5,985 new events exact cursor/payload/sequence. |
-| 073fd2bf | Actual frontdoor/report current-scale reads | PASS;12,000,100 cross-tier events; existing10-second budget preserved. |
+The source reuses the previous Store, generators, catalog, helpers, receipt format
+and qualification machinery. One direct horizon executable adds the necessary
+lifetime/metadata cases. Exact campaign path admission is the only Store change;
+no new adapter, evidence schema, framework, engine or lifecycle repair.
 
-Specimen: deterministic12M expansion of bounded30k private measured samples,
-actualschema23/allseven live event indexes. Real sizes/cardinality/density seed;
-synthetic uniform week, lateness/future/replay controls explicitly labeled.
-Specimen and unique-state hashes, source/environment/protocol identities and
-commands live in immutable dispatch/seal. See [measurements](LABELWATCH-SEGMENTED-QUALIFICATION.md),
-[state model](LABELWATCH-SEGMENTED-STATE-MODEL.md), and
-[failure matrix](LABELWATCH-SEGMENTED-FAILURE-MATRIX.md).
+Producer lifetime fixture:96-days,13closedweeks+oneactive,49,152 accepted events
+before diagnostic substitution,24,576 unique below-floor offers. At day 47:
+24,064 accepted,12,032 future keys,10,240 normal keys,12,032 full quarantine rows,
+12,558,336 global SQLite page bytes. At day 96:24,576 future keys,10,240 normal
+keys,24,576 quarantine rows,22,986,752 global page bytes. One fixed labeler,
+subject and source. Synthetic timestamp controls and low volume are explicit.
 
-Discovered/fixed only inside isolated prototype: actual commit-cut placement;
-local-only missing archived coverage; Arrow thread-affinity; creation-only page
-cap; resource/spill bootstrap; report memory configuration; bounded NFS checkpoint
-copy; whole-expiry writer hold; stale admitted-catalog coverage. Counterexamples
-remain separately identified. No fixes are production repairs.
+Independent ordinary archived replay confirms the lifetime defect without
+requiring future timestamps:384 ordinarily dated accepted events; quarantine
+28→224 across day 47→96, normal keys 160; repeated historical delivery mutates
+seen_count to 2. Future-key removal separately admits duplicate history.
 
-## Acceptance and terminal disposition
+Catalog identities 128/1,024/8,192; metadata fixture uses hard links to one verified
+one-row artifact. At 8,192:receipt metadata 974,967 bytes after admission,
+startup 0.9223s, cached listing p50/p95 0.1541/0.1907s, new admission 0.9643s
+and 8,193 whole-artifact hashes. Peak producer RSS 194,686,976bytes.
+These are metadata/cardinality timings with a shared cacheable inode, not
+historical volume throughput or a full root/archive working-space bound.
+Independent catalog 5→6hashes confirms algorithmic read amplification.
 
-Independent review completed. Terminal decision:
-**NO_DECISION — SPECIFIC EVIDENCE MISSING**. Original acceptance 27ee66da
-reproduced silent historical omission and rejected source 29f3f76. Corrected
-source f0161ecc44e38985e390211e0e3882f5cbb0e232 independently passes in record
-17b2ab45; adoption remains unaccepted for complete 40+7-day global-state capacity,
-full 40-day current-volume queries and required-history catalog admission. Exact
-acceptance hashes and prerequisites are in [decision](LABELWATCH-SEGMENTED-DECISION.md).
-Producer f2e430a4 passes the added coverage commit-cut/missing/corrupt-object
-cases plus full finite/guard/schema regression. No engine reopening.
-The one-week results do not prove full 40+7day global-state capacity; no deployment
-budget, arbitrary schema compatibility or physical power-loss proof is claimed.
+Independent catalog custody substitution returns 2 for one accepted event when
+receipt publication precedes global ARCHIVED commit; explicit retry returns 1.
+This is a real source-order state boundary, tested by equivalent owned SQLite
+state changes; an actual process kill at that exact point is not claimed.
 
-## Custody / closeout
+Permanent missing-history regression:exact original generator bytes execute with
+sealed new modules;10→explicit missing-history refusal→restored10. Original
+static source label is disambiguated by EXECUTION-IDENTITY.json. Prior failing
+specimen/source/golden receipt remain unchanged.
 
-Unique receipts, logs, raw private samples, provenance, source identities and
-pre-expiry state stay in private custody. Qualified exact source worktree and
-corpus have explicit independent-review/replay dependencies. Exact-object classification and initial closeout census identify approximately
-9.39 GB runtime plus16.1 MB evidence locally,8.54 MB lane worktree, and4.06 GB
-allocated on NFS (physical allocation differs from apparent file length).
-Payload lifecycle reclaimed11,113,271,296 bytes; administrative cleanup reclaimed0.
-The failed535,146,496byte partial is exactly a prefix of the verified full
-checkpoint and DISPOSABLE_STAGING, with the failed receipt retained. It stays
-because this lane explicitly forbids destructive cleanup. Remaining qualified
-corpora/source/fixtures have named #7 acceptance/horizon replay dependencies and
-October 12 disposition review; review is not automatic deletion authority.
-Final measurements are in STORAGE-CLOSEOUT.json and the artifact ledger. No other tenant's artifacts or
-source worktree are cleanup targets. No SSH key/agent was generated/enrolled;
-no unrelated identities were enumerated or modified.
+Full47-day current-volume specimen and40-day product query benchmarks: **NOT RUN**
+after independently accepted hard failure. No new hot/dense/full-horizon p50/p95
+or current-volume capacity acceptance is claimed. Previous 12M/36ms/11.11GB and
+one-week query evidence retain their original scope at immutable `b2b9a416`.
 
-GitHub execution owner remains existing Labelwatch #7 in private ATProto Project
-#2. No duplicate architecture issue. Canonical private resume points outward to
-this lane and preserves prior reports as historical evidence. Source repository
-owns prototype/release claims; Project owns sequencing; Cartography owns mapping.
+## Fixes, decisions and follow-on
 
+Fixture namespace admission corrected after the first refused attempt; original
+failure preserved. No storage-semantics fixes performed. Defects are preserved as
+executable counterexamples in the existing private evidence custody.
 
-## Follow-on and tracking
+The exact decision follows the user hard-failure rule. This is not an engine
+impossibility claim or an unexplained NO_DECISION. Current mutable global state
+recreates historical event ownership; catalog discovery can also double-count
+before custody commit. These must be repaired before adoption.
 
-Existing #7 stays OPEN, Qualification / Qualification / Candidate / Next. Old engine
-comparison title/status is superseded by explicit segmented adoption gates;
-previous issue text is archived in a historical details block. Project remains
-canonical for sequencing. The exact successor is
-`lane/labelwatch-segmented-horizon-capacity-20261005` with the three evidence gates
-above; immediate retention/API recovery and Monitor#18 remain independent.
-No alternative database was added, no duplicate issue was created, and no merge
-into main or production deployment occurred. The qualified G source lineage is
-preserved in the published lane history without changing its final source bytes.
+Next scope under #7: `lane/labelwatch-segmented-global-lifetime-repair-20261005`:
+bounded archived replay/quarantine and authored/arrival lifetime contract;
+committed query/custody ownership; incremental catalog admission. Preserve or
+explicitly reapprove current consumer semantics, then qualify the originally
+requested47-day state/40-day query conjunction against those changed boundaries.
+No automatic PostgreSQL campaign; another engine does not inherently fix lifetime.
 
+Existing #7 remains OPEN. Project updates and canonical resume publication are
+recorded with exact responses/hashes in private PROJECT-RECONCILIATION and
+RESUME-RECONCILIATION receipts; final publication pointers are in TERMINAL-CAMPAIGN-REPORT.json.
+Prior NO_DECISION is archived as historical, superseded by concrete hard failure.
 
-## Final custody measurements and board change
+## Storage and authority closeout
 
-Final closeout classified 36 campaign objects and checked 21 dispatched producer/reviewer
-units: all have MainPID 0 or never launched. Runtime allocation 9,644,240,896 bytes;
-NFS allocated 4,062,313,472bytes, distinguished from apparent lengths and shared
-server compression. Final free bytes: root 84,271,206,400; /data 785,551,368,192;
-archive 35,269,241,733,120. Free blocks/inodes and exact objects are timestamped in
-private STORAGE-CLOSEOUT.json. Both independent 60 GiB host reserves remain intact.
-New retained plus known retired source is only a lower bound on bytes created;
-cumulative transient I/O and other-tenant free-space changes are not attributed.
-No admin cleanup/branch/worktree deletion occurred; no new VM/container/compiler
-cache or SSH identity was created. The 535 MB partial is classified disposable,
-not evidence custody, and remains under the lane's no-destructive-cleanup rule.
+Storage owner/key owner: /root. Admission512 MiB new `/data`,256 MiB root;
+independent allocation budget32 MiB. Shared60 GiB free reserve on both `/` and `/data`
+never lowered. First admission is after small directory/worktree creation;
+exact pre-creation host baseline unavailable. Concurrent host-wide changes are
+not attributed to the campaign. No incident cloud/production margin consumed.
 
-Existing #7 title/body now describe segmented adoption gates, preserving the prior
-engine comparison as historical details. Project changed In Progress → Qualification,
-Exploratory → Candidate; Qualification work type and Next priority retained. Gate text
-names precisely the three missing envelopes. Readback verified actual fields;
-comment: https://github.com/unpingable/atproto-labelwatch/issues/7#issuecomment-6002764741.
-No issue closed and no duplicate created. The independent cold-storage-transition
-obligation remains undischarged; incident #6 / API #1 / Monitor #18 are unaffected.
-Canonical private ATPROTO-RESUME.md points here and preserves previous bytes/hash.
-It is outside a component Git repository; no unrelated civild commit is made.
+STORAGE-CLOSEOUT.json records exact per-object distinct-inode allocated bytes,
+final free blocks/inodes, current replay dependencies and review date. Hard-linked
+catalog artifacts share one inode; per-path sums are not filesystem consumption.
+Reproducible fixtures/cache remain retained because destructive cleanup is
+expressly forbidden. Current counterexamples, exact source and receipt identities
+have #7 replay/design dependencies with review by 2026-10-12 or successor acceptance.
+Review is not automatic deletion. Prior campaign tenants/venv/seals untouched.
+
+Known source-file retirement inside isolated lifecycle qualification is separately
+receipted; administrative cleanup deleted NONE / reclaimed 0. No VM, compiler target,
+new package/download cache, new identity, SSH enrollment, agent change, remote
+revocation or production contact. Ambient agent/remote authorization state not
+inspected and no claim made about it.
+
+Production mutations: **NONE**. Deployment/migration/retention-policy changes,
+report/derive activation, destructive cleanup and new engine comparison: **NONE**.
+
+[Decision](LABELWATCH-SEGMENTED-DECISION.md) and
+[full horizon evidence](LABELWATCH-SEGMENTED-HORIZON-QUALIFICATION.md) are the
+operator-readable artifacts. Private checkpoint is the exact supervision/custody
+resume pointer; GitHub Project remains authoritative for execution.

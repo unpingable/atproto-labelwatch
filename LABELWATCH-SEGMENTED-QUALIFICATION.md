@@ -1,5 +1,10 @@
 # Labelwatch segmented decision-closure qualification
 
+> Historical qualification/model at `b2b9a416`, preserved in its original scope.
+> Current candidate is rejected by the [horizon decision](LABELWATCH-SEGMENTED-DECISION.md):
+> mutable historical replay/quarantine lifetime and catalog custody are concrete defects.
+> See [new evidence](LABELWATCH-SEGMENTED-HORIZON-QUALIFICATION.md).
+
 Lane: `lane/labelwatch-segmented-storage-qualification-20261005`.
 Decision and exact immutable receipts: [decision](LABELWATCH-SEGMENTED-DECISION.md),
 [campaign report](LABELWATCH-SEGMENTED-CAMPAIGN-REPORT.md).

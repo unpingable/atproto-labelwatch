@@ -1,5 +1,10 @@
 # Labelwatch segmented failure matrix
 
+> Historical qualification/model at `b2b9a416`, preserved in its original scope.
+> Current candidate is rejected by the [horizon decision](LABELWATCH-SEGMENTED-DECISION.md):
+> mutable historical replay/quarantine lifetime and catalog custody are concrete defects.
+> See [new evidence](LABELWATCH-SEGMENTED-HORIZON-QUALIFICATION.md).
+
 The immutable dispatch/result pointers in the campaign report identify the
 qualified revisions. Process deaths use exit 73 at explicit transition cuts;
 archive unavailable/read-only/full are deterministic local fixtures. No shared

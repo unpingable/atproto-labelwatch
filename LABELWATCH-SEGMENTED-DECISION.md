@@ -1,105 +1,90 @@
 # Labelwatch segmented-storage decision
 
-**NO_DECISION — SPECIFIC EVIDENCE MISSING**
+**REJECT_SEGMENTED_SQLITE_PARQUET_DUCKDB**
 
-The 12M-event candidate earns substantial isolated correctness and performance
-evidence. It does not yet earn adoption. There is no demonstrated engine property
-that justifies reopening PostgreSQL or another storage-engine comparison.
+This rejects the **current candidate's global-state lifetime and catalog custody
+boundaries**. It does not reject SQLite as an engine, prove that every segmented
+architecture fails, or automatically recommend PostgreSQL. The candidate fails
+the user's explicit hard gate: correctness-required mutable global state grows
+with historical event count after payload retirement.
 
-| Adoption gate | Disposition | Evidence / remaining boundary |
+| Gate | Disposition | Evidence |
 |---|---|---|
-| State/cursor continuity | Established within isolated adapter | Stable global owner,19 tables/412 meta-key names, four cursor sources, journal/ID recovery and independent process cuts. Full production collector integration remains future implementation. |
-| Archive-only dedupe | Finite semantics pass; capacity incomplete | Hot live-floor hashes; below-floor quarantine, no synchronous DuckDB.47-day keys and future-timestamp/global-state envelope not qualified. |
-| Schema evolution | Finite contract passes | Explicit23–26reader window, actual SQLite changes, NULL/Unicode vectors, older/unknown reader refusal. No arbitrary/perpetual schemas. |
-| Real query behavior | One current-scale week passes; full horizon missing | Actual frontdoor/report helpers on12M + hot, exact SQL parity, existing dense refusal.90-day 180k sample proves range semantics only. |
-| Current-scale specimen | Pass |12,000,000 accepted events with60,000 separate replay offers; measured30k sample shapes, seven live indexes, disclosed synthetic timing/replay controls. |
-| Local capacity bounded and operable | Not established for production horizon | File/page/queue/WAL/spill caps prove finite refusal; they do not prove40+7days of complete global state or historical catalog fits. |
-| Failure/restart no silent loss | Finite successor passes | Original silent-history omission preserved; anchored expected coverage fixes it. Independent replay/cursor/retirement negatives pass. No physical power-loss claim. |
-| Independent qualification | Finite claims accepted; adoption withheld | Separate reviewer reproduces original failure, falsifies corrected successor and names three remaining evidence gaps. |
+| 40+7-day global-state bound | FAIL: concrete lifetime defect | Ordinary accepted/archived replay creates full mutable per-hash quarantine state indefinitely. Authored-future dedupe keys also outlive the arrival window; dropping one admits duplicate history. |
+| Current-volume full 40-day queries | NOT RUN after hard failure | No new capacity/latency/completeness claim. Prior 12M one-week evidence remains valid in its original scope. |
+| Long-history catalog admission | FAIL: custody defect; linear read amplification measured | Receipt discovery before global custody commit counts one event twice. New-segment admission rebuilds and hashes all historical artifacts. Tiny-file timing alone is not a product latency rejection. |
+| Original missing-history regression | PASS | Exact unchanged failing generator now returns 10, explicitly refuses missing required history, and returns 10 after restoration. |
+| Independent acceptance | Hard-failure evidence accepted; adoption rejected | Separate reviewer reproduces ordinary archived replay, future-key substitution and receipt-before-commit duplication; all17 producer-seal hashes match. |
 
-## Exactly missing evidence, and why
+## Precise forcing properties
 
-1. **Complete admitted global-state envelope over the existing40-day horizon plus
-   seven-day catch-up.** The 12M week contains3.221 GB of hash/global state with tiny
-   seeded ordinary tables. Projected47-day keys alone require21.63 GB at specimen
-   density. Bounded live observations establish only a2.927 GB lower bound on
-   non-event tables, excluding many indexes/remaining tables. A complete sanitized
-   global-state specimen or current restore/capacity receipt is unavailable in
-   retained evidence; two bounded dbstat attempts were incomplete. Unknown
-   append/quarantine/derived growth and future timestamp lifetimes prevent a
-   credible worst-case normal-operation bound. A hard8 GiB fixture cap demonstrates
-   refusal, not production operability. No broader production copy, policy change
-   or emergency capacity allocation was performed to fill that gap.
-2. **Actual current-volume query behavior across the full 40-day live horizon.**
-   Actual product helpers pass on one 12M week plus hot state. The only retained
-   multi-month distribution is a180k stratified90-day sample; no sanitized
-   current-volume multi-week query specimen/distribution is available. Those
-   fixtures cannot establish the10-second frontdoor budget over roughly six to
-   seven current-rate weeks, especially sparse lookups, changing density and late
-   event placement. Repeating identical weekly files would not establish the
-   missing cross-period distribution/identity behavior. This is not a measured
-   performance rejection.
-3. **Expected-history catalog admission bound at the required historical span.**
-   Independent review found10→9silent historical omission after local retry-ring
-   pruning. The fix anchors immutable expected identity/receipt/Parquet custody
-   in stable global state and passes missing/corrupt-object and commit-cut tests.
-   Only nine closed periods exercise the full pruning contract. Startup
-   checksums, manifest admission and reader-memory/scratch behavior at the actual
-   required long-history cardinality remain unavailable; the legacy cold consumer
-   still has required coverage. No claim that catalog costs are independent of
-   historical lifetime is earned by the small fixture.
+1. `quarantined_events` is hot-global full historical event storage with exact
+   per-hash mutable delivery counts/metadata. Its current subject-completeness
+   and operator-count consumers are live source paths. An ordinary cursor replay
+   after archive/floor advancement rebuilds historical events in that global
+   store. No existing quarantine retirement rule bounds it. Independent96-day
+   fixture keeps normal hot keys at160 while quarantine grows28 at day47 to224
+   at day96; repeat delivery updates seen_count to 2. Fixed identity cardinality
+   rules out growth caused merely by new labelers or sources.
+2. `q_hot_keys` expires by authored `ts`, with no maximum future-skew admission.
+   It therefore cannot be bounded by an arrival-based40+7-day vessel window.
+   Deleting a retired event's still-required key admits its exact replay,
+   producing two hot+archive copies. This is a supported finite timestamp
+   counterexample, not a claimed production frequency or literal infinite life.
+3. A verified receipt is published before global ARCHIVED commit. In that
+   durable intermediate state, TierSession includes both SEALED local rows and
+   receipt-discovered Parquet, returning two copies of one accepted event.
+   Independent qualification uses an exact owned-state substitution matching
+   source order; it does not claim an injected process death at that boundary.
 
-These are identifiable missing specimen/operational envelopes, not permission to
-resume general research. Completing the candidate's finite tests is not a
-substitute for them. Any producer filling the gaps needs aggregate admission,
-measured provenance, durable dispatch and independent review, not another guessed
-32GiBgate or temporary filesystem.
+A global page ceiling eventually refuses ingestion; that is not an operable
+lifetime bound. Raising the ceiling or moving the same mutable history elsewhere
+would preserve the defect. PostgreSQL also does not inherently remove this
+information-lifetime obligation.
 
-## Earned results
+## Why no macro horizon run
 
-12Mevents: rollover0.0359s; direct Parquet conversion153.18 s; verification372.37 s.
-Full verified retirement32.28 s, including0.886 s source unlink, returns11.113 GB.
-Actual sparse frontdoor p95 = 4.090s; dense refusal p95 = 1.045s. Corrected paged key
-expiry admits5,985 new events with exact cursor/payload/sequence preservation;
-p95 five-event ingest probe0.724s. Key expiry still deletes hash rows and creates
-reusable pages. Payload disposition is O(files); verification is O(bytes).
+The requested47-day current-volume corpus would be about80.57M events at the
+prior12M/week margin. The explicit hard failure is established by actual helper
+semantics, finite counterexamples and independent replay before that allocation.
+A larger specimen cannot turn cumulative quarantine into bounded hot state.
+This is **REJECT on evidence**, not NO_DECISION, unavailable external evidence,
+or a request for another confidence campaign. No full 40-day p50/p95 or derived
+production root/archive capacity bound is claimed.
 
-See [qualification](LABELWATCH-SEGMENTED-QUALIFICATION.md),
-[failure matrix](LABELWATCH-SEGMENTED-FAILURE-MATRIX.md),
-[state model](LABELWATCH-SEGMENTED-STATE-MODEL.md), and
-[campaign report](LABELWATCH-SEGMENTED-CAMPAIGN-REPORT.md).
+## Independent identity
 
-## Independent identities
+Reviewer `/root/independent_acceptance`; exact source
+`01cb5f610796fefdf5e2a783b626424001ccb559`.
+Acceptance `ACCEPTANCE-d1246d42-b22f-42b6-8032-5ff0f53d55a2.json`,
+SHA256 `08e1b7e410fdc50264abd1022757bc7b8c6214e062af6bc7d57cc4ece065a1ef`.
+All three independent units terminal; no production contact or source edits.
 
-Original source 29f3f76dd51cf5973615fcb5bce255f15c31ac31:
-`ACCEPTANCE-27ee66da-0bb4-4e93-a338-687a281baeff.json`,
-SHA256`bf85c9a623295cfdb325c4c876e7a372b89ac510b93071fd0593f3b71882dc44`:
-NOT_ACCEPTED_COUNTEREXAMPLE. Original 158sealed hashes verified; changed live
-source/doc paths are frozen from exact Git blobs, with a reconciliation receipt.
+[Horizon evidence](LABELWATCH-SEGMENTED-HORIZON-QUALIFICATION.md) and
+[terminal report](LABELWATCH-SEGMENTED-CAMPAIGN-REPORT.md) contain measurements,
+receipt identities, scope and custody.
 
-Corrected source f0161ecc44e38985e390211e0e3882f5cbb0e232:
-`ACCEPTANCE-17b2ab45-7898-4eda-a2a6-6aea1f59518b.json`,
-SHA256`fe4091d20067dfcaaa358ecc6099fed0f181c96d4b3e50dc2840b3cb439494c3`:
-independent finite successor PASS; adoption not accepted. All 25 successor seal
-hashes verified. Reviewer is the independently dispatched acceptance owner,
-separate from the producer; full identity/scope/time live in private custody.
+## Exact next work
 
-## Exact next action
+Existing [Labelwatch #7](https://github.com/unpingable/atproto-labelwatch/issues/7)
+owns a separately admitted bounded state/custody repair:
+`lane/labelwatch-segmented-global-lifetime-repair-20261005`.
 
-Existing Labelwatch #7 owns a bounded successor:
-`lane/labelwatch-segmented-horizon-capacity-20261005`.
-First obtain an evidence-backed complete global-state/required-history specimen
-and name current global table growth/replay lifetime contracts. Then admit one
-serial qualification producer for40+7day state,40daycurrent-rate queries and
-required-history catalog admission. Reuse this exact qualified prototype and
-counterexamples; produce capacity/refusal/recovery and independent acceptance.
-No new architecture item, new engine, retention-policy change or migration.
+Define and earn a finite archived-replay/quarantine lifetime and authored-versus-
+arrival contract, preserving current completeness/delivery-count semantics or
+obtaining an explicit owner-approved contract change. Establish one committed
+hot/archive query owner across receipt publication and global commit. Earn
+incremental catalog admission without rehashing all historical Parquet to admit
+one segment. Reuse the exact preserved counterexamples; do not merely enlarge
+caps or restart general storage selection.
 
-Prerequisites: current incident#6bounded independently; no incident capacity
-consumed; complete specimen custody; per-filesystem reserve and aggregate tenant
-admission; named operational owner for every mutable global growth source.
-If no existing finite policy supports a bound, record that concrete forcing
-property for owner decision rather than silently inventing a new policy.
+Only after that concrete design defect is repaired may the remaining47-day
+current-volume state and40-day query conjunction be qualified. Previous 12M
+rollover/schema/custody results need not be repeated absent a changed property.
+Alternative-engine evaluation is permitted by this rejection under the user's
+rule, but no engine-specific forcing property justifies opening it now.
+No repair, migration, deployment or retention-policy change occurs in this lane.
 
-Today's incident remains separate. Candidate remains **prepared, inactive**.
-No migration sketch or deployment is authorized by this NO_DECISION result.
+Previous `b2b9a416` NO_DECISION is historical and superseded because the missing
+capacity gate has become an independently demonstrated correctness/lifetime
+failure, rather than an evidence shortage. Its exact evidence remains retained.

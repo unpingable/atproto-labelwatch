@@ -1,5 +1,10 @@
 # Labelwatch segmented state and cursor model
 
+> Historical qualification/model at `b2b9a416`, preserved in its original scope.
+> Current candidate is rejected by the [horizon decision](LABELWATCH-SEGMENTED-DECISION.md):
+> mutable historical replay/quarantine lifetime and catalog custody are concrete defects.
+> See [new evidence](LABELWATCH-SEGMENTED-HORIZON-QUALIFICATION.md).
+
 Qualification source and evidence are identified in the campaign report.
 This is an isolated adapter; it is not a production collector integration.
 
