@@ -13,7 +13,7 @@ def main(occurrence,primary):
     # Restore global metadata/tables into an independent query fixture. The
     # original producer state stays sealed. No old replay keys are reconstructed:
     # this is a query fixture, not an admissible collector cutover.
-    original=connect(primary/'store/state.sqlite',readonly=True);c=connect(s.state)
+    original=connect(Path(result.get('state_path',str(primary/'store/state.sqlite'))),readonly=True);c=connect(s.state)
     for (name,) in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'q_%' AND name NOT IN ('label_events','sqlite_sequence')").fetchall():
         rows=original.execute('SELECT * FROM "'+name+'"').fetchall();c.execute('DELETE FROM "'+name+'"')
         if rows:c.executemany('INSERT INTO "'+name+'" VALUES('+','.join('?' for _ in rows[0])+')',rows)

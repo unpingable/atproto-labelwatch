@@ -387,7 +387,7 @@ class Store:
                 return allocated
             finally: c.close()
 
-    def advance_floor(self, floor, death=None):
+    def advance_floor(self, floor, death=None, observer=None):
         # Qualification clock/floor, not a production retention policy change.
         retention._validate_floor(floor)
         with lock(self.root):
@@ -413,6 +413,7 @@ class Store:
                     self.check_local()  # Refuse another GC page while a reader pins oversized WAL.
                     result = c.execute('DELETE FROM q_hot_keys WHERE event_hash IN (SELECT event_hash FROM q_hot_keys WHERE ts<? ORDER BY ts LIMIT 10000)', (floor,))
                     c.commit(); deleted += result.rowcount; cut(death, 'during_key_gc')
+                    if observer and deleted % 500000 == 0: observer(deleted)
                     c.execute('PRAGMA wal_checkpoint(PASSIVE)')
                     if result.rowcount == 0: break
                 # Keep only cache-relevant history and a bounded retry ring locally.
