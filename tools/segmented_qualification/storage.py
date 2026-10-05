@@ -84,6 +84,23 @@ def connect(path, readonly=False):
     if not readonly:
         c.execute('PRAGMA journal_mode=WAL'); c.execute('PRAGMA synchronous=FULL')
         c.execute('PRAGMA wal_autocheckpoint=1000')
+        # max_page_count is connection-local. Read the persisted owned limit
+        # and apply it to every writer, including recovery and metadata writers.
+        cap = 2097152 if Path(path).name == 'state.sqlite' else 4194304
+        if Path(path).name == 'state.sqlite' and c.execute("SELECT 1 FROM sqlite_master WHERE name='meta'").fetchone():
+            row = c.execute("SELECT value FROM meta WHERE key='q:state_page_cap'").fetchone()
+            if row: cap = int(row[0])
+        elif c.execute("SELECT 1 FROM sqlite_master WHERE name='segment_meta'").fetchone():
+            row = c.execute("SELECT value FROM segment_meta WHERE key='page_cap'").fetchone()
+            if row: cap = int(row[0])
+        if cap <= 0 or cap > 4294967294:
+            c.close(); raise RuntimeError('invalid owned page ceiling')
+        if c.execute('PRAGMA page_size').fetchone()[0] != 4096:
+            c.close(); raise RuntimeError('unqualified SQLite page size')
+        applied = c.execute('PRAGMA max_page_count=' + str(cap)).fetchone()[0]
+        if applied > cap:
+            c.close(); raise RuntimeError('existing file exceeds admitted page ceiling')
+
     c.execute('PRAGMA cache_size=-16384'); c.execute('PRAGMA temp_store=FILE')
     return c
 
@@ -99,7 +116,7 @@ def vessel(path, identity):
     table = next(x for x in v['SCHEMA_TABLES'].split(';') if 'CREATE TABLE IF NOT EXISTS label_events (' in x)
     indexes = ';'.join(x for x in v['SCHEMA_INDEXES'].split(';') if ' ON label_events(' in x)
     c.executescript(table + ';' + indexes + ';CREATE TABLE segment_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);')
-    c.executemany('INSERT INTO segment_meta VALUES (?,?)', [('identity', identity), ('schema_generation', '23'), ('sealed', '0')])
+    c.executemany('INSERT INTO segment_meta VALUES (?,?)', [('identity', identity), ('schema_generation', '23'), ('sealed', '0'), ('page_cap', '4194304')])
     c.execute('PRAGMA max_page_count=4194304')  # Finite event-file ceiling 16GiB.
     c.commit(); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.close(); syncdir(path.parent)
 
@@ -152,6 +169,8 @@ class Store:
         for (identity,) in pending:
             rows = c.execute('SELECT ' + ','.join('e.' + k for k in FIELDS) + ' FROM label_events e JOIN q_pending p ON p.id=e.id WHERE p.segment=? ORDER BY e.id', (identity,)).fetchall()
             target = connect(self.root / (identity + '.sqlite'))
+            if target.execute("SELECT value FROM segment_meta WHERE key='identity'").fetchone()[0] != identity:
+                target.close(); raise RuntimeError('pending target identity mismatch')
             if target.execute("SELECT value FROM segment_meta WHERE key='sealed'").fetchone()[0] != '0':
                 target.close(); raise RuntimeError('pending writes reference sealed segment')
             target.executemany('INSERT OR IGNORE INTO label_events VALUES (' + ','.join('?' for _ in FIELDS) + ')', rows)
@@ -170,6 +189,8 @@ class Store:
             old, new = transition
             self.flush(c)
             path = self.root / (old + '.sqlite'); source = connect(path)
+            if source.execute("SELECT value FROM segment_meta WHERE key='identity'").fetchone()[0] != old:
+                source.close(); raise RuntimeError('rollover source identity mismatch')
             source.execute("UPDATE segment_meta SET value='1' WHERE key='sealed'"); source.commit()
             result = source.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
             if result[0] != 0: source.close(); raise RuntimeError('seal_checkpoint_pinned')
@@ -218,8 +239,10 @@ class Store:
                 for row in c.execute('SELECT id,event_hash,ts FROM label_events').fetchall():
                     c.execute('INSERT OR IGNORE INTO q_hot_keys VALUES (?,?,?,?)', (row[1], row[2], row[0], identity))
                     c.execute('INSERT OR IGNORE INTO q_pending VALUES (?,?)', (row[0], identity))
-                for did, timestamp in {(r[0], r[8]) for r in rows}:
-                    db.upsert_labeler(c, did, timestamp)
+                evidence_seen = set()
+                for row in rows:
+                    db.upsert_labeler(c, row[0], row[8])
+                    ingest._track_observed_src(c, row[1] or row[0], row[8], evidence_seen)
                 cut(death, 'before_global_commit')
                 db.set_cursor(c, source, cursor)  # Actual runtime helper commits this transaction.
                 cut(death, 'after_global_commit')
@@ -257,6 +280,13 @@ class Store:
 
     def archive(self, identity, destination, death=None, injected=None):
         dt.date.fromisoformat(identity)
+        # Serialize retries; retain a source reader lease until checkpoint.
+        # Ingestion keeps its independent writer fence and continues.
+        with lock(self.root, 'archive-' + identity + '.lock'), lock(self.root, 'reader.lock', shared=True):
+            return self._archive(identity, destination, death, injected)
+
+    def _archive(self, identity, destination, death=None, injected=None):
+        dt.date.fromisoformat(identity)
         self.check_local(injected)
         destination = Path(destination)
         # Only this campaign's verified NFS root or its exact local negative fixtures.
@@ -284,6 +314,8 @@ class Store:
         probe.rename(probe.with_suffix('.probe-renamed')); probe.with_suffix('.probe-renamed').unlink(); syncdir(destination)
         sql = connect(source, readonly=True)
         if sql.execute("SELECT value FROM segment_meta WHERE key='sealed'").fetchone()[0] != '1': raise RuntimeError('source not sealed')
+        if sql.execute("SELECT value FROM segment_meta WHERE key='identity'").fetchone()[0] != identity:
+            sql.close(); raise RuntimeError('archive source identity mismatch')
         generation = sql.execute("SELECT value FROM segment_meta WHERE key='schema_generation'").fetchone()[0]
         physical_columns = tuple(r[1] for r in sql.execute('PRAGMA table_info(label_events)'))
         if generation != '23' or physical_columns != FIELDS:
@@ -313,7 +345,12 @@ class Store:
                   'content': actual, 'conversion_seconds': conversion_seconds, 'verification_seconds': time.perf_counter() - verify_started,
                   'source_bytes': source.stat().st_size, 'source_allocated_bytes': source.stat().st_blocks * 512, 'parquet_bytes': output.stat().st_size,
                   'archive_admitted_bytes': need, 'archive_root': str(destination)}
-        atomic(receipt, result)
+        if receipt.exists():
+            previous = json.loads(receipt.read_text())
+            for field in ('identity', 'schema_generation', 'source_sha256', 'parquet_sha256', 'content', 'archive_root'):
+                if previous[field] != result[field]: raise RuntimeError('existing receipt provenance mismatch; original evidence preserved')
+            result = previous  # Preserve the original verified occurrence, including timing.
+        else: atomic(receipt, result)
         c = connect(self.state); c.execute('INSERT OR REPLACE INTO q_archive VALUES (?,?)', (identity, str(receipt)))
         c.execute("UPDATE q_segments SET status='ARCHIVED' WHERE identity=?", (identity,)); c.commit(); c.close()
         cut(death, 'after_checkpoint_before_retirement')

@@ -37,7 +37,7 @@ def qualify(base):
     profile=json.loads((ROOT.parent/'evidence/PRIVATE-CURRENT-SAMPLE.json').read_text())
     c=connect(s.state)
     for i,key in enumerate(profile['metadata_keys']):
-        if key.startswith(('q:','ingest_cursor:','ops:cursor:','retention:')) or key=='schema_version':continue
+        if key.startswith(('q:','retention:')) or key=='schema_version':continue
         db.set_meta(c,key,'fixture-'+str(i))
     c.commit();meta=digest(c.execute("SELECT key,value FROM meta WHERE key NOT LIKE 'q:%' ORDER BY key"));c.close()
     from labelwatch import state as sidecar
