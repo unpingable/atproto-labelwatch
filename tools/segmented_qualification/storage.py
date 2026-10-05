@@ -464,14 +464,12 @@ class Store:
                     entries[identity] = entry
                 if pruning:
                     manifest = {'schema':'labelwatch.archive-coverage.v1','entries':entries}
-                    encoded = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
+                    encoded = (json.dumps(manifest, sort_keys=True, indent=2) + '\n').encode()
                     generation = hashlib.sha256(encoded).hexdigest()
                     published = namespace / ('coverage-' + generation + '.json')
                     if published.exists():
-                        if json.loads(published.read_text()) != manifest: raise RuntimeError('immutable coverage generation changed')
+                        if sha(published) != generation: raise RuntimeError('immutable coverage generation changed')
                     else:
-                        # atomic uses its own JSON encoding; hash the published
-                        # bytes, and filename is deterministic logical identity.
                         atomic(published, manifest)
                     db.set_meta(c, 'q:archive_coverage_path', str(published))
                     db.set_meta(c, 'q:archive_coverage_sha256', sha(published))
