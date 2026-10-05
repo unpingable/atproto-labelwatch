@@ -197,3 +197,83 @@ conservation under its transition relation. Actual process-death tests must chec
 implementation correspondence. Physical storage failure, unverified existing
 legacy identity conversion, and older-backup completeness remain explicit refusal
 boundaries, not earned universal restoration guarantees.
+
+## Earned implementation correspondence
+
+Source `1fdfd028` implements this opt-in contract. Independent acceptance record
+`0e64d667-20c4-4b91-874a-32bde31ada33` accepts the bounded shared contract,
+not production enrollment or macro capacity. First source `c8c9e6b` is preserved
+but not accepted: unpublished transaction visibility, overlapping archive
+ownership and JSON checkpoint representation each falsified its correspondence.
+Practical tests plus the bounded model are sufficient for this lane's stated
+properties; no whole-service or physical power-loss theorem is claimed.
+
+Canonical fields are ver/src/uri/cid/val/neg/cts/exp/sig, with normal optional-field
+canonicalization and a versioned digest. Legacy fixture ts is an explicit authored
+time alias; conflicting aliases refuse. Source time distinguishes records but
+never governs identity expiry. Current acceptance time is cache metadata only;
+owner closure and verified custody govern retirement. Accepted ordinal plus
+lineage is continuation metadata; the canonical record digest is semantic identity.
+
+Custody ownership is exclusive per identity. A first archive index must exactly
+prove the selected owner's accepted bindings; an unscoped snapshot mixing owners
+refuses. A closed owner cannot accept a fresh record. Repeated publication carries
+unique semantic acceptance IDs, never an increment instruction. Consumers correlate
+identity/lineage and do not infer new acceptance from repeated receipt delivery.
+No success publication can run inside an open staging transaction. Archive
+publication absent after commit is pending evidence, not lost acceptance.
+
+A history-only restore preserves its original evidence and remains inactive.
+A complete operational backup must be reconciled with a declared authoritative
+checkpoint, including archive identity coverage and transport positions.
+Recovery replay validates committed identities; reconstruction writes an explicit
+inactive target using existing tools. It does not enroll that target as production.
+Reprocessing also requires a separately owned target; implicit current mutation
+is refused. Missing authoritative state is INDETERMINATE, requiring recovery of
+that named checkpoint/coverage or explicit operator retirement of the lineage;
+it is never guessed clear.
+
+## Complete current global-table inventory
+
+| Actual structures | Classification / lifetime / continuation dependency |
+|---|---|
+| meta ingest_cursor:* / observed_at / advanced_at; custody lineage/generation/active owner | Hot-global continuation; explicit source/lineage retirement only; cursor is transport, not identity |
+| meta discovery/derive/report/publication/retention/floor/pending/watermark keys | Owned subsystem checkpoints; do not expire with event payloads; history-only reconstruction cannot recreate them |
+| sqlite_sequence for label_events | Global accepted ordinal allocation; survives event payload deletion; incomplete restore cannot claim its high-water mark |
+| q_hot_keys | Exact current identity/effect binding; hot owner until complete verified identity custody transfer |
+| custody_archives | Global committed owner/index/receipt authority, O(archive objects); archive/replay lifetime |
+| q_archive / q_segments | Layout/custody projections and bounded local retry ring, never independent acceptance authority |
+| q_pending / label_events in segmented global DB | Recoverable current effect journal; drain only after exact durable vessel copy; not an indefinite history store |
+| q_transition / active vessel metadata / ACTIVE.json | Rollover intent and projection; reconcile before accepting into exactly one target |
+| label_events in single-file DB / event vessels | Accepted payload; hot lifecycle only; retirement does not retire semantic identity |
+| quarantined_events | Existing current observation/historical gap evidence; no replay mutation authority; existing full-row lifetime not silently changed |
+| labelers / provider_registry | Current source/classification/provider state; source lifecycle, not author-time TTL |
+| labeler_evidence / labeler_probe_history / discovery_events | Historical observations/projections; existing owner policies, no complete new bound claimed; all-table horizon audit required |
+| alerts / derived_receipts / posted_findings | Historical output/publication identity; owning subsystem replay/publication obligations; not accepted-event dedupe |
+| derived_label_fp | Reconstructible derived state tied to derive checkpoints; no event-acceptance authority |
+| derived_val_dist_day / derived_author_day / derived_author_labeler_day | Reconstructible day projections; existing derived horizon policies; verification cannot rewrite them |
+| derived_labeler_lag_7d / reversal_7d / boundary_load_7d / entropy_7d | Reconstructible bounded-window projections; derive-owner lifetime; not collector acceptance proof |
+| boundary_edges / boundary_targets | Reconstructible boundary projections, existing owner prune policies; not archive identity |
+| ingest_outcomes | Operational observation history, existing seven-day pruning; success collection is not receipt custody |
+
+No current replay-local full record is allowed into those global structures.
+No existing unique quarantine/history is deleted by this lane. Full projected-table
+capacity/lifetimes remain explicitly measured in the next global-state horizon gate.
+
+## Direct Constellation observation contract
+
+| Machine condition | Fact / operator message / reconciliation |
+|---|---|
+| labelwatch.custody.indeterminate | Authoritative checkpoint or committed identity evidence missing/altered: “Labelwatch prior event acceptance cannot be proved; ingestion/replay refused.” Recover the named lineage/coverage; never clear from receipt absence. |
+| labelwatch.custody.receipt_pending | Committed effect/owner lacks materialized receipt: “Labelwatch custody committed; receipt publication is incomplete. The event must not be applied again.” Re-publish the same committed projection. |
+| labelwatch.custody.receipt_conflict | Existing publication differs from committed projection: “Labelwatch receipt identity conflicts; original evidence preserved.” Operator reconciles exact source/custody identities. |
+| labelwatch.replay.authority_refused | Verification/reprocessing requests current mutation, or recovery lacks authoritative checkpoint: “Labelwatch historical replay lacks current-state authority; replay refused.” Select an explicit inactive target or valid recovery checkpoint. |
+| labelwatch.replay.identity_unavailable | Unknown below-floor delivery: “Labelwatch historical record has no provable prior acceptance; source cursor was not advanced.” Recover coverage or explicitly reconcile the source page. |
+| labelwatch.archive.custody_pending | Prepared artifact/receipt has no committed owner: “Labelwatch archive is prepared but unadmitted; served history remains with its committed owner.” Finish verified custody commit or preserve orphan evidence. |
+| labelwatch.archive.owner_conflict | Overlap / sealed-owner reuse: “Labelwatch archive contains identities owned elsewhere; custody transfer refused.” Scope the object to its proven owner; never double-count. |
+
+Observation remains read-only. A stale observation stays UNKNOWN; absence does not
+mean repair. These are domain fact/operator contracts and qualification evidence,
+not a claim of deployed Constellation sensing/notification. Preserve failed and
+superseding observations. Production integration belongs to the implementation/
+monitoring owner, retaining incident #6 / Monitor #18 separation.

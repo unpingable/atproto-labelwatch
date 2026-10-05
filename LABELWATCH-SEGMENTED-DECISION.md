@@ -1,3 +1,9 @@
+> Historical terminal decision for source 01cb5f6 / closure 872693a.
+> The shared custody defect is now repaired and boundedly qualified; see
+> [current custody decision](LABELWATCH-CUSTODY-DECISION.md). Architecture adoption
+> still requires the three named horizon gates. Original evidence remains at its
+> exact prior Git revision; this notice does not revise that historical verdict.
+
 # Labelwatch segmented-storage decision
 
 **REJECT_SEGMENTED_SQLITE_PARQUET_DUCKDB**
