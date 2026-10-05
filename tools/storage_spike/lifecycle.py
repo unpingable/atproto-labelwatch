@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
-from common import FIELDS,atomic,digest,fsync_dir,guard_root,sha
+from common import FIELDS,atomic,digest,fsync_dir,guard_root,sha,arrow_schema
 
 CUTS=('before_seal','after_seal','after_verify','after_archive_write','after_archive_publish',
       'after_receipt','before_retire','after_retire','after_catalog')
@@ -67,7 +67,7 @@ def run(root, cut=None, failure=None, backend='sqlite'):
         tmp=root/'archive.incomplete'; writer=None
         try:
             while batch:=rows.fetchmany(10000):
-                table=pa.Table.from_pylist([dict(zip(FIELDS,r)) for r in batch])
+                table=pa.Table.from_pylist([dict(zip(FIELDS,r)) for r in batch],schema=arrow_schema())
                 if writer is None: writer=pq.ParquetWriter(tmp,table.schema,compression='zstd')
                 writer.write_table(table)
                 if failure=='archive_full': raise OSError(errno.ENOSPC,'bounded archive-full fixture')

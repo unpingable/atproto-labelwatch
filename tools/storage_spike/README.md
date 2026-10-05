@@ -50,8 +50,20 @@ hashes, sampling algorithm and workload counts are in private DATASET.json.
 Private corpus files and result rows must not be added to source/public docs.
 
 Limits: process interruption is tested, not physical host power loss. The
-prototype does not implement Labelwatch cursor transfer, concurrent writer
-fencing, production rollover, or schema-generation reader adapters. It rejects
+closed-source prototype does not implement Labelwatch cursor transfer,
+production writer fencing, or schema-generation reader adapters. It rejects
 unsupported SQLite schema generations. Full-volume cold query acceptance is
 separate from a stratified query comparison. Benchmarks do not authorize a
 migration or retention-policy change.
+
+`qualify_rollover.py` separately exercises a finite one-writer arrival-period
+vessel: event/cursor commit, late authored-time arrivals, source-bound successor
+creation, monotone clock boundary, stale active pointer and process loss.
+It carries only the event/ingest-meta subset, not all mutable Labelwatch state.
+Archive-only dedupe and metadata restore remain explicit acceptance gates.
+
+`supplement.py` runs the exact current `trim.py` export/verify/batched-delete
+library with NORMAL synchronization and repeats PostgreSQL ingest with every
+live event-index shape. It requires the primary occurrence's terminal PASS
+and exact stopped fixture cluster identity; its own source/run/paths must be
+dispatched before use. It preserves the primary occurrence's original receipts.

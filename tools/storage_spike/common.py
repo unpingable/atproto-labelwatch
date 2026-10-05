@@ -10,6 +10,15 @@ from pathlib import Path
 
 FIELDS = ('id','labeler_did','src','uri','cid','val','neg','exp','sig','ts','event_hash','target_did')
 
+def arrow_schema():
+    # Use the existing Labelwatch archive schema; do not infer all-NULL text
+    # fields as the Parquet null type or silently create another format.
+    import sys
+    repo=Path(__file__).parents[2]
+    sys.path.insert(0,str(repo));sys.path.insert(0,str(repo/'src'))
+    from tools.label_events_cold_archive import ARROW_SCHEMA
+    return ARROW_SCHEMA
+
 def sha(path):
     h=hashlib.sha256()
     with Path(path).open('rb') as f:
