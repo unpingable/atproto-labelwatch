@@ -22,7 +22,14 @@ def main(out):
  else:raise AssertionError('pathname replacement silently accepted')
  refreshed=VerifiedCatalog(a)
  with TierSession(s,a,catalog=refreshed) as q:assert q.execute('SELECT COUNT(*) FROM label_events').fetchone()[0]==1
- atomic(out/'RESULT.json',{'result':'PASS','cases':['three_cached_queries','content_mutation_mtime_restored_refuses','pathname_replacement_refuses','explicit_readmission_recovers'],'scope':'Same-host local fixture, honest archive custody and no authorized mutation after admission. File fingerprints are not hardware bit-rot detection; full scheduled audits remain required. No production mutation.'})
+ s.ingest([event(2,'2026-10-06T00:00:00Z')],'fixture-source','2');s.rotate('2026-10-12');s.archive('2026-10-05',a)
+ try:
+  with TierSession(s,a,catalog=refreshed):pass
+ except RuntimeError:pass
+ else:raise AssertionError('stale catalog omitted newly archived segment')
+ latest=VerifiedCatalog(a)
+ with TierSession(s,a,catalog=latest) as q:assert q.execute('SELECT COUNT(*) FROM label_events').fetchone()[0]==2
+ atomic(out/'RESULT.json',{'result':'PASS','cases':['three_cached_queries','content_mutation_mtime_restored_refuses','pathname_replacement_refuses','explicit_readmission_recovers','stale_catalog_new_segment_refuses','new_segment_readmission_recovers'],'scope':'Same-host local fixture, honest archive custody and no authorized mutation after admission. File fingerprints are not hardware bit-rot detection; full scheduled audits remain required. No production mutation.'})
 
 if __name__=='__main__':
  terminal=Path(sys.argv[2])
