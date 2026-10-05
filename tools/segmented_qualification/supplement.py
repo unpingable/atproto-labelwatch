@@ -44,6 +44,7 @@ def qualify(base):
     sc=sidecar.init_sidecar(str(base/'pilot-state.sqlite'));sidecar.meta_set(sc,sidecar.META_CURSOR_ID,'123456789');sidecar.meta_set(sc,sidecar.META_BUILD_STATUS,'complete');sc.commit();sc.execute('PRAGMA wal_checkpoint(TRUNCATE)');sc.close();side_hash=sha(base/'pilot-state.sqlite')
     s.rotate('2026-10-05');c=connect(s.state);assert meta==digest(c.execute("SELECT key,value FROM meta WHERE key NOT LIKE 'q:%' ORDER BY key"));c.close();assert sha(base/'pilot-state.sqlite')==side_hash
     results.append({'case':'all_observed_metadata_keys_and_external_pilot_checkpoint','result':'PASS','production_keys':len(profile['metadata_keys']),'sidecar_active':'not activated; isolated schema/checkpoint fixture'})
+    initial_archive=base/'archive';initial_archive.mkdir();s.archive('2026-09-28',initial_archive);s.retire('2026-09-28')
     # Separate processes exercise protocol writer fencing and a state-transition race.
     programs=[]
     for worker in range(4):
@@ -53,7 +54,7 @@ def qualify(base):
     for program in programs:
         out,err=program.communicate(timeout=20);assert program.returncode==0,err
     with s.queries() as q:assert q.execute('SELECT COUNT(*) FROM label_events').fetchone()[0]==4;last=q.execute('SELECT MAX(id) FROM label_events').fetchone()[0]
-    s.rotate('2026-10-12');archive=base/'archive';archive.mkdir();s.archive('2026-10-05',archive);s.retire('2026-10-05');s.ingest([event(999)],'new-provider','999')
+    s.rotate('2026-10-12');archive=base/'archive';s.archive('2026-10-05',archive);s.retire('2026-10-05');s.ingest([event(999)],'new-provider','999')
     with s.queries() as q:assert q.execute('SELECT MIN(id) FROM label_events').fetchone()[0]>last
     results.append({'case':'concurrent_writers_and_global_ingestion_sequence_after_retirement','result':'PASS','writers':4,'global_ids_monotonic':True})
     # Reader lease must prevent local source retirement until the snapshot closes.

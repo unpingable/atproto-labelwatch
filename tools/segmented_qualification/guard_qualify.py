@@ -63,6 +63,11 @@ def main(base):
     for child in children:
         out,err=child.communicate(timeout=30);assert child.returncode==0,err;answers.append(json.loads(out))
     assert answers[0]==answers[1];original=(dest/'2026-09-28.receipt.json').read_bytes();s.archive('2026-09-28',dest);assert (dest/'2026-09-28.receipt.json').read_bytes()==original;s.retire('2026-09-28');cases.append({'case':'concurrent_conversion_and_immutable_retry_receipt','result':'PASS'})
+    s=Store.create(base/'queue_bound');s.ingest([event()], 'fixture-provider','1');s.rotate('2026-10-05')
+    try:s.rotate('2026-10-12')
+    except RuntimeError as e:assert 'queue_full' in str(e)
+    else:raise AssertionError('two-vessel bound not enforced')
+    assert s.snapshot()['active']=='2026-10-05';cases.append({'case':'two_local_vessel_queue_bound','result':'PASS_REFUSAL','maximum_nonretired_vessels':2})
     atomic(base/'RESULT.json',{'result':'PASS','finite_cases':len(finite),'supplement':sup,'guard_cases':cases,'production_mutations':[],'scope':'Page caps are applied to each writer; resource-full accepted journal has explicit <=8MiB fixture recovery, never loss. No production limit changed.'})
 
 

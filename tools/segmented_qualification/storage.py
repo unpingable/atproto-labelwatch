@@ -141,7 +141,7 @@ class Store:
         CREATE TABLE q_archive(identity TEXT PRIMARY KEY, receipt TEXT NOT NULL);
         ''')
         db.set_meta(c, retention.RETENTION_FLOOR_KEY, floor)
-        db.set_meta(c, 'q:max_pending', '10000'); db.set_meta(c, 'q:max_local_segments', '8')
+        db.set_meta(c, 'q:max_pending', '10000'); db.set_meta(c, 'q:max_local_segments', '2')
         db.set_meta(c, 'q:active', period)
         c.execute('INSERT INTO q_segments VALUES (?, ?, 23)', (period, 'ACTIVE'))
         c.commit(); c.close(); vessel(root / (period + '.sqlite'), period)

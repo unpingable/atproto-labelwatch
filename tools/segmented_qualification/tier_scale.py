@@ -17,7 +17,7 @@ def main(occurrence,primary):
     for (name,) in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'q_%' AND name NOT IN ('label_events','sqlite_sequence')").fetchall():
         rows=original.execute('SELECT * FROM "'+name+'"').fetchall();c.execute('DELETE FROM "'+name+'"')
         if rows:c.executemany('INSERT INTO "'+name+'" VALUES('+','.join('?' for _ in rows[0])+')',rows)
-    db.set_meta(c,'q:active','2026-10-05');db.set_meta(c,'q:max_local_segments','8');db.set_meta(c,'q:max_pending','10000');db.set_meta(c,retention.RETENTION_FLOOR_KEY,'2026-08-15T00:00:00Z')
+    db.set_meta(c,'q:active','2026-10-05');db.set_meta(c,'q:max_local_segments','2');db.set_meta(c,'q:max_pending','10000');db.set_meta(c,retention.RETENTION_FLOOR_KEY,'2026-08-15T00:00:00Z')
     c.execute("INSERT INTO q_segments VALUES ('2026-09-28','RETIRED',23)");c.execute("INSERT INTO q_archive VALUES ('2026-09-28',?)",(str(archive/'2026-09-28.receipt.json'),));c.execute("INSERT INTO sqlite_sequence(name,seq) VALUES('label_events',?)",(result['events']+result['extra_new_segment_events'],));c.commit();c.close();original.close()
     rows=[]
     for i in range(100):
