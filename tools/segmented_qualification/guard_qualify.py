@@ -68,6 +68,16 @@ def main(base):
     except RuntimeError as e:assert 'queue_full' in str(e)
     else:raise AssertionError('two-vessel bound not enforced')
     assert s.snapshot()['active']=='2026-10-05';cases.append({'case':'two_local_vessel_queue_bound','result':'PASS_REFUSAL','maximum_nonretired_vessels':2})
+    s=Store.create(base/'archive_schema_identity');s.ingest([event()], 'fixture-provider','1');s.rotate('2026-10-05');dest=base/'schema-mismatch-archive';dest.mkdir()
+    from storage import ARROW_SCHEMA,FIELDS
+    import pyarrow as pa
+    c=connect(s.root/'2026-09-28.sqlite',readonly=True);rows=c.execute('SELECT '+COLS+' FROM label_events').fetchall();c.close()
+    schema=ARROW_SCHEMA.with_metadata({b'labelwatch.schema_generation':b'99',b'labelwatch.segment_identity':b'2026-09-28'})
+    pq.write_table(pa.Table.from_pylist([dict(zip(FIELDS,row)) for row in rows],schema=schema),dest/'2026-09-28.parquet')
+    try:s.archive('2026-09-28',dest)
+    except RuntimeError as e:assert 'schema identity' in str(e)
+    else:raise AssertionError('destination schema was not verified')
+    assert (s.root/'2026-09-28.sqlite').exists();assert not (dest/'2026-09-28.receipt.json').exists();cases.append({'case':'destination_schema_identity','result':'PASS_REFUSAL'})
     atomic(base/'RESULT.json',{'result':'PASS','finite_cases':len(finite),'supplement':sup,'guard_cases':cases,'production_mutations':[],'scope':'Page caps are applied to each writer; resource-full accepted journal has explicit <=8MiB fixture recovery, never loss. No production limit changed.'})
 
 

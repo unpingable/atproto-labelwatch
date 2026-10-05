@@ -335,6 +335,8 @@ class Store:
         expected = digest(sql.execute('SELECT ' + COLS + ' FROM label_events ORDER BY id')); sql.close()
         def parquet_rows():
             pf = pq.ParquetFile(output)
+            if pf.schema_arrow.metadata.get(b'labelwatch.schema_generation') != b'23' or not pf.schema_arrow.remove_metadata().equals(ARROW_SCHEMA.remove_metadata()):
+                raise RuntimeError('archive schema identity/type mismatch')
             if pf.schema_arrow.metadata.get(b'labelwatch.segment_identity') != identity.encode(): raise RuntimeError('archive identity mismatch')
             for batch in pf.iter_batches(batch_size=10000):
                 cut(death, 'verification_killed')
