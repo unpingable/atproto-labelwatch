@@ -2,7 +2,7 @@
 import errno,json,os,sqlite3,subprocess,sys
 from pathlib import Path
 from unittest.mock import patch
-from storage import Store,ROOT,atomic,connect,digest,COLS,ingest,pq
+from storage import Store,ROOT,atomic,connect,digest,COLS,ingest,pq,db
 from qualify import qualify,event
 from supplement import qualify as supplement
 from observations import qualify as observations
@@ -78,6 +78,17 @@ def main(base):
     except RuntimeError as e:assert 'schema identity' in str(e)
     else:raise AssertionError('destination schema was not verified')
     assert (s.root/'2026-09-28.sqlite').exists();assert not (dest/'2026-09-28.receipt.json').exists();cases.append({'case':'destination_schema_identity','result':'PASS_REFUSAL'})
+    s=Store.create(base/'pinned_gc')
+    for offset in [0,10000]:s.ingest([event(i+offset) for i in range(10000)],'fixture-provider',str(offset))
+    s.rotate('2026-10-05');dest=base/'pinned-gc-archive';dest.mkdir();s.archive('2026-09-28',dest);s.retire('2026-09-28')
+    c=connect(s.state);db.set_meta(c,'q:wal_budget_bytes','65536');c.commit();c.close()
+    pin=connect(s.state,readonly=True);pin.execute('BEGIN');pin.execute('SELECT COUNT(*) FROM q_hot_keys').fetchone()
+    try:s.advance_floor('2026-10-05T00:00:00Z')
+    except RuntimeError as e:assert 'wal_budget_pinned' in str(e)
+    else:raise AssertionError('key expiry ignored pinned WAL budget')
+    c=connect(s.state,readonly=True);remaining=c.execute('SELECT COUNT(*) FROM q_hot_keys').fetchone()[0];assert 0<remaining<20000;assert db.get_meta(c,'retention:live_floor')=='2026-10-05T00:00:00Z';c.close()
+    wal_bytes=(s.root/'state.sqlite-wal').stat().st_size;pin.close();s.advance_floor('2026-10-05T00:00:00Z');assert s.snapshot()['keys']==0
+    cases.append({'case':'key_expiry_pinned_reader_backpressure','result':'PASS_REFUSAL_AND_RETRY','remaining_on_refusal':remaining,'fixture_wal_budget_bytes':65536,'observed_wal_after_one_bounded_gc_page':wal_bytes,'scope':'Owned small negative-control budget tests the same default 256MiB guard; no production limit changed.'})
     atomic(base/'RESULT.json',{'result':'PASS','finite_cases':len(finite),'supplement':sup,'guard_cases':cases,'production_mutations':[],'scope':'Page caps are applied to each writer; resource-full accepted journal has explicit <=8MiB fixture recovery, never loss. No production limit changed.'})
 
 

@@ -159,8 +159,12 @@ class Store:
             c = connect(self.state)
             cap = int(db.get_meta(c, 'q:state_page_cap') or '2097152')
             c.execute('PRAGMA max_page_count=' + str(cap)); c.close()
+        c = connect(self.state, readonly=True)
+        try: wal_budget = int(db.get_meta(c, 'q:wal_budget_bytes') or '268435456')
+        finally: c.close()
+        if wal_budget <= 0: raise RuntimeError('invalid owned WAL budget')
         for path in self.root.glob('*.sqlite-wal'):
-            if path.stat().st_size > 268435456:
+            if path.stat().st_size > wal_budget:
                 c = connect(Path(str(path)[:-4])); r = c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone(); c.close()
                 if r[0] != 0: raise RuntimeError('wal_budget_pinned; ingestion refused before acceptance')
 
@@ -406,6 +410,7 @@ class Store:
                 db.set_meta(c, retention.RETENTION_FLOOR_KEY, floor); c.commit(); cut(death, 'after_floor_commit')
                 deleted = 0
                 while True:
+                    self.check_local()  # Refuse another GC page while a reader pins oversized WAL.
                     result = c.execute('DELETE FROM q_hot_keys WHERE event_hash IN (SELECT event_hash FROM q_hot_keys WHERE ts<? ORDER BY ts LIMIT 10000)', (floor,))
                     c.commit(); deleted += result.rowcount; cut(death, 'during_key_gc')
                     c.execute('PRAGMA wal_checkpoint(PASSIVE)')
