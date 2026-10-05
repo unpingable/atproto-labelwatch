@@ -90,3 +90,87 @@ def test_host_apply_memory_gate_refuses_before_launch(tmp_path, monkeypatch, ava
             cycle.admit_apply_memory()
         assert not (tmp_path / 'checkpoint.json').exists()
     assert len(calls) == 1 and calls[0][0] == '/deployed/python'
+
+
+def test_low_root_reserve_refuses_before_remote_export_work(tmp_path, monkeypatch):
+    """The real incident's capacity cut must refuse before mkdir or dispatch."""
+    from labelwatch.trim import TrimRefused
+    config = {'ssh_key': '/existing/key', 'host': 'root@existing',
+              'host_python': '/deployed/python', 'source': '/qualified/source',
+              'tools_revision': 'fixture-revision', 'host_work_root': '/remote/work',
+              'zone_work_root': '/zone/work', 'archive_root': str(tmp_path / 'archive')}
+    (tmp_path / 'archive').mkdir()
+    cycle = module.Cycle(config, tmp_path / 'occurrence', 3)
+    monkeypatch.setattr(cycle, 'mounted_archive', lambda: None)
+    monkeypatch.setattr(module, 'run', lambda *a, **k: SimpleNamespace(stdout='fixture-revision'))
+    def remote(*args):
+        if args[0] == '/deployed/python':
+            return json.dumps({'retention:live_floor': '2026-08-15T00:00:00Z'})
+        if args[0] == 'curl':
+            return json.dumps({'retention': {'coverage': 'complete', 'catalog': {'sha256': 'exact-old'}}})
+        if args[0] == 'df':
+            return 'Avail\n32797593600\n' if args[-1] == '/' else 'Avail\n50748575744\n'
+        pytest.fail('Remote export work reached before capacity refusal: ' + str(args))
+    monkeypatch.setattr(cycle, 'remote', remote)
+    with pytest.raises(TrimRefused, match='root32GiB'):
+        cycle.execute()
+    assert not cycle.state.get('export_launched')
+    assert cycle.state['phase'] == 'failed'
+    assert cycle.state['failure_type'] == 'TrimRefused'
+    assert cycle.state['root_available_bytes'] == 32797593600
+    assert cycle.state['zone_available_bytes'] == 50748575744
+    assert json.loads((cycle.path / 'checkpoint.json').read_text())['phase'] == 'failed'
+
+
+def test_export_capacity_boundary_is_measured_and_recorded(tmp_path, monkeypatch):
+    cycle = module.Cycle({'ssh_key': '/existing/key', 'host': 'root@existing',
+                         'zone_work_root': '/zone/work'}, tmp_path, 3)
+    monkeypatch.setattr(cycle, 'remote', lambda *args: 'Avail\n' + str((32 if args[-1] == '/' else 47) * 1024**3) + '\n')
+    cycle.admit_export_capacity()
+    assert cycle.state['root_available_bytes'] == 32 * 1024**3
+    assert cycle.state['zone_available_bytes'] == 47 * 1024**3
+
+
+def test_terminated_shell_cannot_seal_a_success_marker(tmp_path):
+    """A finite local process fixture models the observed whole-unit signal."""
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+    ready = tmp_path / 'ready'
+    terminal = tmp_path / "TERMINAL ' with spaces"
+    script = module.producer_script([sys.executable, '-c',
+        'import pathlib,time;pathlib.Path(' + repr(str(ready)) + ').touch();time.sleep(5)'],
+        tmp_path / 'log', terminal)
+    process = subprocess.Popen(['/bin/bash', '-c', script], start_new_session=True)
+    try:
+        deadline = time.monotonic() + 3
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert ready.exists()
+        os.killpg(process.pid, signal.SIGTERM)
+        assert process.wait(timeout=3) != 0
+        assert terminal.read_text().strip() == 'exit=143'
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=3)
+
+
+@pytest.mark.parametrize('root,zone,accepted', [
+    (32 * 1024**3 - 1, 47 * 1024**3, False),
+    (32 * 1024**3, 47 * 1024**3 - 1, False),
+    (32 * 1024**3, 47 * 1024**3, True),
+])
+def test_neither_filesystem_can_cover_the_others_reserve(tmp_path, monkeypatch, root, zone, accepted):
+    from labelwatch.trim import TrimRefused
+    cycle = module.Cycle({'ssh_key': '/existing/key', 'host': 'root@existing',
+                         'zone_work_root': '/zone/work'}, tmp_path, 3)
+    monkeypatch.setattr(cycle, 'remote', lambda *args: 'Avail\n' + str(root if args[-1] == '/' else zone) + '\n')
+    if accepted:
+        cycle.admit_export_capacity()
+    else:
+        with pytest.raises(TrimRefused):
+            cycle.admit_export_capacity()
+        assert not (tmp_path / 'checkpoint.json').exists()

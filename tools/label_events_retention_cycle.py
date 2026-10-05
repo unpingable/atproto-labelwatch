@@ -50,6 +50,15 @@ def publish(source, target):
         os.close(directory_fd)
 
 
+def producer_script(argv, log, terminal):
+    """A signalled unit cannot turn its EXIT trap into a success assertion."""
+    exit_command = 'rc=$?; printf "exit=%s\\n" "$rc" > ' + shlex.quote(str(terminal))
+    return ("#!/bin/bash\nset -euo pipefail\nexec >" + shlex.quote(str(log)) +
+            " 2>&1\ntrap 'exit 143' TERM\ntrap 'exit 130' INT\n" +
+            "trap " + shlex.quote(exit_command) + " EXIT\n" +
+            shlex.join(list(map(str, argv))) + "\n")
+
+
 class Cycle:
     def __init__(self, config, occurrence, lock_fd):
         self.config, self.path = config, Path(occurrence)
@@ -109,6 +118,21 @@ class Cycle:
         if shutil.disk_usage(archive).free < 20 * 1024**3:
             raise TrimRefused("verified NFS mount/capacity unavailable; no trim")
 
+    def admit_export_capacity(self):
+        # Refuse before creating remote staging or starting the export. The
+        # runtime poll remains necessary: capacity can change after admission.
+        root_free = int(self.remote("df", "-B1", "--output=avail", "/").splitlines()[-1])
+        zone_free = int(self.remote("df", "-B1", "--output=avail", self.config["zone_work_root"]).splitlines()[-1])
+        self.state.update(root_available_bytes=root_free, zone_available_bytes=zone_free,
+                          root_reserve_bytes=32 * 1024**3, zone_launch_gate_bytes=47 * 1024**3)
+        if root_free < 32 * 1024**3:
+            raise TrimRefused("root32GiB reserve unavailable before export launch")
+        if zone_free < 47 * 1024**3:
+            raise TrimRefused("Zone transient export/catalog/rollback envelope unavailable")
+        self.phase("export-capacity-admitted", root_available_bytes=root_free,
+                   zone_available_bytes=zone_free, root_reserve_bytes=32 * 1024**3,
+                   zone_launch_gate_bytes=47 * 1024**3)
+
     def admit_apply_memory(self):
         # Catalog verification uses a bounded reclaimable file cache. Do not
         # infer today's host capacity for a later scheduled occurrence.
@@ -137,6 +161,14 @@ class Cycle:
         raise RuntimeError(f"supervision deadline: inspect original {unit}, do not duplicate")
 
     def execute(self):
+        try:
+            return self._execute()
+        except Exception as exc:
+            self.phase("failed", failed_phase=self.state.get("phase"),
+                       failure_type=type(exc).__name__, failure=str(exc))
+            raise
+
+    def _execute(self):
         c = self.config
         self.mounted_archive()
         identity = run(["git", "-C", c["source"], "rev-parse", "HEAD"], capture_output=True).stdout.strip()
@@ -168,16 +200,15 @@ class Cycle:
         partition_name = "label-events-lt-" + self.state["floor"][:10] + ".manifest.json"
         partition = archive / partition_name
         if not partition.exists():
+            if not self.state.get("export_launched"):
+                self.admit_export_capacity()
             self.remote("mkdir", "-p", remote_dir, zone + "/export")
             unit = "labelwatch-delta-export-" + name
             script = self.path / "export.sh"
-            script.write_text("#!/bin/bash\nset -euo pipefail\nexec >" + shlex.quote(remote_dir + "/export.log") + " 2>&1\ntrap 'printf \"exit=%s\\n\" \"$?\" > " + shlex.quote(remote_dir + "/EXPORT-TERMINAL") + "' EXIT\n" + shlex.join([c["host_python"], c["host_source"] + "/tools/label_events_trim_export.py", "--db", "/var/lib/labelwatch/labelwatch.db", "--floor", self.state["floor"], "--out-dir", zone + "/export", "--verify"]) + "\n")
+            script.write_text(producer_script([c["host_python"], c["host_source"] + "/tools/label_events_trim_export.py", "--db", "/var/lib/labelwatch/labelwatch.db", "--floor", self.state["floor"], "--out-dir", zone + "/export", "--verify"], remote_dir + "/export.log", remote_dir + "/EXPORT-TERMINAL"))
             # Persist identity before launching. Resume supervises this unit,
             # rather than reissuing export into an existing destination.
             if not self.state.get("export_launched"):
-                free = int(self.remote("df", "-B1", "--output=avail", c["zone_work_root"]).splitlines()[-1])
-                if free < 32 * 1024**3 + 15 * 1024**3:
-                    raise TrimRefused("Zone transient export/catalog/rollback envelope unavailable")
                 run(self.scp + [script, c["host"] + ":" + remote_dir + "/export.sh"])
                 self.phase("export-launch-recorded", export_launched=True, export_unit=unit, export_terminal=remote_dir + "/EXPORT-TERMINAL")
             self.dispatch(unit, remote_dir + "/export.sh", remote_dir + "/EXPORT-TERMINAL", remote_dir + "/export.log", 3600, "50%", "512M")
@@ -256,7 +287,7 @@ class Cycle:
             apply_config = {"database": "/var/lib/labelwatch/labelwatch.db", "receipt_dir": "/opt/labelwatch/deployment-receipts/" + name, "old_manifest": old_remote_manifest, "old_catalog_sha256": self.state["old_catalog_sha256"], "candidate_manifest": zone + "/catalog/" + new_manifest.name, "partition_manifest": zone + "/export/" + partition.name, "rollback_dir": zone + "/rollback", "nfs_custody": custody}
             save(self.path / "apply-config.json", apply_config)
             run(self.scp + [self.path / "apply-config.json", Path(c["source"]) / "tools/label_events_retention_apply.py", c["host"] + ":" + remote_dir + "/"])
-            script.write_text("#!/bin/bash\nset -euo pipefail\nexec >" + shlex.quote(remote_dir + "/apply.log") + " 2>&1\ntrap 'printf \"exit=%s\\n\" \"$?\" > " + shlex.quote(remote_dir + "/APPLY-TERMINAL") + "' EXIT\n" + shlex.join([c["host_python"], remote_dir + "/label_events_retention_apply.py", "--config", remote_dir + "/apply-config.json"]) + "\n")
+            script.write_text(producer_script([c["host_python"], remote_dir + "/label_events_retention_apply.py", "--config", remote_dir + "/apply-config.json"], remote_dir + "/apply.log", remote_dir + "/APPLY-TERMINAL"))
             run(self.scp + [script, c["host"] + ":" + remote_dir + "/apply.sh"])
             self.admit_apply_memory()
             self.phase("apply-launch-recorded", apply_launched=True, apply_unit=unit, apply_terminal=remote_dir + "/APPLY-TERMINAL")
