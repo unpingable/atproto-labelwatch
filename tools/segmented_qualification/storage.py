@@ -435,6 +435,47 @@ class Store:
                 # Keep only cache-relevant history and a bounded retry ring locally.
                 keep = [r[0] for r in c.execute("SELECT identity FROM q_segments WHERE status='RETIRED' ORDER BY identity DESC LIMIT 8")]
                 retired = [r[0] for r in c.execute("SELECT identity FROM q_segments WHERE status='RETIRED' AND NOT EXISTS(SELECT 1 FROM q_hot_keys WHERE segment=q_segments.identity)")]
+                # Expected historical coverage cannot disappear with a local
+                # retry-ring record. Publish an immutable archive-side catalog
+                # generation, then commit its compact global identity together
+                # with pruning. A process death before commit leaves an orphan
+                # generation; the prior committed catalog remains authoritative.
+                pruning = [identity for identity in retired if identity not in keep]
+                coverage_path = db.get_meta(c, 'q:archive_coverage_path')
+                coverage_hash = db.get_meta(c, 'q:archive_coverage_sha256')
+                entries = {}
+                namespace = None
+                if coverage_path:
+                    prior = Path(coverage_path)
+                    if sha(prior) != coverage_hash: raise RuntimeError('expected archive coverage corrupted; pruning refused')
+                    manifest = json.loads(prior.read_text())
+                    if manifest.get('schema') != 'labelwatch.archive-coverage.v1': raise RuntimeError('unknown coverage schema')
+                    entries = manifest['entries']; namespace = prior.parent
+                for identity in pruning:
+                    receipt_path = Path(c.execute('SELECT receipt FROM q_archive WHERE identity=?', (identity,)).fetchone()[0])
+                    receipt = json.loads(receipt_path.read_text()); destination = Path(receipt['archive_root'])
+                    if namespace is not None and destination.resolve() != namespace.resolve(): raise RuntimeError('coverage archive namespace mismatch')
+                    namespace = destination
+                    marker = namespace / (identity + '.retired.json')
+                    if not marker.exists() or json.loads(marker.read_text())['receipt_sha256'] != sha(receipt_path):
+                        raise RuntimeError('external retirement custody not durable; local retry record retained')
+                    entry = {'receipt_sha256': sha(receipt_path), 'parquet_sha256': receipt['parquet_sha256']}
+                    if identity in entries and entries[identity] != entry: raise RuntimeError('expected coverage identity conflict')
+                    entries[identity] = entry
+                if pruning:
+                    manifest = {'schema':'labelwatch.archive-coverage.v1','entries':entries}
+                    encoded = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
+                    generation = hashlib.sha256(encoded).hexdigest()
+                    published = namespace / ('coverage-' + generation + '.json')
+                    if published.exists():
+                        if json.loads(published.read_text()) != manifest: raise RuntimeError('immutable coverage generation changed')
+                    else:
+                        # atomic uses its own JSON encoding; hash the published
+                        # bytes, and filename is deterministic logical identity.
+                        atomic(published, manifest)
+                    db.set_meta(c, 'q:archive_coverage_path', str(published))
+                    db.set_meta(c, 'q:archive_coverage_sha256', sha(published))
+                    cut(death, 'after_coverage_before_prune_commit')
                 for identity in retired:
                     if identity in keep: continue
                     receipt_path = c.execute('SELECT receipt FROM q_archive WHERE identity=?', (identity,)).fetchone()[0]

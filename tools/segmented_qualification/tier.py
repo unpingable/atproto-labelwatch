@@ -9,7 +9,7 @@ import contextlib,json,sqlite3
 from pathlib import Path
 import duckdb
 import pyarrow as pa
-from storage import Store,ARROW_SCHEMA,FIELDS,COLS,sha,retention,lock,connect
+from storage import Store,ARROW_SCHEMA,FIELDS,COLS,sha,retention,lock,connect,db
 from schemas import relation
 
 
@@ -95,6 +95,21 @@ class TierSession:
                 identities.add(identity);paths.append(output)
             for identity,status in records:
                 if status in ('ARCHIVED','RETIRED') and identity not in identities:raise RuntimeError('catalog coverage missing for retired/archived vessel')
+            # Local retry-ring pruning never removes expected-history authority.
+            # Its compact global anchor names an immutable archive-side ledger.
+            coverage_path=db.get_meta(self.sqlite,'q:archive_coverage_path')
+            coverage_hash=db.get_meta(self.sqlite,'q:archive_coverage_sha256')
+            if bool(coverage_path)!=bool(coverage_hash):raise RuntimeError('expected archive coverage anchor incomplete')
+            if coverage_path:
+                coverage=Path(coverage_path)
+                if coverage.parent.resolve()!=self.archive.resolve() or sha(coverage)!=coverage_hash:raise RuntimeError('expected archive coverage unavailable/corrupted')
+                expected=json.loads(coverage.read_text())
+                if expected.get('schema')!='labelwatch.archive-coverage.v1':raise RuntimeError('unknown expected coverage schema')
+                receipts={identity:path for identity,output,stamp,path,receipt_stamp in catalog.entries}
+                for identity,entry in expected['entries'].items():
+                    if identity not in identities:raise RuntimeError('catalog coverage missing for pruned retired vessel')
+                    path=receipts[identity]
+                    if sha(path)!=entry['receipt_sha256'] or json.loads(path.read_text())['parquet_sha256']!=entry['parquet_sha256']:raise RuntimeError('expected archive receipt identity changed')
             if paths:
                 relation(self.duck,paths);self.duck.execute('ALTER VIEW label_events RENAME TO archived_events')
                 self.has_archive=True
