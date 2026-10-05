@@ -423,7 +423,7 @@ class Store:
                     c.commit(); deleted += result.rowcount; cut(death, 'during_key_gc')
                     c.execute('PRAGMA wal_checkpoint(PASSIVE)')
                 finally: c.close()
-            if observer and deleted % 500000 == 0: observer(deleted)
+            if observer: observer(deleted)
             if result.rowcount == 0: break
             time.sleep(0)  # Yield after a durable page; no accepted-data effect.
         with lock(self.root):
