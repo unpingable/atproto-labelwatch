@@ -8,7 +8,14 @@ def main(src,dst,result):
  assert not Path('/proc/3988364').exists(),'original producer still exists'
  assert not Path(str(src)+'-wal').exists(),'uncheckpointed source WAL'
  assert not dst.exists();s=os.statvfs(dst.parent);assert s.f_bavail*s.f_frsize>src.stat().st_size+1048576
- before=sha(src);tmp=dst.with_suffix('.incomplete');shutil.copyfile(src,tmp);tmp.chmod(0o600)
+ before=sha(src);tmp=dst.with_suffix('.incomplete')
+ with src.open('rb') as reader,tmp.open('xb') as writer:
+  tmp.chmod(0o600);copied=0
+  while block:=reader.read(8*1024*1024):
+   writer.write(block);copied+=len(block);writer.flush();os.fsync(writer.fileno())
+   os.posix_fadvise(writer.fileno(),0,copied,os.POSIX_FADV_DONTNEED)
+   os.posix_fadvise(reader.fileno(),0,copied,os.POSIX_FADV_DONTNEED)
+   if copied%(256*1024*1024)==0:print(json.dumps({'copied_bytes':copied}),flush=True)
  with tmp.open('rb') as f:os.fsync(f.fileno())
  assert sha(tmp)==before==sha(src),'source changed during custody checkpoint';os.replace(tmp,dst);syncdir(dst.parent)
  atomic(result,{'result':'PASS','at':dt.datetime.now(dt.timezone.utc).isoformat(),'source':str(src),'destination':str(dst),'sha256':before,'bytes':src.stat().st_size,'source_and_destination_links':[src.stat().st_nlink,dst.stat().st_nlink],'purpose':'Unique terminal global state before continuation; original failure/log/source remain immutable. Handoff is qualification fixture only.'})
