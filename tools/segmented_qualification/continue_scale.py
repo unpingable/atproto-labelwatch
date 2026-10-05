@@ -39,8 +39,8 @@ def main(out,primary,custody):
   for engine,c in [('sqlite',source),('parquet_duckdb',d)]:
    times=[];iterations=1 if name=='recent_report' and engine=='sqlite' else 7
    for i in range(iterations):
-    t=time.perf_counter();rows=[tuple(r) for r in c.execute(sql,args).fetchall()];times.append(time.perf_counter()-t);atomic(out/(name+'-'+engine+'-'+str(i)+'.json'),{'seconds':times[-1],'result_rows':len(rows),'sorted_result':sorted(rows),'sql_sha256':hashlib.sha256(sql.encode()).hexdigest()});progress('QUERY_OBSERVATION',query=name,engine=engine,iteration=i+1,seconds=times[-1])
-   answers.append(sorted(rows));timings[engine]={'p50_ms':statistics.median(times)*1000 if iterations>1 else None,'p95_ms':max(times)*1000 if iterations>1 else None,'single_pathological_observation_ms':times[0]*1000 if iterations==1 else None,'observations':iterations,'rows':len(rows)}
+    t=time.perf_counter();rows=[tuple(r) for r in c.execute(sql,args).fetchall()];times.append(time.perf_counter()-t);atomic(out/(name+'-'+engine+'-'+str(i)+'.json'),{'seconds':times[-1],'result_rows':len(rows),'sorted_result':sorted(rows,key=lambda r:json.dumps(r,default=str)),'sql_sha256':hashlib.sha256(sql.encode()).hexdigest()});progress('QUERY_OBSERVATION',query=name,engine=engine,iteration=i+1,seconds=times[-1])
+   answers.append(sorted(rows,key=lambda r:json.dumps(r,default=str)));timings[engine]={'p50_ms':statistics.median(times)*1000 if iterations>1 else None,'p95_ms':max(times)*1000 if iterations>1 else None,'single_pathological_observation_ms':times[0]*1000 if iterations==1 else None,'observations':iterations,'rows':len(rows)}
   assert answers[0]==answers[1],name;v={'name':name,'parity':'PASS','timings':timings};queries.append(v);atomic(out/(name+'-PARITY.json'),v)
  source.close();d.close();assert not bad;atomic(out/'TEMP-PLACEMENT.json',{'result':'PASS','sampled_peak':temp_peak,'scope':'SQLite progress-handler samples of actual open-unlinked files during reference sort. Paths must reside in precreated campaign data scratch; sampled lower bounds.'})
  with s.queries() as c:
