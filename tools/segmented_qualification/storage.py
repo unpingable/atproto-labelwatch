@@ -33,7 +33,8 @@ RESERVE = 64424509440
 
 def owned(root):
     root = Path(root).resolve()
-    if ROOT not in root.parents:
+    horizon = ROOT.parent.parent / 'labelwatch-segmented-horizon-capacity-20261005' / 'runtime'
+    if ROOT not in root.parents and horizon not in root.parents:
         raise ValueError('only new campaign-owned child fixtures are admitted')
     return root
 
