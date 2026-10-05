@@ -31,7 +31,11 @@ separate published portfolio census. No unrelated branch or dirty tree was reset
 
 Campaign root is `portfolio-private/campaigns/labelwatch-storage-architecture-20261005`.
 Each dispatch binds source, unit/container, log and terminal before unattended
-work. All seven producer/dependency units have MainPID=0; all three exact owned
+work. The final matched-ingest run used the durable mutable recovery checkpoint, but
+a separate immutable dispatch copy was not preserved. Its post-run
+DISPATCH-RECONCILIATION-203ea416.json is explicitly reconstructed evidence, not
+a pre-run receipt; independent review must assess that provenance gap.
+All seven producer/dependency units have MainPID=0; all three exact owned
 fixture containers are stopped. Failed systemd states are retained as evidence.
 
 | Run | Source | Terminal / evidence |
