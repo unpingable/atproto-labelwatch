@@ -15,6 +15,11 @@ It intentionally refuses existing fixture directories, databases and containers.
 New occurrences require new run/namespace identities and their own dispatch
 record. Never delete existing evidence to make a command succeed.
 
+A fresh occurrence uses `run.py --occurrence /path/under/campaign/runtime/new-UUID
+--container labelwatch-storage-pg-NEWID`. The occurrence directory must not
+exist. It contains its own `runtime/` and `evidence/`; retain the old attempt's
+terminal record. Record new unit identity and source revision before dispatch.
+
 Original producer command, dispatched durably by user-systemd:
 
 ```sh

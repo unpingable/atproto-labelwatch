@@ -197,7 +197,7 @@ def retention(root,week):
     pg.execute("CREATE INDEX idx_hide ON label_events(src,ts,uri) WHERE val='!hide' AND neg=0")
     pm=pg_copy(pg,'label_events',week)
     relation_bytes=sum(pg.execute('SELECT pg_total_relation_size(%s)',(n,)).fetchone()[0] for n in names)
-    dump=root/'weekspike.dump';container='labelwatch-storage-pg-abf37f3e'
+    dump=root/'weekspike.dump';container=os.environ.get('SPIKE_CONTAINER','labelwatch-storage-pg-abf37f3e')
     t=time.perf_counter()
     with dump.open('wb') as f:subprocess.run(['docker','exec',container,'pg_dump','-U','postgres','-Fc','weekspike'],stdout=f,check=True)
     dumpseconds=time.perf_counter()-t

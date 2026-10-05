@@ -1,6 +1,7 @@
 """Durable, finite, campaign-owned producer. Launch through user-systemd."""
 from __future__ import annotations
 import datetime
+import argparse
 import json
 import os
 import subprocess
@@ -29,9 +30,9 @@ def main():
     os.environ['SPIKE_PG_SOCKET']=str(socket)
     docker('run','-d','--name',CONTAINER,'--network','none','--cpus','2','--memory','2g',
            '--mount',f'type=bind,src={state},dst=/var/lib/postgresql/data',
-           '--mount',f'type=bind,src={socket},dst=/socket',
-           '-e','POSTGRES_HOST_AUTH_METHOD=trust','-e','PGHOST=/socket',IMAGE,
-           'postgres','-c','listen_addresses=','-c','unix_socket_directories=/socket',
+           '--mount',f'type=bind,src={socket},dst=/var/run/postgresql',
+           '-e','POSTGRES_HOST_AUTH_METHOD=trust','-e','PGHOST=/var/run/postgresql',IMAGE,
+           'postgres','-c','listen_addresses=','-c','unix_socket_directories=/var/run/postgresql',
            '-c','unix_socket_permissions=0777','-c','max_wal_size=1GB')
     import psycopg
     for _ in range(120):
@@ -59,6 +60,14 @@ def main():
     docker('stop','--time','30',CONTAINER)
 
 if __name__=='__main__':
+    parser=argparse.ArgumentParser();parser.add_argument('--occurrence',type=Path);parser.add_argument('--container')
+    args=parser.parse_args()
+    if args.occurrence:
+        ROOT=guard_root(args.occurrence);ROOT.mkdir();(ROOT/'evidence').mkdir();(ROOT/'runtime').mkdir()
+    if args.container:
+        if not args.container.startswith('labelwatch-storage-pg-'):raise ValueError('campaign container prefix required')
+        CONTAINER=args.container
+    os.environ['SPIKE_CONTAINER']=CONTAINER
     result={'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat()}
     try:main();result['status']='PASS'
     except BaseException as e:
