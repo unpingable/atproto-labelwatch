@@ -38,6 +38,31 @@ def tier_queries(store):
     finally:c.close();lease.__exit__(None,None,None)
 
 
+class VerifiedCatalog:
+    """Startup SHA admission; immutable fingerprints on request, like current cold catalog.
+
+    Scope: one archive custodian, no conforming mutation after publication.
+    Unexpected replacement/content mutation refuses until a fresh admission.
+    Scheduled full integrity audits remain separate; stat is not a bit-rot proof.
+    """
+    @staticmethod
+    def fingerprint(path):
+        st=Path(path).stat();return (st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns)
+    def __init__(self,archive):
+        self.archive=Path(archive);self.entries=[]
+        for path in sorted(self.archive.glob('*.receipt.json')):
+            receipt=json.loads(path.read_text());output=self.archive/(receipt['identity']+'.parquet')
+            before=self.fingerprint(output)
+            if sha(output)!=receipt['parquet_sha256'] or before!=self.fingerprint(output):raise RuntimeError('archive integrity/admission failed')
+            self.entries.append((receipt['identity'],output,before,path,self.fingerprint(path)))
+    def files(self):
+        answer=[]
+        for identity,output,stamp,receipt,receipt_stamp in self.entries:
+            if self.fingerprint(output)!=stamp or self.fingerprint(receipt)!=receipt_stamp:raise RuntimeError('catalog immutable identity changed; explicit readmission required')
+            answer.append((identity,output))
+        return answer
+
+
 class Row(dict):
     def __getitem__(self,key):
         if isinstance(key,int):return list(self.values())[key]
@@ -53,20 +78,20 @@ class Result:
 
 
 class TierSession:
-    def __init__(self,store,archive,subject=None,include_below_floor=False):
-        self.store=store;self.archive=Path(archive);self.subject=subject;self.all_history=include_below_floor
+    def __init__(self,store,archive,subject=None,include_below_floor=False,catalog=None,batch=False):
+        self.store=store;self.archive=Path(archive);self.subject=subject;self.all_history=include_below_floor;self.catalog=catalog;self.batch=batch
     def __enter__(self):
         self.lease=tier_queries(self.store);self.sqlite=self.lease.__enter__();self.duck=duckdb.connect()
-        self.duck.execute("SET memory_limit='256MB'");self.duck.execute('SET threads=1')
-        spill=self.store.root/'query-scratch';spill.mkdir(exist_ok=True);self.duck.execute('SET temp_directory=?',[str(spill)]);self.duck.execute("SET max_temp_directory_size='1GB'")
+        self.duck.execute("SET memory_limit='"+('512MB' if self.batch else '256MB')+"'");self.duck.execute('SET threads=1');self.duck.execute('SET preserve_insertion_order=false')
+        spill=self.store.root/'query-scratch';spill.mkdir(exist_ok=True);self.duck.execute('SET temp_directory=?',[str(spill)]);self.duck.execute("SET max_temp_directory_size='"+('2GB' if self.batch else '1GB')+"'")
         records=[tuple(r) for r in self.sqlite.execute("SELECT identity,status FROM q_segments ORDER BY identity")];local=[r for r in records if r[1]!='RETIRED'];self.hot_aliases=['s'+str(i) for i,r in enumerate(local) if r[1] in ('ACTIVE','SEALED')]
         self.floor=None if self.all_history else retention.live_floor(self.sqlite)
         paths=[];identities=set()
         try:
-            for receipt_path in sorted(self.archive.glob('*.receipt.json')):
-                receipt=json.loads(receipt_path.read_text());identity=receipt['identity'];output=self.archive/(identity+'.parquet')
+            catalog=self.catalog or VerifiedCatalog(self.archive)
+            if catalog.archive.resolve()!=self.archive.resolve():raise RuntimeError('catalog namespace mismatch')
+            for identity,output in catalog.files():
                 if identity in identities:raise RuntimeError('duplicate catalog identity')
-                if sha(output)!=receipt['parquet_sha256']:raise RuntimeError('archive integrity failed; historical query unavailable')
                 identities.add(identity);paths.append(output)
             for identity,status in records:
                 if status in ('ARCHIVED','RETIRED') and identity not in identities:raise RuntimeError('catalog coverage missing for retired/archived vessel')
