@@ -117,8 +117,9 @@ class Store:
         CREATE TABLE q_segments(identity TEXT PRIMARY KEY, status TEXT NOT NULL, schema_generation INTEGER NOT NULL);
         CREATE UNIQUE INDEX q_one_active ON q_segments(status) WHERE status='ACTIVE';
         CREATE TABLE q_pending(id INTEGER PRIMARY KEY, segment TEXT NOT NULL);
-        CREATE TABLE q_hot_keys(event_hash TEXT PRIMARY KEY, ts TEXT NOT NULL, event_id INTEGER NOT NULL);
+        CREATE TABLE q_hot_keys(event_hash TEXT PRIMARY KEY, ts TEXT NOT NULL, event_id INTEGER NOT NULL, segment TEXT NOT NULL);
         CREATE INDEX q_hot_keys_ts ON q_hot_keys(ts);
+        CREATE INDEX q_hot_keys_segment ON q_hot_keys(segment);
         CREATE TABLE q_transition(singleton INTEGER PRIMARY KEY CHECK(singleton=1), old TEXT NOT NULL, new TEXT NOT NULL);
         CREATE TABLE q_archive(identity TEXT PRIMARY KEY, receipt TEXT NOT NULL);
         ''')
@@ -184,6 +185,15 @@ class Store:
             db.set_meta(c, 'q:active', new); c.execute('DELETE FROM q_transition'); c.commit()
             cut(death, 'after_active_before_projection')
         self.flush(c, death)
+        for row in c.execute("SELECT identity FROM q_segments WHERE status='ARCHIVED'").fetchall():
+            identity = row[0]
+            if not (self.root / (identity + '.sqlite')).exists():
+                receipt_row = c.execute('SELECT receipt FROM q_archive WHERE identity=?', (identity,)).fetchone()
+                if receipt_row is None: raise RuntimeError('missing source without custody receipt')
+                receipt = json.loads(Path(receipt_row[0]).read_text())
+                archive = Path(receipt['archive_root']) / (identity + '.parquet')
+                if sha(archive) != receipt['parquet_sha256']: raise RuntimeError('missing source and invalid archive custody')
+                c.execute("UPDATE q_segments SET status='RETIRED' WHERE identity=?", (identity,)); c.commit()
         active = c.execute("SELECT identity FROM q_segments WHERE status='ACTIVE'").fetchall()
         if len(active) != 1: raise RuntimeError('active authority is ambiguous')
         atomic(self.root / 'ACTIVE.json', {'identity': active[0][0], 'authority': 'state.sqlite:q_segments'})
@@ -206,7 +216,7 @@ class Store:
                         fresh.append(row)
                 n = ingest.store_label_events(c, fresh)
                 for row in c.execute('SELECT id,event_hash,ts FROM label_events').fetchall():
-                    c.execute('INSERT OR IGNORE INTO q_hot_keys VALUES (?,?,?)', (row[1], row[2], row[0]))
+                    c.execute('INSERT OR IGNORE INTO q_hot_keys VALUES (?,?,?,?)', (row[1], row[2], row[0], identity))
                     c.execute('INSERT OR IGNORE INTO q_pending VALUES (?,?)', (row[0], identity))
                 for did, timestamp in {(r[0], r[8]) for r in rows}:
                     db.upsert_labeler(c, did, timestamp)
@@ -246,11 +256,12 @@ class Store:
             finally: c.close()
 
     def archive(self, identity, destination, death=None, injected=None):
+        dt.date.fromisoformat(identity)
         self.check_local(injected)
         destination = Path(destination)
         # Only this campaign's verified NFS root or its exact local negative fixtures.
         archive_root = Path(json.loads((ROOT.parent / 'evidence/ARCHIVE-DESTINATION.json').read_text())['campaign_archive'])
-        if destination.resolve() != archive_root.resolve() and ROOT not in destination.resolve().parents:
+        if destination.resolve() != archive_root.resolve() and archive_root.resolve() not in destination.resolve().parents and ROOT not in destination.resolve().parents:
             raise ValueError('unowned archive path')
         if injected in ('archive_unavailable', 'archive_read_only', 'archive_full'):
             raise OSError(injected)
@@ -273,6 +284,10 @@ class Store:
         probe.rename(probe.with_suffix('.probe-renamed')); probe.with_suffix('.probe-renamed').unlink(); syncdir(destination)
         sql = connect(source, readonly=True)
         if sql.execute("SELECT value FROM segment_meta WHERE key='sealed'").fetchone()[0] != '1': raise RuntimeError('source not sealed')
+        generation = sql.execute("SELECT value FROM segment_meta WHERE key='schema_generation'").fetchone()[0]
+        physical_columns = tuple(r[1] for r in sql.execute('PRAGMA table_info(label_events)'))
+        if generation != '23' or physical_columns != FIELDS:
+            sql.close(); raise RuntimeError('unqualified writer schema refused before conversion; use separately qualified generation adapter')
         source_hash = sha(source); started = time.perf_counter(); temp = output.with_suffix('.parquet.incomplete')
         if not output.exists():
             schema = ARROW_SCHEMA.with_metadata({b'labelwatch.schema_generation': b'23', b'labelwatch.segment_identity': identity.encode()})
@@ -305,6 +320,7 @@ class Store:
         return result
 
     def retire(self, identity, injected=None, death=None):
+        dt.date.fromisoformat(identity)
         with lock(self.root), lock(self.root, 'reader.lock'):
             c = connect(self.state)
             try:
@@ -323,7 +339,49 @@ class Store:
                     source.unlink(); syncdir(self.root)
                 cut(death, 'after_unlink_before_retired')
                 c.execute("UPDATE q_segments SET status='RETIRED' WHERE identity=?", (identity,)); c.commit()
+                atomic(Path(receipt['archive_root']) / (identity + '.retired.json'),
+                       {'identity': identity, 'receipt_sha256': sha(receipt_path), 'parquet_sha256': receipt['parquet_sha256'], 'source_retired': True})
                 return allocated
+            finally: c.close()
+
+    def advance_floor(self, floor, death=None):
+        # Qualification clock/floor, not a production retention policy change.
+        retention._validate_floor(floor)
+        with lock(self.root):
+            c = connect(self.state)
+            try:
+                self.recover(c)
+                previous = retention.live_floor(c)
+                if previous and floor < previous: raise RuntimeError('backward retention floor refused')
+                for identity, status in c.execute('SELECT identity,status FROM q_segments').fetchall():
+                    if status in ('ARCHIVED', 'RETIRED'):
+                        row = c.execute('SELECT receipt FROM q_archive WHERE identity=?', (identity,)).fetchone()
+                        if not row: raise RuntimeError('archive custody missing')
+                        receipt = json.loads(Path(row[0]).read_text())
+                        if sha(Path(receipt['archive_root']) / (identity + '.parquet')) != receipt['parquet_sha256']:
+                            raise RuntimeError('archive custody invalid; floor cannot advance')
+                    else:
+                        s = connect(self.root / (identity + '.sqlite'), readonly=True)
+                        older = s.execute('SELECT 1 FROM label_events WHERE ts<? LIMIT 1', (floor,)).fetchone(); s.close()
+                        if older: raise RuntimeError('unarchived accepted data below proposed floor')
+                db.set_meta(c, retention.RETENTION_FLOOR_KEY, floor); c.commit(); cut(death, 'after_floor_commit')
+                deleted = 0
+                while True:
+                    result = c.execute('DELETE FROM q_hot_keys WHERE event_hash IN (SELECT event_hash FROM q_hot_keys WHERE ts<? ORDER BY ts LIMIT 10000)', (floor,))
+                    c.commit(); deleted += result.rowcount; cut(death, 'during_key_gc')
+                    c.execute('PRAGMA wal_checkpoint(PASSIVE)')
+                    if result.rowcount == 0: break
+                # Keep only cache-relevant history and a bounded retry ring locally.
+                keep = [r[0] for r in c.execute("SELECT identity FROM q_segments WHERE status='RETIRED' ORDER BY identity DESC LIMIT 8")]
+                retired = [r[0] for r in c.execute("SELECT identity FROM q_segments WHERE status='RETIRED' AND NOT EXISTS(SELECT 1 FROM q_hot_keys WHERE segment=q_segments.identity)")]
+                for identity in retired:
+                    if identity in keep: continue
+                    receipt_path = c.execute('SELECT receipt FROM q_archive WHERE identity=?', (identity,)).fetchone()[0]
+                    receipt = json.loads(Path(receipt_path).read_text()); marker = Path(receipt['archive_root']) / (identity + '.retired.json')
+                    if not marker.exists() or json.loads(marker.read_text())['receipt_sha256'] != sha(receipt_path):
+                        raise RuntimeError('external retirement custody not durable; local retry record retained')
+                    c.execute('DELETE FROM q_archive WHERE identity=?', (identity,)); c.execute('DELETE FROM q_segments WHERE identity=?', (identity,))
+                c.commit(); return deleted
             finally: c.close()
 
     @contextlib.contextmanager
@@ -358,3 +416,4 @@ if __name__ == '__main__':
     elif a.action == 'ingest': print(s.ingest(json.loads(Path(a.rows_json).read_text()), 'fixture-provider', a.cursor, a.death))
     elif a.action == 'archive': print(json.dumps(s.archive(a.period, a.archive, a.death)))
     elif a.action == 'retire': print(s.retire(a.period, death=a.death))
+    elif a.action == 'floor': print(s.advance_floor(a.period, death=a.death))

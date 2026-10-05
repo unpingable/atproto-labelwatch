@@ -94,6 +94,22 @@ def qualify(base):
     # Below floor replays take the existing quarantine path and advance source cursor.
     s=Store.create(base/'below-floor');s.ingest([event(1,'2026-08-01T00:00:00Z')], 'fixture-provider','108');s.ingest([event(1,'2026-08-01T00:00:00Z')], 'fixture-provider','109')
     c=connect(s.state);assert c.execute('SELECT seen_count FROM quarantined_events').fetchone()[0]==2;assert c.execute('SELECT COUNT(*) FROM q_hot_keys').fetchone()[0]==0;c.close();results.append({'case':'archive_below_floor_replay','result':'PASS','existing_quarantine_semantics':True})
+    for phase in ['after_floor_commit','during_key_gc']:
+        s=Store.create(base/phase);s.ingest([event()], 'fixture-provider','110');s.rotate('2026-10-05');dest=base/(phase+'-archive');dest.mkdir();s.archive('2026-09-28',dest);s.retire('2026-09-28')
+        r=child('floor',s,phase,period='2026-10-05T00:00:00Z');assert r.returncode==73
+        s.advance_floor('2026-10-05T00:00:00Z');assert s.snapshot()['keys']==0
+        assert s.ingest([event()],'fixture-provider','111')['inserted']==0
+        results.append({'case':phase,'result':'PASS','below_floor_replay_quarantined_after_cache_expiry':True})
+    s=Store.create(base/'floor-before-custody');s.ingest([event()], 'fixture-provider','112');s.rotate('2026-10-05')
+    try:s.advance_floor('2026-10-05T00:00:00Z')
+    except RuntimeError:pass
+    else:raise AssertionError('floor advanced before custody')
+    results.append({'case':'floor_before_archive_custody','result':'PASS_REFUSAL'})
+    s=Store.create(base/'unknown_schema');s.ingest([event()], 'fixture-provider','113');s.rotate('2026-10-05');c=connect(s.root/'2026-09-28.sqlite');c.execute('ALTER TABLE label_events ADD COLUMN new_field TEXT');c.commit();c.close();dest=base/'unknown-schema-archive';dest.mkdir()
+    try:s.archive('2026-09-28',dest)
+    except RuntimeError:pass
+    else:raise AssertionError('unknown writer schema silently lost a column')
+    assert not list(dest.glob('*.parquet'));results.append({'case':'unknown_writer_column','result':'PASS_REFUSAL'})
     atomic(base/'RESULT.json',{'cases':results,'rows_are_synthetic':'Finite typed state/control cases; current-scale corpus is separate','scope':'Process death and protocol-conforming concurrent writers; not physical host power loss','result':'PASS'})
     return results
 
