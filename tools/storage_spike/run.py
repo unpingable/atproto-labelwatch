@@ -25,7 +25,8 @@ def admission():
 
 def main():
     runtime=guard_root(ROOT/'runtime');os.umask(0o077);admission()
-    socket=runtime/'pgsocket';socket.mkdir(mode=0o777);socket.chmod(0o777)
+    socket_parent=Path('/data/git/.lane-sockets');socket_parent.mkdir(mode=0o700,exist_ok=True)
+    socket=socket_parent/CONTAINER;socket.mkdir(mode=0o777);socket.chmod(0o777)
     state=runtime/'pgstate';state.mkdir()
     os.environ['SPIKE_PG_SOCKET']=str(socket)
     docker('run','-d','--name',CONTAINER,'--network','none','--cpus','2','--memory','2g',
@@ -38,7 +39,9 @@ def main():
     for _ in range(120):
         try:
             c=psycopg.connect(host=str(socket),dbname='postgres',user='postgres',autocommit=True);break
-        except psycopg.OperationalError:time.sleep(1)
+        except psycopg.OperationalError as e:
+            if _==0:print('PostgreSQL readiness: '+str(e),flush=True)
+            time.sleep(1)
     else:raise RuntimeError('owned PostgreSQL failed to start')
     version=c.execute('SELECT version()').fetchone()[0];c.execute('CREATE DATABASE fixtures');c.close()
     identity=docker('inspect',CONTAINER,'--format','{{json .Id}}',capture_output=True,text=True).stdout.strip()

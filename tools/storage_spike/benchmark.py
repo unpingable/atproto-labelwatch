@@ -72,7 +72,7 @@ def load_sqlite(path,files):
     return c,{'rows':n,'ingest_seconds':duration,'rows_per_second':n/duration,'allocated':allocated(path),'stats':stats(c)}
 
 def pgconnect(root, db='spike'):
-    return psycopg.connect(host=str(root/'pgsocket'),user='postgres',dbname=db,autocommit=True)
+    return psycopg.connect(host=os.environ['SPIKE_PG_SOCKET'],user='postgres',dbname=db,autocommit=True)
 
 def pg_copy(c,table,files):
     count=0;t=time.perf_counter()
