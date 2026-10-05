@@ -31,11 +31,38 @@ NAS or production unit is deliberately disrupted. No physical power-loss proof.
 | Death after floor commit / during key expiry | Extra keys harmless; retry bounded GC; quarantine below floor | after_floor_commit; during_key_gc. |
 | Unknown writer column/schema | Refuse before conversion; no silent column loss | unknown_writer_column; schema-window fixtures. |
 | NULL, Unicode, rename, new encoding | Full custody; versioned canonical reader or refusal | Schema vectors 23–26. |
-| Concurrent writers | One global writer fence and monotonic IDs | Supplement; evidence pending terminal qualification. |
-| Reader concurrent with retirement | Reader lease fences unlink | Supplement; evidence pending terminal qualification. |
+| Concurrent writers | One global writer fence and monotonic IDs | Supplement and final guard cases PASS. |
+| Reader concurrent with retirement | Reader lease fences unlink | Supplement and final guard cases PASS. |
 | Local-only read after recent file retirement | Must not imply complete coverage | Preserved counterexample; cross-tier reader must pass. |
 | Archive missing/corrupted after retirement | Historical path unavailable, never empty/clear | Cross-tier supplement requires refusal. |
-| Local queue / WAL / page ceiling | Backpressure before new acceptance; durable journal remains recoverable | Explicit adapter guard; measured limits and remaining caveats in qualification report. |
+| Local queue / WAL / page ceiling | Backpressure before new acceptance; durable journal remains recoverable | Per-writer page ceiling, two-vessel queue and pinned-WAL expiry tests PASS; post-acceptance full vessel retains journal and cursor for explicit bounded recovery. |
 
 A control-path PASS is not full workload acceptance. Current-scale data,
 query latency/capacity and independent reviewer disposition are separate gates.
+
+## Preserved qualification counterexamples
+
+| Attempt / condition | Actual result | Successor / limits |
+|---|---|---|
+| finite-001 misplaced pre-commit cut | db.set_cursor had already committed; expected zero was wrong | Corrected actual acceptance boundary; original source/error retained. |
+| Local-only read after recent file retirement | Zero local rows despite five accepted archived events | Cross-tier reader returns full archive + active coverage; missing catalog refuses. |
+| Arrow worker reads default thread-bound SQLite connection | Actual thread-affinity error | Serialized readonly connection handoff; no simultaneous caller. |
+| Creation-only max_page_count | Reopened writer had default unbounded page count | Apply owned cap on every writer; real file-full refusal/recovery tested. |
+| Original 12M report query, DuckDB 512 MB / two workers | Memory refusal; original large producer FAILED | Same SQL passes 512 MB / one worker / insertion-order preservation off; equivalent larger-memory and SQL-rewrite controls preserved. |
+| SQLITE_TMPDIR set after imports | SQLite reference sort wrote 1.318 GB open-unlinked in /var/tmp | Root estimate exceeded, hard reserve maintained, explicit amendment; successor requires bootstrap environment and direct pathname evidence. |
+| Fast NFS custody copy in 512 MiB unit | Kernel resource kill; partial file was never custody | New bounded streaming/fsync copy passes; source and failure receipt preserved. |
+| Whole key-expiry writer fence | 639.68-second global writer hold at12M keys | Corrected10k-page fencing expires11,999,880 keys while5,985 new events/cursor/payload pass; p95 probe0.724s. |
+| Catalog admitted before a new archived segment | Potential missing required coverage | Missing ARCHIVED/RETIRED entry explicitly refuses; refresh recovers. |
+| Invalid successor dispatch argument | Caught before launch; no execution/allocation | New immutable corrected dispatch; never overwrite the invalid one. |
+
+Actual archive-directory permission refusal, write-full/refusal after admission,
+two concurrent converters, immutable first receipt, wrong destination schema tag,
+full global file, full vessel and pinned key-expiry reader have additional guard
+receipts. None deliberately changes NAS permissions, fills shared storage or
+breaks a production service. Post-rename corruption is an explicit refusal;
+operator recovery must retain the corrupt object and valid receipt before repair.
+
+No physical host/NFS power loss is claimed. Process-death cuts establish fresh
+process recovery; storage power-loss behavior still relies on FULL/fsync and the
+qualified filesystem contract. Current-scale timings and final independent
+acceptance are reported separately from these finite controls.

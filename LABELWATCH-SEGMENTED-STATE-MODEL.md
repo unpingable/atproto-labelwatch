@@ -29,8 +29,7 @@ The bounded production observation collected table DDL and 412 metadata **key
 names**, without copying private cursor values. Every ordinary global table is
 seeded and digested in rollover/retirement fixtures; metadata and sidecar tests
 are separate. Preserving opaque state does not qualify every future collector
-adapter. In particular, observed-source evidence and ingestion-outcome updates
-must be routed to stable global state at implementation time.
+adapter. The isolated adapter calls the real observed-source helper in stable global state; its flag and evidence updates have a guard case. Collector outcome adapters remain implementation work and must keep using the global owner.
 
 ## Acceptance and rollover
 
@@ -62,7 +61,7 @@ Dedupe needs precisely the current live-floor lookback: an archived event still
 above floor remains in the hot hash table. Below floor the existing quarantine
 rule applies without historical lookup. Floor advancement checks archive custody
 first, commits the floor, then expires keys in retryable 10,000-row batches.
-Death after floor commit leaves extra keys, not loss; retries finish expiry.
+Death after floor commit leaves extra keys, not loss; retries finish expiry. Each page releases the global writer fence, allowing ingestion between pages; superseded-floor maintenance refuses. The original639.68-second whole-expiry fence is a preserved operability counterexample, corrected and tested against12M restored keys.
 
 This replaces payload DELETE with file retirement but **does not eliminate
 row-level maintenance**: hash-key expiry remains and quarantine/global state
@@ -71,7 +70,7 @@ that a production horizon fits. These distinctions are adoption gates.
 
 ## Query coverage
 
-The local SQLite adapter reads at most eight non-retired vessels with fixed
+The local SQLite adapter reads at most two non-retired vessels with fixed
 UNION views and a reader lease. It is not an all-history adapter. A current or
 recent answer cannot drop still-required rows merely because their vessel was
 archived. Retain required vessels or route that coverage to verified Parquet;
@@ -92,3 +91,59 @@ seal, verification and retirement; process death preserves durable states.
 It establishes only logical custody under honest SQLite FULL/fsync storage,
 conforming writers and reader leases. Real cut tests supply correspondence;
 physical host/NFS power loss and application integration are not proven here.
+
+## Period and admission contract
+
+The tested normal period is a UTC arrival week, Monday-start identity. The caller
+supplies the expected next identity; the prototype validates its ISO date and
+refuses backward movement. It does not silently rewrite files when wall time
+changes. Monday alignment and the clock-to-period adapter must be explicit in
+collector integration; unexpected forward boundary tests preserve cursor/state,
+and gaps remain observation obligations. Authored timestamps remain payload and
+query/retention keys, never a reason to reopen a sealed arrival vessel.
+
+Local payload queue is exactly one ACTIVE plus at most one SEALED/ARCHIVED vessel.
+A third non-retired vessel is refused. Immutable archive work takes its own
+per-segment fence and a reader lease, independently of the ingestion writer
+fence. Concurrent conversion retries return the original immutable receipt.
+
+Every writer reapplies the owned SQLite page ceiling. The initial creation-only
+limit was ineffective after reopen and is retained as a counterexample. A full
+vessel after acceptance leaves the exact event/cursor in the global journal;
+qualified recovery is explicit and bounded. A full global file refuses before
+acceptance. WAL admission refuses when checkpointing is blocked; key expiry
+checks before each 10,000-key page. Its small pinned-reader negative control
+proves refusal and subsequent retry, not a continuous exact production WAL peak.
+
+The physical bound is parameterized by admitted global state, two admitted
+vessels, WAL admission plus one bounded transaction, and explicit query spill.
+The tested 8 GiB global / 16 GiB vessel limits are fixture controls. They are not
+a claim that all production global state plus a 40-day replay horizon fits 8 GiB.
+No production capacity policy or retention floor changes in this lane.
+
+## Finite schema generations
+
+| Generation | Qualified change | Canonical reader behavior |
+|---|---|---|
+| 23 | Current event schema and seven deployed indexes | Full canonical fields; active writer stays 23. |
+| 24 | Add nullable note and SQLite index | Preserve auxiliary column in custody; canonical reader ignores approved auxiliary field. |
+| 25 | Rename val to label_value | Explicit lossless mapping to canonical val. |
+| 26 | Integer neg to true/false/NULL text | Explicit mapping; unknown encoding refuses. |
+
+Reader 26 accepts the qualified 23–26 window. Reader 23 refuses newer generations;
+22/27 refuse. Actual SQLite ALTER/index operations and full physical-column
+round trips accompany shared NULL/Unicode vectors. The production-style archive
+writer deliberately refuses a new generation until its adapter is separately
+qualified. This is a finite evolution contract, not a claim that active writer
+upgrade/rollback has been deployed or arbitrary schemas remain supported.
+
+## Formalization identity and scope
+
+The one-event model in tools/segmented_qualification/supplement.py explores seven
+states/eighteen edges under its declared assumptions. Exact result/source hashes
+are in the producer seal. The proposition is accepted-event custody and verified
+retirement across durable transition cuts. It does not prove the whole service,
+physical power failure, arbitrary concurrent writers or future schema adapters.
+Practical process-cut, concurrent-writer, mutation and finite-schema cases provide
+bounded correspondence. The independent acceptance record names the decision
+owner and any counterexamples; producer completion alone does not accept a claim.
