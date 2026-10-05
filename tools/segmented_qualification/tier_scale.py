@@ -38,7 +38,7 @@ def main(occurrence,primary):
     with TierSession(s,archive,include_below_floor=True) as reader:
         count=reader.execute('SELECT COUNT(*) AS c FROM label_events').fetchone()['c'];assert count==result['events']+100
         dense_count=reader.execute('SELECT COUNT(*) AS c FROM label_events WHERE target_did = ?',(p['dense'],)).fetchone()['c']
-        report=reader.execute('SELECT labeler_did,val,COUNT(*) AS c FROM label_events GROUP BY labeler_did,val').fetchall()
+        report_groups=reader.execute('SELECT labeler_did,val,COUNT(*) AS c FROM label_events GROUP BY labeler_did,val').fetchall()
     # Execute the actual report helpers without activating a report job.
     # Hourly distribution, activity, top-target and evidence reads are batch
     # consumers; their timings have no invented interactive SLA.
@@ -57,7 +57,7 @@ def main(occurrence,primary):
         evidence=report._alert_events(reader,[rows[0][9]])
         assert len(evidence)==1 and evidence[0]['event_hash']==rows[0][9]
         report_reads['report_alert_events_cross_tier']={'result':'PASS','hot_event_found':True}
-    atomic(occurrence/'RESULT.json',{'result':'PASS','source_primary_result_sha256':sha(primary/'RESULT.json'),'source_archive_receipt_sha256':sha(archive/'2026-09-28.receipt.json'),'events_queried':count,'hot_added':100,'dense_events':dense_count,'frontdoor':measures,'report_groups':len(report),'actual_report_reads':report_reads,'no_duckdb_synchronous_ingest':True,'scope':'Complete current-scale retired Parquet plus active SQLite. Restored global state is query-only, not a collector cutover; synthetic floor unchanged in production. Frontdoor keeps existing cold-history and density behavior.'})
+    atomic(occurrence/'RESULT.json',{'result':'PASS','source_primary_result_sha256':sha(primary/'RESULT.json'),'source_archive_receipt_sha256':sha(archive/'2026-09-28.receipt.json'),'events_queried':count,'hot_added':100,'dense_events':dense_count,'frontdoor':measures,'report_groups':len(report_groups),'actual_report_reads':report_reads,'no_duckdb_synchronous_ingest':True,'scope':'Complete current-scale retired Parquet plus active SQLite. Restored global state is query-only, not a collector cutover; synthetic floor unchanged in production. Frontdoor keeps existing cold-history and density behavior.'})
 
 
 if __name__=='__main__':
