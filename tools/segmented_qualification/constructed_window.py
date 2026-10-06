@@ -70,7 +70,8 @@ def bulk_pages(store, pages, next_id):
 def event(ordinal,source):
     raw={'src':source,'uri':('did:plc:dense' if ordinal%3 else 'at://did:plc:sparse/app.bsky.feed.post/'+str(ordinal)),
          'val':'synthetic-production-shape-café-'+str(ordinal),'cts':'1999-01-01T00:00:00Z'}
-    return (source,source,raw['uri'],None,raw['val'],0,None,None,raw['cts'],custody.canonical_identity(raw),None)
+    normalized=ingest.normalize_label(raw,strict_identity=True)
+    return tuple(getattr(normalized,k) for k in FIELDS[1:-1])+(db.parse_target_did(raw['uri']),)
 
 
 def table_image(store):
@@ -158,6 +159,21 @@ def qualify(out):
     atomic(out/'RESULT.json',result);atomic(out/'CONSTRUCTION.json',{'state':'QUALIFIED_TINY','events':600});return result
 
 
+def collector_shape(raw,cycle,cycle_days):
+    """Reconstruct an explicitly synthetic raw label accepted by strict ingest.
+
+    Retained v23 drops ver, so ver is absent. Authored ranges of repeated cycles
+    are disjoint; signatures are copied shapes without authenticity claims.
+    """
+    source=raw['src'] or raw['labeler_did']
+    label={k:raw.get(k) for k in ('uri','cid','val','exp','sig')}
+    label.update(src=source,labeler_did=source,neg=bool(raw.get('neg')),
+                 cts=iso(clock(raw['ts'])+dt.timedelta(days=cycle*cycle_days)))
+    normalized=ingest.normalize_label(label,strict_identity=True)
+    row=tuple(getattr(normalized,k) for k in FIELDS[1:-1])+(db.parse_target_did(normalized.uri),)
+    return source,row,label
+
+
 def construct_specimen(args):
     """Explicitly admitted offline volume construction; never auto-launched.
 
@@ -216,23 +232,44 @@ def construct_specimen(args):
                 record={'method':_name,'seconds':time.monotonic()-t,'before':before,'after':after,'sampled_peak_bytes':maximum,'sample_period_seconds':.2,'scope':'includes visible allocated files and own open-unlinked scratch; sampled lower bound'}
                 with (out/'TRANSITIONS.jsonl').open('a') as f:f.write(json.dumps(record)+'\n')
         setattr(store,name,measured)
-    sources=set()
-    for batch in pq.ParquetFile(args.specimen).iter_batches(batch_size=10000,columns=['src','labeler_did']):
-        for row in batch.to_pylist():sources.add(row['src'] or row['labeler_did'])
-        if len(sources)>2048:raise RuntimeError('source roster ceiling')
+    sources=set();source_min=None;source_max=None;normalized_rows=0;old_hash_differences=0
+    parquet=pq.ParquetFile(args.specimen)
+    if not 0<parquet.metadata.num_rows<=12000000:raise RuntimeError('qualified input row ceiling')
+    # A qualification-only uniqueness oracle, not part of the successor state.
+    # Base identities are unique; nonoverlapping authored ranges prove distinct
+    # repeated cycles without manufacturing hashes independently of raw labels.
+    with closing(sqlite3.connect(out/'input-identities.sqlite')) as oracle:
+        oracle.execute('PRAGMA journal_mode=DELETE');oracle.execute('PRAGMA cache_size=-16384')
+        oracle.execute('CREATE TABLE identities(hash BLOB PRIMARY KEY) WITHOUT ROWID')
+        for batch in parquet.iter_batches(batch_size=1000):
+            identities=[]
+            for raw in batch.to_pylist():
+                source,row,label=collector_shape(raw,0,0);sources.add(source)
+                stamp=clock(row[8]);source_min=stamp if source_min is None else min(source_min,stamp);source_max=stamp if source_max is None else max(source_max,stamp)
+                identities.append((bytes.fromhex(row[9]),));normalized_rows+=1
+                old_hash_differences+=row[9]!=raw['event_hash']
+            if len(sources)>2048:raise RuntimeError('source roster ceiling')
+            admission(1024**2);oracle.executemany('INSERT INTO identities VALUES(?)',identities);oracle.commit()
+            if normalized_rows%100000==0:atomic(out/'PROGRESS.json',{'phase':'STRICT_SOURCE_IDENTITY_ORACLE','rows':normalized_rows,'target':parquet.metadata.num_rows,'elapsed_seconds':time.monotonic()-began,**admission()})
+        assert oracle.execute('SELECT COUNT(*) FROM identities').fetchone()[0]==parquet.metadata.num_rows
+    cycle_days=(source_max-source_min).days+2
+    atomic(out/'INPUT-NORMALIZATION.json',{'source_rows':normalized_rows,'old_hash_differences':old_hash_differences,'strict_unique_identities':normalized_rows,'authored_min':iso(source_min),'authored_max':iso(source_max),'cycle_shift_days':cycle_days,'contract':'Actual normalize_label(strict_identity=True); absent ver reconstructed explicitly; target_did from actual collector parser. Distinct authored ranges prevent cross-cycle identity equality. No signature authenticity claim.'})
     for n in range(max(0,584-len(sources))):sources.add('did:plc:unobserved-fixture-'+str(n))
     store.remember_sources([{'did':x,'endpoint':None} for x in sorted(sources)])
     subjects=list(dict.fromkeys(receipt.get('query_parameters',{}).get(k) for k in ('dense','sparse')))
     subjects=[x for x in subjects if x];public={x:{'count':0,'hash':hashlib.sha256()} for x in subjects}
     owners={};lookup=hashlib.sha256();buffers=collections.defaultdict(list);buffer_bytes=0
-    pending=[];cursors={};offered=0;next_id=1;active=start.date().isoformat();page_count=0
+    pending=[];cursors={};offered=0;next_id=1;last_progress=0;active=start.date().isoformat();page_count=0
     def encode(value):return (json.dumps(value,ensure_ascii=False,separators=(',',':'))+'\n').encode()
     def flush():
-        nonlocal pending,next_id
+        nonlocal pending,next_id,last_progress
         if not pending:return
         upcoming=sum(len(json.dumps(row).encode()) for page in pending for row in page['rows'])
         admission(max(8*1024**2,upcoming*8))
         next_id=bulk_pages(store,pending,next_id);pending=[]
+        if (next_id-1)//100000>last_progress//100000:
+            last_progress=next_id-1
+            atomic(out/'PROGRESS.json',{'phase':'BULK_CONSTRUCTION','events':last_progress,'target':args.events,'owners':len(owners),'elapsed_seconds':time.monotonic()-began,**admission()})
     def page(rows,source):
         nonlocal offered,active,page_count
         observed=start+dt.timedelta(microseconds=offered*2592000000000//args.events)
@@ -262,9 +299,7 @@ def construct_specimen(args):
         for batch in pq.ParquetFile(args.specimen).iter_batches(batch_size=1000):
             for raw in batch.to_pylist():
                 if generated>=args.events:break
-                source=raw['src'] or raw['labeler_did'];raw['src']=raw['labeler_did']=source
-                if cycle:raw['event_hash']=hashlib.sha256((raw['event_hash']+':cycle:'+str(cycle)).encode()).hexdigest()
-                row=tuple(raw[k] for k in FIELDS[1:]);size=len(json.dumps(row).encode())
+                source,row,label=collector_shape(raw,cycle,cycle_days);size=len(json.dumps(row).encode())
                 buffers[source].append((row,size));buffer_bytes+=size;generated+=1
                 if buffer_bytes>64*1024**2:raise RuntimeError('source-page buffering envelope exceeded')
                 if len(buffers[source])==100:
@@ -277,7 +312,9 @@ def construct_specimen(args):
     # Complete logical lookup hash; no second materialized reference database.
     with closing(connect(store.state,readonly=True)) as c:
         actual_lookup=hashlib.sha256()
-        for row in c.execute('SELECT event_id,owner_day,observed_us,target_did FROM q_recent_seen ORDER BY event_id'):actual_lookup.update(encode(list(row)))
+        for index,row in enumerate(c.execute('SELECT event_id,owner_day,observed_us,target_did FROM q_recent_seen ORDER BY event_id'),1):
+            actual_lookup.update(encode(list(row)))
+            if index%100000==0:atomic(out/'PROGRESS.json',{'phase':'LOOKUP_ORACLE','rows':index,'target':offered,'elapsed_seconds':time.monotonic()-began})
         assert actual_lookup.hexdigest()==lookup.hexdigest()
         assert c.execute('SELECT COUNT(*) FROM labeler_evidence').fetchone()[0]==page_count
         store.caps(c)
@@ -291,11 +328,13 @@ def construct_specimen(args):
             with closing(sqlite3.connect(f'file:{index}?mode=ro&immutable=1',uri=True)) as q:
                 for row in q.execute('SELECT event_hash,event_id,payload_sha256 FROM identities'):
                     count+=1;total=(total+int.from_bytes(hashlib.sha256(encode(list(row))).digest(),'big'))%(1<<256)
+                    if count%100000==0:atomic(out/'PROGRESS.json',{'phase':'ARCHIVE_IDENTITY_ORACLE','owner':owner,'rows':count,'owner_target':oracle['count'],'elapsed_seconds':time.monotonic()-began})
             assert count==oracle['count'] and total==oracle['identity_sum']
     with closing(connect(store.root/(active+'.sqlite'),readonly=True)) as c:
         digest=hashlib.sha256();count=0
         for row in c.execute('SELECT '+','.join(FIELDS)+' FROM label_events ORDER BY id'):
             digest.update(encode(list(row)));count+=1
+            if count%100000==0:atomic(out/'PROGRESS.json',{'phase':'ACTIVE_PAYLOAD_ORACLE','rows':count,'owner':active,'elapsed_seconds':time.monotonic()-began})
         assert count==owners[active]['count'] and digest.hexdigest()==owners[active]['payload_hash'].hexdigest()
     with closing(connect(store.state,readonly=True)) as c:
         total=0;count=0
@@ -304,6 +343,12 @@ def construct_specimen(args):
         assert count==owners[active]['count'] and total==owners[active]['identity_sum']
     with closing(connect(store.state,readonly=True)) as c:
         # The complete lookup was independently hashed against input above.
+        atomic(out/'PROGRESS.json',{'phase':'TOP_ACCOUNT_DENSITY','lookup_rows':offered,'elapsed_seconds':time.monotonic()-began})
+        vm_ticks=[0]
+        def count_progress():
+            vm_ticks[0]+=1
+            atomic(out/'PROGRESS.json',{'phase':'TOP_ACCOUNT_DENSITY','sqlite_vm_instructions_at_least':vm_ticks[0]*1000000,'elapsed_seconds':time.monotonic()-began});return 0
+        c.set_progress_handler(count_progress,1000000)
         top=list(c.execute('SELECT target_did,COUNT(*) n FROM q_recent_seen GROUP BY target_did ORDER BY n DESC,target_did LIMIT 3'))
     for subject,count in top:
         if subject not in public:subjects.append(subject);public[subject]={'count':count,'hash':None}
@@ -322,6 +367,7 @@ def construct_specimen(args):
                 for row in result['rows']:
                     observed_count+=1;digest.update(encode([row['uri'],row['value'],row['source_timestamp'],iso(clock(row['observed_at']))]))
                 cursor=result['next_cursor'];complete=result['terminal']
+                if pages%100==0:atomic(out/'PROGRESS.json',{'phase':'PRODUCT_EXPORT','subject':subject,'pages':pages,'delivered_rows':observed_count,'expected_rows':expected['count'],'elapsed_seconds':time.monotonic()-t})
             assert observed_count==expected['count'],('export count',subject,observed_count,expected['count'])
             if expected['hash'] is not None:assert digest.hexdigest()==expected['hash'].hexdigest(),('export input digest',subject)
         except Refused as exc:error=str(exc)
@@ -337,7 +383,7 @@ def construct_specimen(args):
         with closing(connect(store.state,readonly=True)) as c:assert c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]==expected
         advances.append({'day':day,'expected_retained_rows':expected,**admission()})
     result={'result':'CONSTRUCTED_VOLUME_QUALIFIED' if all(x['complete'] for x in queries) else 'CONSTRUCTED_VOLUME_WITH_EXPORT_REFUSAL','events':offered,'roster':len(sources),'source_pages':page_count,'physical':physical,'retained':retained,'advances':advances,'queries':queries,'input_sha256':receipt['parquet_sha256'],
-            'top_accounts':[list(x) for x in top],'limits':{'ttl_seconds':120,'page_rows':100,'snapshot_rows':1000},'limitations':'Constructed post-flush state only; no actual acceptance throughput/recovery claim. Source-homogeneous <=100 pages, synthetic cycle hashes, src becomes selected labeler, copied signature shapes; disabled historical derived tables remain empty. Sampled peaks, not continuous maximum. Export deadline unchanged; incomplete export is not success.'}
+            'input_normalization':'INPUT-NORMALIZATION.json','transition_measurements':'TRANSITIONS.jsonl','top_accounts':[list(x) for x in top],'limits':{'ttl_seconds':120,'page_rows':100,'snapshot_rows':1000},'limitations':'Constructed post-flush state only; no actual acceptance throughput/recovery claim. Source-homogeneous <=100 pages, nonoverlapping synthetic authored-time cycles and actual strict canonical identities, src becomes selected labeler, copied unauthenticated signature shapes; disabled historical derived tables remain empty. Sampled peaks, not continuous maximum. Export deadline unchanged; incomplete export is not success.'}
     atomic(out/'RESULT.json',result);atomic(out/'CONSTRUCTION.json',{'state':'QUALIFIED_CONSTRUCTED_FIXTURE','events':offered});return result
 
 
