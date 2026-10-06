@@ -161,8 +161,8 @@ def test_filters_summary_and_html_escape_preserve_event_attribution():
     assert view["summary"]["observed_events"] == 1
     page = account_html(view)
     assert "<script>bad" not in page and "&lt;script&gt;" in page
-    assert "did:plc:labeler" in page and "Current label state: unknown" in page
-    assert "Export this period" in page and "Expert event rows" in page
+    assert "did:plc:labeler" in page and "Current label state is unknown" in page
+    assert "Export this snapshot" in page and "Expert observation rows" in page
 
 
 def test_gap_reason_allowlist_and_coverage_are_not_silently_complete():
@@ -263,9 +263,10 @@ def test_http_handler_shares_account_export_and_explains_dense_refusal(monkeypat
     request.respond = lambda *args: replies.append(args)
     request.path = "/account?" + urlencode({"did": DID, "start": START, "end": END})
     request.do_GET()
-    status, body = replies.pop()
-    assert status == 409 and body["complete"] is False
-    assert "shorter period" in body["next_action"]
+    status, body, content_type = replies.pop()
+    assert status == 409 and content_type == "text/html"
+    assert "bounded paginated export" in body and "/exports?" in body
+    assert "No partial account view" in body
 
 
 def test_landing_defaults_use_actual_frontier_and_offer_shorter_period(monkeypatch):
@@ -286,3 +287,20 @@ def test_landing_defaults_use_actual_frontier_and_offer_shorter_period(monkeypat
     assert is_html and "Last 7 days" in rendered and "warm-up gap" in rendered
     with pytest.raises(Refused, match="invalid_period"):
         module.interval(product, 45)
+
+
+def test_public_signature_projection_and_readable_newest_first_timeline():
+    first=event(0,sig='public-signature')
+    second=event(1);second['neg']=1;second['uri']='at://'+DID+'/app.bsky.feed.post/record'
+    product,provider,_=make([first,second])
+    provider.coverage={'status':'unknown','gaps':[{'start':START,'end':'2026-10-05T00:00:00.000001Z','reason':'not_observed'}]}
+    created=product.create(DID,START,END);account=product.account(created['cursor'])
+    assert account['timeline'][0]['sig']=='public-signature'
+    html=account_html(account)
+    assert html.index('Removal observed')<html.index('Application observed')
+    assert 'Applications observed' in html and 'Affected subjects' in html and 'Labelers' in html
+    assert 'Acquisition had not begun' in html and 'Current label state is unknown' in html
+    assert '<ol class="timeline">' in html and '>Post</span>' in html and '>Account</span>' in html
+    assert html.index('<ol class="timeline">')<html.index('<table>')
+    assert 'normalized projection' in html and 'public-signature' in html
+    assert 'Labeler DID<input' in html and 'Subject type<select' in html

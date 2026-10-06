@@ -13,9 +13,18 @@ import json
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, urlencode
 
 from labelwatch.recent_observations import Limits, RecentObservations, Refused, account_html, timestamp, iso
+
+
+def dense_account_html(args):
+    link='/exports?'+urlencode({key:value for key,value in args.items() if key not in ('cursor','days')})
+    return ("<!doctype html><html lang='en'><meta charset='utf-8'><meta name='viewport' content='width=device-width'>"
+            "<title>Export this observation period</title><main><h1>This period exceeds the account preview budget</h1>"
+            "<p>No partial account view was published. Many observations can share one timestamp, so a shorter period may not help.</p>"
+            "<p><a href='"+html.escape(link,quote=True)+"'>Open the bounded paginated export for this period</a></p>"
+            "<p>The export uses a fixed acquisition frontier and expires after its stated deadline. Current label state remains unknown.</p></main></html>")
 
 
 def interval(product, days=30):
@@ -97,13 +106,20 @@ def handler(product):
             except Refused as exc:
                 body = {"error": str(exc), "complete": False}
                 if str(exc) in ("snapshot_row_limit", "snapshot_byte_limit"):
-                    body["next_action"] = "Request a shorter period; no partial export was published."
+                    body["next_action"] = "Use the bounded paginated export for this period; reducing time may not separate equal-timestamp observations."
+                    body["export_url"] = '/exports?'+urlencode(args)
+                    if request.path == '/account':
+                        self.respond(409,dense_account_html(args),'text/html')
+                        return
                 self.respond(410 if str(exc) == "snapshot_expired_or_unavailable" else 409, body)
             except (KeyError, ValueError):
                 self.respond(400, {"error": "invalid_request", "complete": False})
             except (BrokenPipeError, ConnectionResetError, TimeoutError):
                 pass
-            except Exception:
+            except Exception as exc:
+                if request.path == '/account' and str(exc) == 'recent query byte ceiling':
+                    self.respond(409,dense_account_html(args),'text/html')
+                    return
                 self.respond(503, {"error": "observation_snapshot_unavailable", "complete": False})
     return Handler
 

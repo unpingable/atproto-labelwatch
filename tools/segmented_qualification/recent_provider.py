@@ -66,7 +66,7 @@ class RecentProvider:
                 if {owner for owner,path in archives}!=set(owners):raise RuntimeError('retained archive coverage unavailable')
                 active=[owner for owner,status in c.execute('SELECT identity,status FROM q_segments') if status in ('ACTIVE','SEALED')]
                 found={};ids=list(seen);used=0;stopped=False
-                fields=tuple(x for x in FIELDS if x not in ('sig','event_hash','target_did'))
+                fields=tuple(x for x in FIELDS if x not in ('event_hash','target_did'))
                 def admit(value):
                     nonlocal used,stopped,more
                     if value['id'] in found:raise RuntimeError('duplicate retained event identity')

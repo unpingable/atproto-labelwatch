@@ -119,8 +119,8 @@ class RecentObservations:
 
     @staticmethod
     def _row(row, did, start, end):
-        # Do not export whole mappings: signatures, probes and operational
-        # evidence can coexist with these public event columns in a provider.
+        # Export the declared public observation projection, including a recorded
+        # label signature; exclude internal probes and operational metadata.
         required = ("labeler_did", "uri", "val", "ts", "observed_at")
         if any(not isinstance(row.get(k), str) or not row[k] for k in required):
             raise Refused("public_event_schema_unavailable")
@@ -139,7 +139,7 @@ class RecentObservations:
                   "observed_at": iso(observed),
                   "action": "removal_observed" if neg == 1 else
                             "application_observed" if neg == 0 else "unknown_action"}
-        for name in ("src", "cid", "exp"):
+        for name in ("src", "cid", "exp", "sig"):
             if row.get(name) is not None:
                 if not isinstance(row[name], str):
                     raise Refused("invalid_public_event_field")
@@ -202,7 +202,7 @@ class RecentObservations:
                         raise Refused("snapshot_expired")
                     # Bound serialization of each public value before building
                     # a duplicate JSON buffer; internal fields are never copied.
-                    for field in ("labeler_did", "uri", "val", "ts", "observed_at", "src", "cid", "exp"):
+                    for field in ("labeler_did", "uri", "val", "ts", "observed_at", "src", "cid", "exp", "sig"):
                         text = raw.get(field)
                         if isinstance(text, str) and len(text) > self.limits.snapshot_bytes:
                             raise Refused("snapshot_byte_limit")
@@ -284,7 +284,7 @@ class RecentObservations:
                 result=dict(source);result['rows']=[];used=0
                 for raw in source['rows']:
                     if len(result['rows'])>=self.limits.page_rows:raise Refused('provider_keyset_unavailable')
-                    for field in ('labeler_did','uri','val','ts','observed_at','src','cid','exp'):
+                    for field in ('labeler_did','uri','val','ts','observed_at','src','cid','exp','sig'):
                         value=raw.get(field)
                         if isinstance(value,str):
                             if len(value)>self.limits.snapshot_bytes:raise Refused('snapshot_byte_limit')
@@ -382,42 +382,56 @@ class RecentObservations:
 
 
 def account_html(account):
-    """Account surface sharing the exact export snapshot and coverage."""
-    esc = lambda value: html.escape(str(value), quote=True)
-    manifest, summary = account["manifest"], account["summary"]
-    events = "".join("<tr><td>" + "</td><td>".join(esc(row[k]) for k in
-                    ("observed_at", "action", "value", "labeler_did", "uri")) + "</td></tr>"
-                    for row in account["timeline"])
-    export = "/exports?" + urlencode({"cursor": account["export_cursor"]})
-    def select(name, options):
-        return "<select name='" + name + "'>" + "".join(
-            "<option value='" + val + "'" + (" selected" if manifest["filters"].get(name) == (val or None) else "") +
-            ">" + label + "</option>" for val, label in options) + "</select>"
-    return ("<!doctype html><html><meta charset='utf-8'><meta name='viewport' content='width=device-width'>"
-            "<title>Recent observations</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;"
-            "margin:2rem auto;padding:0 1rem;color:#1e293b;background:#f8fafc}h1{font-size:1.7rem}"
-            "table{border-collapse:collapse;width:100%;font-size:.9rem}th,td{text-align:left;padding:.6rem;"
-            "border-bottom:1px solid #cbd5e1;overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere}"
-            "input,select,button{padding:.55rem;margin:.2rem;border:1px solid #94a3b8;border-radius:.3rem}"
-            "a{color:#075985}details{margin-top:1.5rem}caption{text-align:left;font-weight:600;margin:1rem 0}</style>"
-            "<h1>Recent observations for " + esc(manifest["account"]) + "</h1>"
-            "<p>" + esc(manifest["interval"]["start"]) + " to " + esc(manifest["interval"]["end"]) +
-            " (end exclusive). Current label state: unknown.</p><p>" +
-            esc(summary["applications_observed"]) + " applications observed; " +
-            esc(summary["removals_observed"]) + " removals observed. Missing removal does not mean active.</p>"
-            "<p>Coverage: " + esc(manifest["coverage"]["status"]) + ". Observations may contain gaps.</p>"
-            "<pre>" + esc(json.dumps(manifest["coverage"]["gaps"])) + "</pre>"
-            "<form action='/account'><input name='did' value='" + esc(manifest["account"]) + "'>"
-            "<input name='start' value='" + esc(manifest["interval"]["start"]) + "'>"
-            "<input name='end' value='" + esc(manifest["interval"]["end"]) + "'>"
-            "<input name='labeler' placeholder='Labeler DID' value='" + esc(manifest["filters"]["labeler"] or "") + "'>"
-            "<input name='value' placeholder='Label value' value='" + esc(manifest["filters"]["value"] or "") + "'>"
-            + select("action", [("", "All observations"), ("application_observed", "Applications"),
-                                 ("removal_observed", "Removals"), ("unknown_action", "Unknown event action")])
-            + select("target_kind", [("", "Account and records"), ("account", "Account only"), ("post", "Posts only")]) +
-            "<button>Filter observations</button></form><p><a href='" + esc(export) + "'>Export this period</a>"
-            " — snapshot expires " + esc(manifest["expires_at"]) + ".</p>"
-            "<table><caption>Observed timeline and attribution</caption><thead><tr>"
-            "<th>Observed at</th><th>Event</th><th>Label</th><th>Labeler</th><th>Subject</th>"
-            "</tr></thead><tbody>" + events + "</tbody></table><details><summary>Expert event rows</summary><pre>" +
-            esc(json.dumps(account["timeline"], ensure_ascii=False, indent=2)) + "</pre></details></html>")
+    """Human account view over the same bounded, normalized public snapshot."""
+    esc=lambda value:html.escape(str(value),quote=True)
+    manifest,summary=account['manifest'],account['summary']
+    rows=account['timeline']
+    def when(value):
+        stamp=timestamp(value)
+        return stamp.strftime('%b %d, %Y at %H:%M:%S')+(f'.{stamp.microsecond:06d}' if stamp.microsecond else '')+' UTC'
+    export='/exports?'+urlencode({'cursor':account['export_cursor']})
+    cards=[('Applications observed',summary['applications_observed']),('Removals observed',summary['removals_observed']),
+           ('Labelers',len({r['labeler_did'] for r in rows})),('Affected subjects',len({r['uri'] for r in rows}))]
+    cards=''.join('<div class="card"><strong>'+esc(value)+'</strong><span>'+esc(label)+'</span></div>' for label,value in cards)
+    timeline=[]
+    for row in sorted(rows,key=lambda r:timestamp(r['observed_at']),reverse=True):
+        action={'application_observed':'Application observed','removal_observed':'Removal observed'}.get(row['action'],'Action not established')
+        kind='Account' if row['uri']==manifest['account'] else 'Post' if '/app.bsky.feed.post/' in row['uri'] else 'Record'
+        timeline.append('<li><article><div class="event-head"><strong>'+esc(action)+'</strong><span class="kind">'+kind+'</span></div>'
+                        '<p class="value">'+esc(row['value'])+'</p><p>From <code>'+esc(row['labeler_did'])+'</code></p>'
+                        '<p class="muted">Observed '+esc(when(row['observed_at']))+' · Source authored '+esc(when(row['source_timestamp']))+'</p>'
+                        '<p class="subject">'+esc(row['uri'])+'</p></article></li>')
+    reasons={'not_observed':'Acquisition had not begun; this interval was not observed.',
+             'source_unavailable':'A source was unavailable during this interval.',
+             'unknown':'Observation coverage is not established for this interval.'}
+    gaps=''.join('<li>'+esc(when(gap['start']))+' to '+esc(when(gap['end']))+': '+esc(reasons.get(gap['reason'],reasons['unknown']))+'</li>'
+                 for gap in manifest['coverage']['gaps'])
+    gap_content='<ul>'+gaps+'</ul>' if gaps else '<p>No specific gaps are recorded. This does not establish complete source coverage.</p>'
+    def field(name,label,value):
+        return '<label>'+label+'<input name="'+name+'" value="'+esc(value)+'"></label>'
+    def select(name,label,options):
+        return '<label>'+label+'<select name="'+name+'">'+''.join('<option value="'+value+'"'+(' selected' if manifest['filters'].get(name)==(value or None) else '')+'>'+text+'</option>' for value,text in options)+'</select></label>'
+    filters=field('did','Account DID',manifest['account'])+field('start','Interval start (UTC)',manifest['interval']['start'])+field('end','Interval end, exclusive (UTC)',manifest['interval']['end'])
+    filters+=field('labeler','Labeler DID',manifest['filters']['labeler'] or '')+field('value','Label value',manifest['filters']['value'] or '')
+    filters+=select('action','Observation type',[('','All observations'),('application_observed','Applications'),('removal_observed','Removals'),('unknown_action','Unknown action')])
+    filters+=select('target_kind','Subject type',[('','All subjects'),('account','Account'),('post','Posts')])
+    expert=''.join('<tr>'+''.join('<td>'+esc(row.get(k,''))+'</td>' for k in ('observed_at','action','value','labeler_did','uri','sig'))+'</tr>' for row in rows)
+    empty='<p>No observations were recorded in this interval. This does not establish that no labels exist.</p>'
+    return ('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+            '<title>Recent label observations</title><style>body{font:16px system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#1e293b;background:#f8fafc}'
+            'h1{font-size:1.8rem}h2{font-size:1.3rem}.account,.subject,code,td,pre{overflow-wrap:anywhere}.muted{color:#475569;font-size:.9rem}'
+            '.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1rem}.card,article,.coverage{background:white;border:1px solid #cbd5e1;border-radius:.6rem;padding:1rem}'
+            '.card strong{display:block;font-size:2rem}.card span{font-size:.9rem}.coverage{margin:1rem 0}.timeline{list-style:none;padding:0}.timeline li{margin:1rem 0}'
+            '.event-head{display:flex;justify-content:space-between;gap:1rem}.kind{background:#e2e8f0;padding:.2rem .6rem;border-radius:1rem;font-size:.85rem}'
+            '.value{font-size:1.2rem;font-weight:600}.subject{font-size:.85rem}form{display:flex;flex-wrap:wrap;gap:.8rem}label{display:flex;flex-direction:column;font-size:.85rem;gap:.3rem}'
+            'input,select,button{padding:.6rem;border:1px solid #94a3b8;border-radius:.3rem}a{color:#075985}table{border-collapse:collapse;width:100%;font-size:.85rem}'
+            'th,td{text-align:left;padding:.5rem;border-bottom:1px solid #cbd5e1}details{margin:1.5rem 0}pre{white-space:pre-wrap}.table-wrap{overflow:auto}</style>'
+            '<h1>Recent label observations</h1><p class="account">'+esc(manifest['account'])+'</p><p>'+esc(when(manifest['interval']['start']))+' to '+esc(when(manifest['interval']['end']))+' (end exclusive).</p>'
+            '<div class="cards">'+cards+'</div><p><strong>Current label state is unknown.</strong> A recorded application or removal does not establish whether a label is currently active.</p>'
+            '<section class="coverage"><h2>Observation coverage</h2><p>These are recorded observations, not a complete view of every source.</p>'+gap_content+'</section>'
+            '<h2>Filter observations</h2><form action="/account">'+filters+'<button>Apply filters</button></form>'
+            '<p><a href="'+esc(export)+'">Export this snapshot (paginated JSON)</a> · Expires '+esc(when(manifest['expires_at']))+'.</p>'
+            '<h2>Timeline · newest first</h2>'+('<ol class="timeline">'+''.join(timeline)+'</ol>' if timeline else empty)+
+            '<details><summary>Expert observation rows (normalized projection)</summary><p>Public label-record signatures are included when recorded; this view does not verify them. Internal probes and operational metadata are excluded.</p>'
+            '<div class="table-wrap"><table><thead><tr><th>Observed</th><th>Action</th><th>Label</th><th>Labeler</th><th>Subject</th><th>Public signature</th></tr></thead><tbody>'+expert+'</tbody></table></div>'
+            '<pre>'+esc(json.dumps(rows,ensure_ascii=False,indent=2))+'</pre></details></html>')
