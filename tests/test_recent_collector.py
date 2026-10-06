@@ -16,21 +16,40 @@ class Store:
     def __init__(self, count=1):
         self.sources = [{'did': DID if n == 0 else f'did:plc:s{n}', 'endpoint': 'https://example.test'} for n in range(count)]
         self.cursors, self.pages, self.gaps = {}, [], []
+        self.schedule = 0
+        self.discovery_cursor = None
 
     def collector_sources(self, limit):
         return self.sources[:limit]
 
+    def collector_claim_source(self, limit):
+        rows = sorted(self.sources, key=lambda row: row['did'])
+        row = rows[self.schedule % len(rows)]
+        self.schedule += 1
+        return row
+
     def collector_cursor(self, source):
         return self.cursors.get(source)
 
-    def remember_sources(self, rows, limit):
+    def collector_discovery_cursor(self):
+        return self.discovery_cursor
+
+    def remember_sources(self, rows, limit, request_cursor=None, next_cursor=None):
         merged = {r['did']: r for r in self.sources}
         merged.update({r['did']: r for r in rows})
         if len(merged) > limit:
             raise Refused('roster ceiling')
+        assert self.discovery_cursor == request_cursor
         self.sources = list(merged.values())
+        self.discovery_cursor = next_cursor
 
-    def accept_page(self, rows, source, request_cursor, next_cursor, observed_at):
+    def begin_source_attempt(self, did, observed_at):
+        return did
+
+    def finish_source_attempt(self, did, attempt_token):
+        assert did == attempt_token
+
+    def accept_page(self, rows, source, request_cursor, next_cursor, observed_at, attempt_token=None):
         assert self.cursors.get(source) == request_cursor
         self.pages.append(rows)
         if next_cursor is not None:
@@ -140,3 +159,143 @@ def test_gap_write_failure_is_not_hidden():
     s.record_gap = fail
     c, _ = collector(s, [TimeoutError()])
     with pytest.raises(RuntimeError, match='gap persistence'): c.tick()
+
+
+def http_transport(handler):
+    import httpx
+    from labelwatch.recent_collector import HTTPTransport
+    return HTTPTransport(httpx.MockTransport(handler))
+
+
+def test_http_discovery_preserves_unresolved_source_and_opaque_cursor():
+    import httpx
+    def handler(request):
+        assert request.url.params['cursor'] == 'opaque/with?symbols'
+        assert request.url.params['collection'] == 'app.bsky.labeler.service'
+        return httpx.Response(200, json={'repos': [{'did': DID}], 'cursor': 'next'})
+    t = http_transport(handler)
+    result = json.loads(t.request('discover', {'cursor': 'opaque/with?symbols', 'limit': 10}, max_bytes=4096, timeout_seconds=1))
+    assert result == {'sources': [{'did': DID, 'endpoint': None}], 'cursor': 'next'}
+
+
+def test_http_resolution_matches_did_and_streams_labels():
+    import httpx
+    requests = []
+    def handler(request):
+        requests.append(request)
+        if request.url.host == 'plc.directory':
+            return httpx.Response(200, json={'id': DID, 'service': [{'id': '#atproto_labeler', 'serviceEndpoint': 'https://labeler.test'}]})
+        assert request.url.params['sources'] == DID
+        assert request.url.params['cursor'] == 'z?x'
+        return httpx.Response(200, json={'labels': [label()]})
+    t = http_transport(handler)
+    result = json.loads(t.request('labels', {'did': DID, 'endpoint': None, 'cursor': 'z?x', 'limit': 10}, max_bytes=4096, timeout_seconds=1))
+    assert result['labels'] == [label()] and len(requests) == 2
+
+
+def test_http_resolution_identity_refusal_prevents_label_query():
+    import httpx
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={'id': 'did:plc:other'})
+    with pytest.raises(Refused, match='identity'):
+        http_transport(handler).request('labels', {'did': DID, 'endpoint': None, 'cursor': None, 'limit': 10}, max_bytes=4096, timeout_seconds=1)
+    assert len(calls) == 1
+
+
+def test_http_total_deadline_and_stream_ceiling():
+    import asyncio
+    import httpx
+    class Slow(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'{'
+            await asyncio.sleep(0.05)
+            yield b'}'
+    async def handler(request):
+        return httpx.Response(200, stream=Slow())
+    t = http_transport(handler)
+    with pytest.raises(TimeoutError):
+        t.request('discover', {'cursor': None, 'limit': 10}, max_bytes=4096, timeout_seconds=.005)
+    def large(request): return httpx.Response(200, content=b' '*4097)
+    with pytest.raises(Refused, match='byte ceiling'):
+        http_transport(large).request('discover', {'cursor': None, 'limit': 10}, max_bytes=4096, timeout_seconds=1)
+
+
+def test_store_claim_resumes_fairness_across_adapter_restart():
+    s = Store(3)
+    c, first = collector(s, [{'labels': []}], limits=Limits(pages=1))
+    c.tick()
+    successor, second = collector(s, [{'labels': []}], limits=Limits(pages=1))
+    successor.tick()
+    assert first.calls[0][1]['did'] != second.calls[0][1]['did']
+
+
+def test_discovery_keeps_unresolved_sources_for_collection_retry():
+    s = Store(0)
+    c, _ = collector(s, [{'sources': [{'did': DID, 'endpoint': None}]}, TimeoutError()])
+    c.discover()
+    assert s.sources == [{'did': DID, 'endpoint': None}]
+    assert c.tick()['results'][0]['status'] == 'refused'
+    assert s.sources and s.gaps
+
+
+def test_real_store_changed_terminal_page_and_restart_claim(tmp_path, monkeypatch):
+    from pathlib import Path
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1]/"tools"/"segmented_qualification"))
+    import storage
+    monkeypatch.setattr(storage, "ROOT", tmp_path)
+    from recent_storage import RecentStore
+    s = RecentStore.create(tmp_path/'store', NOW.isoformat())
+    s.remember_sources([{'did': DID, 'endpoint': None}])
+    c, _ = collector(s, [{'labels': [label()]}, {'labels': [label(), label('later')]}, {'labels': [label(), label('later')]}])
+    assert c.tick()['results'][0]['result']['inserted'] == 1
+    assert c.tick()['results'][0]['result']['inserted'] == 1
+    assert c.tick()['results'][0]['result']['inserted'] == 0
+    assert s.collector_cursor(DID) is None
+    s.remember_sources([{'did': 'did:plc:two', 'endpoint': None}])
+    first = s.collector_claim_source()['did']
+    assert RecentStore(tmp_path/'store').collector_claim_source()['did'] != first
+
+
+def test_real_store_mock_http_discovery_and_collection(tmp_path, monkeypatch):
+    import httpx
+    from pathlib import Path
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1]/"tools"/"segmented_qualification"))
+    import storage
+    monkeypatch.setattr(storage, "ROOT", tmp_path)
+    from recent_storage import RecentStore
+    s = RecentStore.create(tmp_path/'store', NOW.isoformat())
+    def handler(request):
+        if request.url.host == 'bsky.network':
+            return httpx.Response(200, json={'repos': [{'did': DID}]})
+        if request.url.host == 'plc.directory':
+            return httpx.Response(200, json={'id': DID, 'service': [{'id': '#atproto_labeler', 'serviceEndpoint': 'https://labeler.test'}]})
+        return httpx.Response(200, json={'labels': [label()], 'cursor': 'opaque/position'})
+    c = Collector(s, http_transport(handler), now=lambda: NOW)
+    assert c.discover()['discovered'] == 1
+    assert c.tick()['results'][0]['result']['inserted'] == 1
+    assert s.collector_cursor(DID) == 'opaque/position'
+
+
+def test_failed_attempt_seals_gap_before_clearing_exact_token():
+    s = Store(); steps = []
+    s.begin_source_attempt = lambda did, observed_at: 'exact-attempt'
+    s.record_gap = lambda *args: steps.append('gap')
+    def finish(did, token):
+        assert did == DID and token == 'exact-attempt'
+        steps.append('finished')
+    s.finish_source_attempt = finish
+    c, _ = collector(s, [TimeoutError()])
+    assert c.tick()['results'][0]['status'] == 'refused'
+    assert steps == ['gap', 'finished']
+
+
+def test_discovery_continuation_survives_adapter_restart_and_terminal_rescan():
+    s = Store(0)
+    first, _ = collector(s, [{'sources': [{'did': DID, 'endpoint': None}], 'cursor': 'page-two'}])
+    first.discover()
+    successor, t = collector(s, [{'sources': [{'did': 'did:plc:two', 'endpoint': None}]}])
+    assert successor.discover()['terminal']
+    assert t.calls[0][1]['cursor'] == 'page-two'
+    assert s.collector_discovery_cursor() is None and len(s.sources) == 2
