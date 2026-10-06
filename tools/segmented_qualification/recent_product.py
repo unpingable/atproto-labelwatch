@@ -48,11 +48,13 @@ def handler(product):
         def log_message(self, *args):
             pass  # No account/cursor values in ordinary request logs.
 
-        def respond(self, status, body, content_type="application/json"):
-            data = body.encode() if isinstance(body, str) else json.dumps(body).encode()
+        def respond(self, status, body, content_type="application/json", attachment=False):
+            data = body.encode() if isinstance(body, str) else json.dumps(body,ensure_ascii=False,sort_keys=True,separators=(",",":")).encode()
             self.send_response(status)
             self.send_header("Content-Type", content_type + "; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
+            if attachment:
+                self.send_header("Content-Disposition", 'attachment; filename="labelwatch-observations.json"')
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
@@ -74,6 +76,9 @@ def handler(product):
                         "<p>Interval ends at the available source frontier, which may be earlier than now. "
                         "Exports are finite consistent snapshots. "
                         "Exports use bounded pages even when many observations share one timestamp. Account previews have a finite row budget; no truncated result is published.</p>"), True
+            if path == "/download":
+                if set(args)!={"cursor"}:raise Refused("invalid_download_request")
+                return product.download(args["cursor"]),False
             if path == "/exports" and "cursor" in args:
                 return product.page(args["cursor"]), False
             if path in ("/account", "/exports"):
@@ -102,7 +107,10 @@ def handler(product):
                 if set(args) - {"did", "start", "end", "labeler", "value", "cursor", "action", "target_kind", "days"}:
                     raise Refused("unknown_parameter")
                 result, is_html = self.dispatch(request.path, args)
-                self.respond(200, result, "text/html" if is_html else "application/json")
+                if request.path == "/download":
+                    self.respond(200,result,"application/json",True)
+                else:
+                    self.respond(200, result, "text/html" if is_html else "application/json")
             except Refused as exc:
                 body = {"error": str(exc), "complete": False}
                 if str(exc) in ("snapshot_row_limit", "snapshot_byte_limit"):

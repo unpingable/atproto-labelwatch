@@ -233,7 +233,7 @@ class RecentObservations:
                         "expires_at": iso(now + timedelta(seconds=self.limits.ttl_seconds))}
             # Identity covers both the public semantics and exact exported rows.
             manifest["content_sha256"] = hashlib.sha256(encoded(manifest) + b"\n" + b"\n".join(rows)).hexdigest()
-            if row_bytes + len(encoded(manifest)) > self.limits.snapshot_bytes:
+            if row_bytes + len(encoded(manifest)) + len(rows) + 128 > self.limits.snapshot_bytes:
                 raise Refused("snapshot_byte_limit")
             if self.monotonic() >= deadline:
                 raise Refused("snapshot_expired")
@@ -272,7 +272,8 @@ class RecentObservations:
             state['prepared']=prepared
             if self.monotonic()>=state['deadline']:raise Refused('snapshot_expired_or_unavailable')
             self._exports[identity]=state
-            return {'manifest':manifest,'cursor':self._cursor(identity,0)}
+            return {'manifest':manifest,'cursor':self._cursor(identity,0),
+                    'instructions':'Request /exports?cursor=<cursor>, then follow next_cursor until terminal=true. An expired or interrupted download is incomplete; the deadline is fixed.'}
 
     def _export_read(self,state):
         did,start,end=state['query']
@@ -365,6 +366,20 @@ class RecentObservations:
                     "terminal": terminal,
                     "next_cursor": None if terminal else self._cursor(identity, end)}
 
+    def download(self, cursor):
+        """Whole already-materialized account snapshot; no provider access."""
+        with self._lock:
+            identity,_=self._decode(cursor)
+            self._purge()
+            snapshot=self._snapshots.get(identity)
+            if snapshot is None:raise Refused('snapshot_expired_or_unavailable')
+            if snapshot.requests>=self.limits.page_requests:raise Refused('snapshot_retry_limit')
+            answer={'manifest':json.loads(snapshot.manifest),'rows':[json.loads(row) for row in snapshot.rows],
+                    'terminal':True,'count':len(snapshot.rows)}
+            if len(encoded(answer))>self.limits.snapshot_bytes:raise Refused('snapshot_byte_limit')
+            snapshot.requests+=1
+            return answer
+
     def account(self, cursor):
         """View all already-bounded rows, without consuming a page/retry lease."""
         with self._lock:
@@ -389,7 +404,7 @@ def account_html(account):
     def when(value):
         stamp=timestamp(value)
         return stamp.strftime('%b %d, %Y at %H:%M:%S')+(f'.{stamp.microsecond:06d}' if stamp.microsecond else '')+' UTC'
-    export='/exports?'+urlencode({'cursor':account['export_cursor']})
+    export='/download?'+urlencode({'cursor':account['export_cursor']})
     cards=[('Applications observed',summary['applications_observed']),('Removals observed',summary['removals_observed']),
            ('Labelers',len({r['labeler_did'] for r in rows})),('Affected subjects',len({r['uri'] for r in rows}))]
     cards=''.join('<div class="card"><strong>'+esc(value)+'</strong><span>'+esc(label)+'</span></div>' for label,value in cards)
@@ -430,7 +445,7 @@ def account_html(account):
             '<div class="cards">'+cards+'</div><p><strong>Current label state is unknown.</strong> A recorded application or removal does not establish whether a label is currently active.</p>'
             '<section class="coverage"><h2>Observation coverage</h2><p>These are recorded observations, not a complete view of every source.</p>'+gap_content+'</section>'
             '<h2>Filter observations</h2><form action="/account">'+filters+'<button>Apply filters</button></form>'
-            '<p><a href="'+esc(export)+'">Export this snapshot (paginated JSON)</a> · Expires '+esc(when(manifest['expires_at']))+'.</p>'
+            '<p><a href="'+esc(export)+'">Export this period</a> · Expires '+esc(when(manifest['expires_at']))+'.</p>'
             '<h2>Timeline · newest first</h2>'+('<ol class="timeline">'+''.join(timeline)+'</ol>' if timeline else empty)+
             '<details><summary>Expert observation rows (normalized projection)</summary><p>Public label-record signatures are included when recorded; this view does not verify them. Internal probes and operational metadata are excluded.</p>'
             '<div class="table-wrap"><table><thead><tr><th>Observed</th><th>Action</th><th>Label</th><th>Labeler</th><th>Subject</th><th>Public signature</th></tr></thead><tbody>'+expert+'</tbody></table></div>'

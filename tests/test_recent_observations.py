@@ -162,7 +162,7 @@ def test_filters_summary_and_html_escape_preserve_event_attribution():
     page = account_html(view)
     assert "<script>bad" not in page and "&lt;script&gt;" in page
     assert "did:plc:labeler" in page and "Current label state is unknown" in page
-    assert "Export this snapshot" in page and "Expert observation rows" in page
+    assert "Export this period" in page and "Expert observation rows" in page
 
 
 def test_gap_reason_allowlist_and_coverage_are_not_silently_complete():
@@ -304,3 +304,38 @@ def test_public_signature_projection_and_readable_newest_first_timeline():
     assert html.index('<ol class="timeline">')<html.index('<table>')
     assert 'normalized projection' in html and 'public-signature' in html
     assert 'Labeler DID<input' in html and 'Subject type<select' in html
+
+
+def test_account_attachment_is_complete_copied_bounded_and_expires():
+    product,source,ticks=make([event(),event(1)],page_rows=1)
+    created=product.create(DID,START,END)
+    source.rows.clear()
+    body=product.download(created['cursor'])
+    assert body['terminal'] and body['count']==2 and len(body['rows'])==2
+    assert body['manifest']==created['manifest']
+    assert '/download?' in account_html(product.account(created['cursor']))
+    assert not source.leased
+    ticks[0]=121
+    with pytest.raises(Refused,match='expired'):product.download(created['cursor'])
+
+
+def test_download_http_attachment_has_fixed_filename_and_all_rows():
+    import importlib.util,io,json
+    from pathlib import Path
+    path=Path(__file__).parents[1]/'tools'/'segmented_qualification'/'recent_product.py'
+    spec=importlib.util.spec_from_file_location('recent_download_test',path)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    first=event();first['val']='雪'*100
+    product,_,_=make([first,event(1)],page_rows=1)
+    created=product.create(DID,START,END)
+    request=module.handler(product).__new__(module.handler(product))
+    headers={};status=[];request.send_response=status.append
+    request.send_header=lambda key,value:headers.update({key:value})
+    request.end_headers=lambda:None;request.wfile=io.BytesIO()
+    request.path='/download?cursor='+created['cursor'];request.do_GET()
+    body=json.loads(request.wfile.getvalue())
+    assert status==[200] and body['terminal'] and len(body['rows'])==2
+    assert headers['Content-Disposition']=='attachment; filename="labelwatch-observations.json"'
+    assert int(headers['Content-Length'])==len(request.wfile.getvalue())
+    assert headers['Cache-Control']=='no-store'
+    assert '雪'.encode() in request.wfile.getvalue()
