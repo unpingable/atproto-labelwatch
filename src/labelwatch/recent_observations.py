@@ -84,12 +84,17 @@ class RecentObservations:
         self.monotonic = monotonic
         self._key = secrets.token_bytes(32)
         self._snapshots = {}
+        self._exports = {}
         self._lock = threading.RLock()
 
     def _purge(self):
         for key in list(self._snapshots):
             if self.monotonic() >= self._snapshots[key].deadline:
                 del self._snapshots[key]
+
+        for key in list(self._exports):
+            if self.monotonic() >= self._exports[key]['deadline']:
+                del self._exports[key]
 
     def _cursor(self, identity, offset):
         body = f"{identity}:{offset}".encode()
@@ -176,7 +181,7 @@ class RecentObservations:
             lo, hi, now = timestamp(start), timestamp(end), self.now()
             if not now - timedelta(days=self.limits.days) <= lo < hi <= now:
                 raise Refused("out_of_window")
-            if len(self._snapshots) >= self.limits.snapshots:
+            if len(self._snapshots)+len(self._exports) >= self.limits.snapshots:
                 raise Refused("snapshot_concurrency_limit")
             created_tick = self.monotonic()
             deadline = created_tick + self.limits.ttl_seconds
@@ -236,10 +241,114 @@ class RecentObservations:
             self._snapshots[identity] = _Snapshot(encoded(manifest), tuple(rows), deadline)
             return {"manifest": manifest, "cursor": self._cursor(identity, 0)}
 
+    def create_export(self, did, start, end, *, labeler=None, value=None, action=None, target_kind=None):
+        """Fixed-ID acquisition frontier; finite pages without a retained lease."""
+        with self._lock:
+            self._purge()
+            if not isinstance(did, str) or not did.startswith('did:') or len(did)>512 or any(c in did for c in '/?#\r\n'):
+                raise Refused('invalid_account_did')
+            if any(x is not None and (not isinstance(x,str) or len(x.encode())>512) for x in (labeler,value)):
+                raise Refused('invalid_filter')
+            if action not in (None,'application_observed','removal_observed','unknown_action') or target_kind not in (None,'account','post'):
+                raise Refused('invalid_filter')
+            lo,hi,now=timestamp(start),timestamp(end),self.now()
+            if not now-timedelta(days=self.limits.days)<=lo<hi<=now:raise Refused('out_of_window')
+            if len(self._snapshots)+len(self._exports)>=self.limits.snapshots:raise Refused('snapshot_concurrency_limit')
+            identity=secrets.token_hex(16)
+            state={'deadline':self.monotonic()+self.limits.ttl_seconds,'query':(did,iso(lo),iso(hi)),
+                   'filters':{'labeler':labeler,'value':value,'action':action,'target_kind':target_kind},
+                   'after':0,'upper':None,'next_index':0,'cache_index':-1,'cache':None,'retries':0,'count':0}
+            prepared=self._export_read(state)
+            state['upper']=prepared['upper_id']
+            coverage=self._coverage(prepared['coverage'],lo,hi)
+            manifest={'schema':'labelwatch.public-observations.v1','account':did,
+                      'interval':{'start':iso(lo),'end':iso(hi),'end_exclusive':True},
+                      'window_days':self.limits.days,'coverage':coverage,'frontier':prepared['frontier'],
+                      'filters':state['filters'],'count':None,'current_state':'unknown',
+                      'completeness':'fixed acquisition frontier; complete only after terminal page; gaps disclosed',
+                      'pagination':'stable event-ID keyset; no source lease between pages',
+                      'expires_at':iso(now+timedelta(seconds=self.limits.ttl_seconds))}
+            state['manifest']=encoded(manifest);state['digest']=hashlib.sha256(state['manifest'])
+            state['prepared']=prepared
+            if self.monotonic()>=state['deadline']:raise Refused('snapshot_expired_or_unavailable')
+            self._exports[identity]=state
+            return {'manifest':manifest,'cursor':self._cursor(identity,0)}
+
+    def _export_read(self,state):
+        did,start,end=state['query']
+        try:
+            with self.provider.snapshot(did,start,end,self.limits.page_rows,
+                    timeout_seconds=min(10,max(.001,state['deadline']-self.monotonic())),
+                    max_bytes=max(1,self.limits.snapshot_bytes//2),
+                    after_id=state['after'],upper_id=state['upper']) as source:
+                result=dict(source);result['rows']=[];used=0
+                for raw in source['rows']:
+                    if len(result['rows'])>=self.limits.page_rows:raise Refused('provider_keyset_unavailable')
+                    for field in ('labeler_did','uri','val','ts','observed_at','src','cid','exp'):
+                        value=raw.get(field)
+                        if isinstance(value,str):
+                            if len(value)>self.limits.snapshot_bytes:raise Refused('snapshot_byte_limit')
+                            used+=len(value.encode())
+                    if used>self.limits.snapshot_bytes:raise Refused('snapshot_byte_limit')
+                    result['rows'].append(raw)
+        except Refused:
+            raise
+        except Exception as exc:
+            raise Refused('snapshot_expired_or_unavailable') from exc
+        upper,next_id,more=result.get('upper_id'),result.get('next_after_id'),result.get('has_more')
+        if type(upper) is not int or type(next_id) is not int or type(more) is not bool or not state['after']<=next_id<=upper:
+            raise Refused('provider_keyset_unavailable')
+        if state['upper'] is not None and upper!=state['upper']:raise Refused('provider_frontier_changed')
+        if more and next_id==state['after']:raise Refused('provider_keyset_not_advanced')
+        ids=[row.get('id') for row in result['rows']]
+        if len(ids)>self.limits.page_rows or any(type(x) is not int for x in ids) or ids!=sorted(set(ids)):
+            raise Refused('provider_keyset_unavailable')
+        if ids and (ids[0]<=state['after'] or ids[-1]!=next_id):raise Refused('provider_keyset_unavailable')
+        return result
+
+    def _export_page(self,identity,index,state):
+        if index==state['cache_index']:
+            state['retries']+=1
+            if state['retries']>self.limits.page_requests:
+                del self._exports[identity];raise Refused('snapshot_retry_limit')
+            return json.loads(state['cache'])
+        if index!=state['next_index'] or (state['cache'] is not None and json.loads(state['cache'])['terminal']):
+            raise Refused('invalid_cursor_offset')
+        try:
+            source=state.pop('prepared',None)
+            if source is None:source=self._export_read(state)
+            did,start,end=state['query'];lo,hi=timestamp(start),timestamp(end)
+            rows=[]
+            for raw in source['rows']:
+                public=self._row(raw,did,lo,hi);filters=state['filters']
+                if filters['labeler'] is not None and public['labeler_did']!=filters['labeler']:continue
+                if filters['value'] is not None and public['value']!=filters['value']:continue
+                if filters['action'] is not None and public['action']!=filters['action']:continue
+                if filters['target_kind']=='account' and public['uri']!=did:continue
+                if filters['target_kind']=='post' and not public['uri'].startswith('at://'+did+'/app.bsky.feed.post/'):continue
+                rows.append(public)
+            terminal=not source['has_more']
+            response={'manifest':json.loads(state['manifest']),'offset':index,'rows':rows,'terminal':terminal,
+                      'next_cursor':None if terminal else self._cursor(identity,index+1)}
+            digest=state['digest'].copy()
+            for row in rows:digest.update(b'\n'+encoded(row))
+            if terminal:response.update(count=state['count']+len(rows),content_sha256=digest.hexdigest())
+            blob=encoded(response)
+            if len(blob)>self.limits.snapshot_bytes:raise Refused('snapshot_byte_limit')
+            if self.monotonic()>=state['deadline']:raise Refused('snapshot_expired_or_unavailable')
+            state.update(after=source['next_after_id'],cache_index=index,next_index=index+1,cache=blob,
+                         digest=digest,count=state['count']+len(rows))
+            return response
+        except Exception:
+            del self._exports[identity]
+            raise
+
     def page(self, cursor):
         with self._lock:
             identity, offset = self._decode(cursor)
             self._purge()
+            if identity in self._exports:
+                return self._export_page(identity,offset,self._exports[identity])
             snapshot = self._snapshots.get(identity)
             if snapshot is None:
                 raise Refused("snapshot_expired_or_unavailable")

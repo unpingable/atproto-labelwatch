@@ -64,13 +64,14 @@ def handler(product):
                         "<button name='days' value='30'>Full candidate window</button></form>"
                         "<p>Interval ends at the available source frontier, which may be earlier than now. "
                         "Exports are finite consistent snapshots. "
-                        "If a period exceeds its row or byte budget, choose a shorter period; no truncated result is published.</p>"), True
+                        "Exports use bounded pages even when many observations share one timestamp. Account previews have a finite row budget; no truncated result is published.</p>"), True
             if path == "/exports" and "cursor" in args:
                 return product.page(args["cursor"]), False
             if path in ("/account", "/exports"):
                 if "days" in args:
                     args["start"], args["end"] = interval(product, int(args["days"]))
-                created = product.create(args["did"], args["start"], args["end"],
+                create = product.create_export if path == "/exports" else product.create
+                created = create(args["did"], args["start"], args["end"],
                                          labeler=args.get("labeler") or None,
                                          value=args.get("value") or None,
                                          action=args.get("action") or None,
@@ -97,7 +98,7 @@ def handler(product):
                 body = {"error": str(exc), "complete": False}
                 if str(exc) in ("snapshot_row_limit", "snapshot_byte_limit"):
                     body["next_action"] = "Request a shorter period; no partial export was published."
-                self.respond(409, body)
+                self.respond(410 if str(exc) == "snapshot_expired_or_unavailable" else 409, body)
             except (KeyError, ValueError):
                 self.respond(400, {"error": "invalid_request", "complete": False})
             except (BrokenPipeError, ConnectionResetError, TimeoutError):

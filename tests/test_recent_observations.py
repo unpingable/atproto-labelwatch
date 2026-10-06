@@ -27,8 +27,16 @@ class Provider:
     def snapshot(self, did, start, end, max_rows, **budgets):
         self.leased = True
         try:
-            yield {"rows": iter(self.rows), "frontier": "fixture-frontier",
-                   "coverage": self.coverage}
+            if 'after_id' in budgets:
+                after=budgets['after_id'];upper=budgets.get('upper_id')
+                if upper is None:upper=len(self.rows)
+                rows=[dict(row,id=n) for n,row in enumerate(self.rows,1) if after<n<=upper]
+                selected=rows[:max_rows]
+                yield {"rows":selected,"frontier":"fixture-frontier","coverage":self.coverage,
+                       "upper_id":upper,"next_after_id":selected[-1]['id'] if selected else after,
+                       "has_more":len(rows)>max_rows}
+            else:
+                yield {"rows": iter(self.rows), "frontier": "fixture-frontier", "coverage": self.coverage}
         finally:
             self.leased = False
 
@@ -248,7 +256,7 @@ def test_http_handler_shares_account_export_and_explains_dense_refusal(monkeypat
     source.rows.clear()
     request.path = "/exports?" + urlencode({"cursor": created["cursor"]})
     request.do_GET()
-    assert replies.pop()[1]["manifest"]["count"] == 1
+    assert replies.pop()[1]["count"] == 1
     dense, _, _ = make([event(), event(1)], rows=1)
     handler_class = module.handler(dense)
     request = handler_class.__new__(handler_class)
