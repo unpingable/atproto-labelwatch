@@ -247,11 +247,12 @@ TimeoutStartSec=45, TimeoutStopSec=5, KillMode=control-group and SendSIGKILL=yes
 That gives the enclosing service manager authority to stop a stuck process and
 its descendants independently of async HTTP cooperation, including DNS executor
 shutdown. It is a configured operational deadline, not a hard real-time proof.
-The direct CLI invocation alone lacks this enclosing guarantee. Before acceptance,
-qualify a local deterministic blocked-resolver/TERM-resistant child case using
-an equivalent transient unit, verify the original invocation reaches terminal
-state and leaves no unit-owned processes, and independently observe persisted
-attempt recovery as an explicit gap. Missing terminal evidence is indeterminate.
+The direct CLI invocation alone lacks this enclosing guarantee. The isolated
+`c82d6954` control at `1f4bf35` verified a blocked executor and TERM-resistant
+child, terminal cgroup cleanup and exact-source pending-attempt recovery as an
+explicit unknown gap. It did not qualify a later schema, production packaging or
+a maintenance deadline. Reuse its evidence within that scope; qualify material
+successor changes separately. Missing terminal evidence remains indeterminate.
 Do not run this qualification against production or install the example here.
 
 Review pending-attempt atomicity, discovery compare-and-set, stopped-round gaps,
