@@ -57,7 +57,9 @@ def bulk_pages(store, pages, next_id):
                 db.set_meta(state,'custody:generation',str(int(db.get_meta(state,'custody:generation'))+1))
                 body={'request':page['request_cursor'],'next':page['next_cursor'],'hashes':[r[9] for r in rows],'payloads':[custody.payload_digest(r) for r in rows]}
                 position=page['next_cursor'] if page['next_cursor'] is not None else page['request_cursor']
-                state.execute('UPDATE q_recent_sources SET provider_cursor=?,last_page=?,last_observed=? WHERE did=?',(position,json.dumps(body,sort_keys=True),iso(stamp),source))
+                progressing=bool(rows) and page['next_cursor'] is not None and page['next_cursor']!=page['request_cursor']
+                due=iso(stamp if progressing else stamp+dt.timedelta(seconds=1))
+                state.execute('UPDATE q_recent_sources SET provider_cursor=?,last_page=?,last_observed=?,hot=?,next_due=?,failures=0 WHERE did=?',(position,json.dumps(body,sort_keys=True),iso(stamp),1 if progressing else 2,due,source))
             changed=state.execute("UPDATE sqlite_sequence SET seq=? WHERE name='label_events'",(next_id-1,)).rowcount
             if not changed:state.execute("INSERT INTO sqlite_sequence(name,seq) VALUES('label_events',?)",(next_id-1,))
             store.caps(state,scan=False)
@@ -156,10 +158,196 @@ def qualify(out):
     atomic(out/'RESULT.json',result);atomic(out/'CONSTRUCTION.json',{'state':'QUALIFIED_TINY','events':600});return result
 
 
+def construct_specimen(args):
+    """Explicitly admitted offline volume construction; never auto-launched.
+
+    Root supplies a separate occurrence ceiling after the actual-ingest producer
+    terminates. Per-source buffering packs valid source-homogeneous pages <=100.
+    Repeated input cycles are declared synthetic identity namespaces.
+    """
+    import time
+    import collections
+    import threading
+    import pyarrow.parquet as pq
+    from labelwatch.recent_observations import RecentObservations, Refused
+    if not 0<args.events<=100000000 or args.ceiling_bytes is None:raise ValueError('explicit count/occurrence budget required')
+    out=args.occurrence;out.mkdir();(out/'scratch').mkdir();os.environ['SQLITE_TMPDIR']=str(out/'scratch');storage.ROOT=out/'runtime';storage.ROOT.mkdir();(out/'evidence').mkdir()
+    atomic(out/'evidence/ARCHIVE-DESTINATION.json',{'campaign_archive':str(storage.ROOT/'constructed/archive')})
+    receipt=json.loads(args.specimen.with_name('SPECIMEN.json').read_text())
+    if storage.sha(args.specimen)!=receipt['parquet_sha256']:raise RuntimeError('specimen identity mismatch')
+    atomic(out/'CONSTRUCTION.json',{'state':'UNPUBLISHED','input_sha256':receipt['parquet_sha256'],'target_events':args.events})
+    start=dt.datetime(2026,1,1,12,tzinfo=dt.timezone.utc);end=start+dt.timedelta(days=30)
+    store=RecentStore.create(storage.ROOT/'constructed',iso(start));began=time.monotonic();peak=0
+    def admission(extra=0):
+        nonlocal peak
+        used=sum(p.stat().st_blocks*512 for p in out.rglob('*') if p.is_file());peak=max(peak,used)
+        if used+extra>args.ceiling_bytes:raise RuntimeError('constructed occurrence envelope exceeded')
+        free={p:os.statvfs(p).f_bavail*os.statvfs(p).f_frsize for p in ('/','/data')}
+        if any(n-extra<64424509440 for n in free.values()):raise RuntimeError('shared reserve admission refused')
+        return {'allocated_bytes':used,'sampled_peak_bytes':peak,'free_bytes':free}
+    def sample():
+        families=collections.Counter();seen=set()
+        for path in out.rglob('*'):
+            try:info=path.stat()
+            except FileNotFoundError:continue
+            if not path.is_file():continue
+            seen.add((info.st_dev,info.st_ino))
+            family='archives' if path.parent==store.root/'archive' else 'global' if path.name.startswith('state.sqlite') else 'catalog' if path.name.startswith('reader-catalog') else 'vessels' if path.suffix=='.sqlite' else 'other'
+            families[family]+=info.st_blocks*512
+        for fd in Path('/proc/self/fd').iterdir():
+            try:
+                link=os.readlink(fd);info=fd.stat()
+            except (FileNotFoundError,OSError):continue
+            if info.st_nlink==0 and (info.st_dev,info.st_ino) not in seen and str(out) in link:
+                families['open_unlinked']+=info.st_blocks*512;seen.add((info.st_dev,info.st_ino))
+        return dict(families)
+    # Method timings retain the actual implementation, only instrument calls.
+    for name in ('archive','retire','maintain'):
+        original=getattr(store,name)
+        def measured(*values,_name=name,_original=original,**kwargs):
+            t=time.monotonic();before=sample();maximum=sum(before.values());stop=threading.Event()
+            def observe():
+                nonlocal maximum
+                while not stop.wait(.2):maximum=max(maximum,sum(sample().values()))
+            thread=threading.Thread(target=observe,daemon=True);thread.start()
+            try:return _original(*values,**kwargs)
+            finally:
+                stop.set();thread.join();after=sample();maximum=max(maximum,sum(after.values()))
+                record={'method':_name,'seconds':time.monotonic()-t,'before':before,'after':after,'sampled_peak_bytes':maximum,'sample_period_seconds':.2,'scope':'includes visible allocated files and own open-unlinked scratch; sampled lower bound'}
+                with (out/'TRANSITIONS.jsonl').open('a') as f:f.write(json.dumps(record)+'\n')
+        setattr(store,name,measured)
+    sources=set()
+    for batch in pq.ParquetFile(args.specimen).iter_batches(batch_size=10000,columns=['src','labeler_did']):
+        for row in batch.to_pylist():sources.add(row['src'] or row['labeler_did'])
+        if len(sources)>2048:raise RuntimeError('source roster ceiling')
+    for n in range(max(0,584-len(sources))):sources.add('did:plc:unobserved-fixture-'+str(n))
+    store.remember_sources([{'did':x,'endpoint':None} for x in sorted(sources)])
+    subjects=list(dict.fromkeys(receipt.get('query_parameters',{}).get(k) for k in ('dense','sparse')))
+    subjects=[x for x in subjects if x];public={x:{'count':0,'hash':hashlib.sha256()} for x in subjects}
+    owners={};lookup=hashlib.sha256();buffers=collections.defaultdict(list);buffer_bytes=0
+    pending=[];cursors={};offered=0;next_id=1;active=start.date().isoformat();page_count=0
+    def encode(value):return (json.dumps(value,ensure_ascii=False,separators=(',',':'))+'\n').encode()
+    def flush():
+        nonlocal pending,next_id
+        if not pending:return
+        upcoming=sum(len(json.dumps(row).encode()) for page in pending for row in page['rows'])
+        admission(max(8*1024**2,upcoming*8))
+        next_id=bulk_pages(store,pending,next_id);pending=[]
+    def page(rows,source):
+        nonlocal offered,active,page_count
+        observed=start+dt.timedelta(microseconds=offered*2592000000000//args.events)
+        owner=observed.date().isoformat()
+        if owner!=active:
+            flush()
+            local=list(store.root.glob('*.sqlite'));admission(2*sum(p.stat().st_size for p in local)+8*1024**2)
+            store.advance_day(iso(observed));active=owner
+            atomic(out/'PROGRESS.json',{'phase':'DAILY_TRANSITION','constructed_events':offered,'owner':owner,'elapsed_seconds':time.monotonic()-began,**admission()})
+        request=cursors.get(source);following='synthetic-page/'+str(page_count+1)
+        pending.append(dict(rows=rows,source=source,request_cursor=request,next_cursor=following,observed_at=iso(observed)))
+        cursors[source]=following;page_count+=1
+        oracle=owners.setdefault(owner,{'count':0,'payload_hash':hashlib.sha256(),'identity_sum':0})
+        for row in rows:
+            event_id=offered+1;expanded=(event_id,*row);oracle['count']+=1;oracle['payload_hash'].update(encode(list(expanded)))
+            payload=hashlib.sha256(json.dumps(list(row),sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()).hexdigest()
+            oracle['identity_sum']=(oracle['identity_sum']+int.from_bytes(hashlib.sha256(encode([row[9],event_id,payload])).digest(),'big'))%(1<<256)
+            subject=row[2][5:].partition('/')[0] if row[2].startswith('at://') else row[2]
+            lookup.update(encode([event_id,day_number(owner),micros(observed),subject]))
+            if subject in public:
+                public[subject]['count']+=1;public[subject]['hash'].update(encode([row[2],row[4],row[8],iso(observed)]))
+            offered+=1
+        with (out/'PAGES.jsonl').open('a') as f:f.write(json.dumps({'source':source,'clock':iso(observed),'rows':len(rows),'end_id':offered})+'\n')
+        if len(pending)==10:flush()
+    generated=0;cycle=0
+    while generated<args.events:
+        for batch in pq.ParquetFile(args.specimen).iter_batches(batch_size=1000):
+            for raw in batch.to_pylist():
+                if generated>=args.events:break
+                source=raw['src'] or raw['labeler_did'];raw['src']=raw['labeler_did']=source
+                if cycle:raw['event_hash']=hashlib.sha256((raw['event_hash']+':cycle:'+str(cycle)).encode()).hexdigest()
+                row=tuple(raw[k] for k in FIELDS[1:]);size=len(json.dumps(row).encode())
+                buffers[source].append((row,size));buffer_bytes+=size;generated+=1
+                if buffer_bytes>64*1024**2:raise RuntimeError('source-page buffering envelope exceeded')
+                if len(buffers[source])==100:
+                    part=buffers.pop(source);buffer_bytes-=sum(x[1] for x in part);page([x[0] for x in part],source)
+            if generated>=args.events:break
+        cycle+=1
+        if not pq.ParquetFile(args.specimen).metadata.num_rows:raise RuntimeError('empty specimen')
+    for source in sorted(buffers):page([x[0] for x in buffers[source]],source)
+    flush();assert offered==args.events and next_id==args.events+1
+    # Complete logical lookup hash; no second materialized reference database.
+    with closing(connect(store.state,readonly=True)) as c:
+        actual_lookup=hashlib.sha256()
+        for row in c.execute('SELECT event_id,owner_day,observed_us,target_did FROM q_recent_seen ORDER BY event_id'):actual_lookup.update(encode(list(row)))
+        assert actual_lookup.hexdigest()==lookup.hexdigest()
+        assert c.execute('SELECT COUNT(*) FROM labeler_evidence').fetchone()[0]==page_count
+        store.caps(c)
+        for table in __import__('recent_storage').DERIVED:assert c.execute('SELECT COUNT(*) FROM "'+table+'"').fetchone()[0]==0
+        physical={'pages':c.execute('PRAGMA page_count').fetchone()[0],'freelist':c.execute('PRAGMA freelist_count').fetchone()[0],
+                  'objects':dict(c.execute('SELECT name,sum(pgsize) FROM dbstat GROUP BY name'))}
+        for owner,body in c.execute('SELECT identity,receipt_json FROM custody_archives'):
+            value=json.loads(body);oracle=owners[owner]
+            assert value['content']=={'rows':oracle['count'],'ordered_row_sha256':oracle['payload_hash'].hexdigest()}
+            index=Path(value['archive_root'])/value['identity_index']['file'];count=0;total=0
+            with closing(sqlite3.connect(f'file:{index}?mode=ro&immutable=1',uri=True)) as q:
+                for row in q.execute('SELECT event_hash,event_id,payload_sha256 FROM identities'):
+                    count+=1;total=(total+int.from_bytes(hashlib.sha256(encode(list(row))).digest(),'big'))%(1<<256)
+            assert count==oracle['count'] and total==oracle['identity_sum']
+    with closing(connect(store.root/(active+'.sqlite'),readonly=True)) as c:
+        digest=hashlib.sha256();count=0
+        for row in c.execute('SELECT '+','.join(FIELDS)+' FROM label_events ORDER BY id'):
+            digest.update(encode(list(row)));count+=1
+        assert count==owners[active]['count'] and digest.hexdigest()==owners[active]['payload_hash'].hexdigest()
+    with closing(connect(store.state,readonly=True)) as c:
+        total=0;count=0
+        for row in c.execute('SELECT event_hash,event_id,payload_sha256 FROM q_hot_keys'):
+            count+=1;total=(total+int.from_bytes(hashlib.sha256(encode(list(row))).digest(),'big'))%(1<<256)
+        assert count==owners[active]['count'] and total==owners[active]['identity_sum']
+    with closing(connect(store.state,readonly=True)) as c:
+        # The complete lookup was independently hashed against input above.
+        top=list(c.execute('SELECT target_did,COUNT(*) n FROM q_recent_seen GROUP BY target_did ORDER BY n DESC,target_did LIMIT 3'))
+    for subject,count in top:
+        if subject not in public:subjects.append(subject);public[subject]={'count':count,'hash':None}
+    query_end=store.frontier()['end'];queries=[]
+    for subject in subjects:
+        product=RecentObservations(RecentProvider(store),now=lambda:clock(query_end));expected=public[subject]
+        preview_started=time.monotonic();preview_refusal=None
+        try:product.create(subject,iso(start),query_end)
+        except Refused as exc:preview_refusal=str(exc)
+        preview={'seconds':time.monotonic()-preview_started,'refusal':preview_refusal,'maximum_rows':1000}
+        observed_count=0;digest=hashlib.sha256();pages=0;t=time.monotonic();error=None;complete=False
+        try:
+            cursor=product.create_export(subject,iso(start),query_end)['cursor']
+            while cursor:
+                result=product.page(cursor);pages+=1
+                for row in result['rows']:
+                    observed_count+=1;digest.update(encode([row['uri'],row['value'],row['source_timestamp'],iso(clock(row['observed_at']))]))
+                cursor=result['next_cursor'];complete=result['terminal']
+            assert observed_count==expected['count'],('export count',subject,observed_count,expected['count'])
+            if expected['hash'] is not None:assert digest.hexdigest()==expected['hash'].hexdigest(),('export input digest',subject)
+        except Refused as exc:error=str(exc)
+        queries.append({'subject':subject,'expected_rows':expected['count'],'delivered_rows':observed_count,'pages':pages,'seconds':time.monotonic()-t,'complete':complete,'refusal':error,'ttl_seconds':120,'page_rows':100,'account_preview':preview,'input_projection_hash_compared':expected['hash'] is not None,'scope':'Actual product fixed TTL, no network transfer overhead; terminal required for completion'})
+    retained=admission();advances=[]
+    for day in range(1,args.advance_days+1):
+        when=end+dt.timedelta(days=day);local=list(store.root.glob('*.sqlite'));admission(2*sum(p.stat().st_size for p in local)+8*1024**2)
+        store.advance_day(iso(when));expected=0
+        with (out/'PAGES.jsonl').open() as f:
+            for line in f:
+                entry=json.loads(line)
+                if clock(entry['clock'])>=when-dt.timedelta(days=30):expected+=entry['rows']
+        with closing(connect(store.state,readonly=True)) as c:assert c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]==expected
+        advances.append({'day':day,'expected_retained_rows':expected,**admission()})
+    result={'result':'CONSTRUCTED_VOLUME_QUALIFIED' if all(x['complete'] for x in queries) else 'CONSTRUCTED_VOLUME_WITH_EXPORT_REFUSAL','events':offered,'roster':len(sources),'source_pages':page_count,'physical':physical,'retained':retained,'advances':advances,'queries':queries,'input_sha256':receipt['parquet_sha256'],
+            'top_accounts':[list(x) for x in top],'limits':{'ttl_seconds':120,'page_rows':100,'snapshot_rows':1000},'limitations':'Constructed post-flush state only; no actual acceptance throughput/recovery claim. Source-homogeneous <=100 pages, synthetic cycle hashes, src becomes selected labeler, copied signature shapes; disabled historical derived tables remain empty. Sampled peaks, not continuous maximum. Export deadline unchanged; incomplete export is not success.'}
+    atomic(out/'RESULT.json',result);atomic(out/'CONSTRUCTION.json',{'state':'QUALIFIED_CONSTRUCTED_FIXTURE','events':offered});return result
+
+
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--occurrence',type=Path,required=True);a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--occurrence',type=Path,required=True)
+    p.add_argument('--specimen',type=Path);p.add_argument('--events',type=int);p.add_argument('--ceiling-bytes',type=int)
+    p.add_argument('--advance-days',type=int,choices=range(3),default=2);a=p.parse_args()
     storage.owned(a.occurrence)
-    try:print(json.dumps(qualify(a.occurrence)),flush=True)
+    if a.specimen and (a.events is None or a.ceiling_bytes is None):p.error('specimen construction requires explicit events and admitted ceiling')
+    try:print(json.dumps(construct_specimen(a) if a.specimen else qualify(a.occurrence)),flush=True)
     except BaseException as ex:
         if a.occurrence.exists():atomic(a.occurrence/'TERMINAL.json',{'result':'FAIL','error':repr(ex)})
         raise
