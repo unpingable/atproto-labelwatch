@@ -86,11 +86,13 @@ class RecentStore(Store):
                 hot INTEGER NOT NULL DEFAULT 0 CHECK(hot IN (0,1,2)),next_due TEXT,
                 failures INTEGER NOT NULL DEFAULT 0 CHECK(failures BETWEEN 0 AND 6));
             ''')
-            for key, value in {'version':'5','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
+            for key, value in {'version':'6','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
                                'end':iso(stamp),'generation':'0','clock':iso(stamp),'events':'0'}.items():
                 db.set_meta(c, 'q:recent_'+key, value)
             db.set_meta(c,'q:recent_start',iso(stamp-dt.timedelta(days=30)))
             db.set_meta(c,'q:recent_acquisition_start',iso(stamp))
+            db.set_meta(c,'q:recent_acquisition',json.dumps({'schema':'labelwatch.acquisition.v1',
+                'generation_id':str(uuid.uuid4()),'started_at':iso(stamp),'basis':'local_acceptance_clock'},sort_keys=True))
             db.set_meta(c,'q:recent_gap_overflow','0')
             for table,ceiling in LIMITS.items():
                 count=c.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
@@ -104,8 +106,33 @@ class RecentStore(Store):
         return cls(root)
 
     def require(self, c):
-        if db.get_meta(c,'q:recent_version') != '5':
-            raise RuntimeError('recent schema v5 enrollment required; old evidence preserved, no implicit conversion')
+        if db.get_meta(c,'q:recent_version') != '6':
+            raise RuntimeError('recent schema v6 enrollment required; old evidence preserved, no implicit conversion')
+        self.acquisition(c)
+
+    @staticmethod
+    def acquisition(c):
+        """Creation identity is independent of advancing retention generations.
+
+        No migration fallback: missing metadata never manufactures a start time.
+        This identifies local acceptance, not historical source completeness.
+        """
+        try:
+            value=json.loads(db.get_meta(c,'q:recent_acquisition') or 'null')
+            if not isinstance(value,dict) or set(value)!={'schema','generation_id','started_at','basis'}:
+                raise ValueError('acquisition fields')
+            if value['schema']!='labelwatch.acquisition.v1' or value['basis']!='local_acceptance_clock':
+                raise ValueError('acquisition schema or basis')
+            identity=uuid.UUID(value['generation_id'])
+            if identity.version!=4 or str(identity)!=value['generation_id']:raise ValueError('acquisition identity')
+            started=clock(value['started_at'])
+            if iso(started)!=value['started_at'] or value['started_at']!=db.get_meta(c,'q:recent_acquisition_start'):
+                raise ValueError('acquisition start binding')
+            if started>clock(db.get_meta(c,'q:recent_end')) or started>clock(db.get_meta(c,'q:recent_clock')):
+                raise ValueError('acquisition frontier ordering')
+            return value
+        except (ValueError,TypeError,AttributeError,KeyError) as exc:
+            raise RuntimeError('trusted acquisition metadata unavailable') from exc
 
     def recover(self, c, death=None):
         self.require(c)
@@ -390,7 +417,8 @@ class RecentStore(Store):
         try:
             self.require(c)
             if c.execute('SELECT 1 FROM q_recent_transition').fetchone():raise RuntimeError('recent maintenance recovery required')
-            return {k:db.get_meta(c,'q:recent_'+k) for k in ('start','end','generation')}
+            return {**{k:db.get_meta(c,'q:recent_'+k) for k in ('start','end','generation')},
+                    'acquisition':self.acquisition(c)}
         finally:c.close()
 
     def _record_gap(self,c,start,end,reason):

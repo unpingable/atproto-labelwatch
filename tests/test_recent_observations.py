@@ -21,7 +21,7 @@ class Provider:
     def __init__(self, rows):
         self.rows = rows
         self.leased = False
-        self.coverage = {"status": "unknown", "gaps": []}
+        self.coverage = {"status": "unknown", "gaps": [], "acquisition": {"schema":"labelwatch.acquisition.v1","generation_id":"12345678-1234-4234-9234-123456789012","started_at":"2026-09-01T00:00:00Z","basis":"local_acceptance_clock"}}
 
     @contextmanager
     def snapshot(self, did, start, end, max_rows, **budgets):
@@ -167,7 +167,7 @@ def test_filters_summary_and_html_escape_preserve_event_attribution():
 
 def test_gap_reason_allowlist_and_coverage_are_not_silently_complete():
     product, source, _ = make([])
-    source.coverage = {"status": "gapped", "gaps": [{"start": START, "end": END,
+    source.coverage = {**source.coverage, "status": "gapped", "gaps": [{"start": START, "end": END,
                                                    "reason": "private operational detail"}]}
     cursor = product.create(DID, START, END)["cursor"]
     coverage = product.page(cursor)["manifest"]["coverage"]
@@ -293,7 +293,7 @@ def test_public_signature_projection_and_readable_newest_first_timeline():
     first=event(0,sig='public-signature')
     second=event(1);second['neg']=1;second['uri']='at://'+DID+'/app.bsky.feed.post/record'
     product,provider,_=make([first,second])
-    provider.coverage={'status':'unknown','gaps':[{'start':START,'end':'2026-10-05T00:00:00.000001Z','reason':'not_observed'}]}
+    provider.coverage={**provider.coverage,'status':'unknown','gaps':[{'start':START,'end':'2026-10-05T00:00:00.000001Z','reason':'not_observed'}]}
     created=product.create(DID,START,END);account=product.account(created['cursor'])
     assert account['timeline'][0]['sig']=='public-signature'
     html=account_html(account)

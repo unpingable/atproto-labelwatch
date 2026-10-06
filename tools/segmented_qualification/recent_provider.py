@@ -48,13 +48,14 @@ class RecentProvider:
                 groups={}
                 for event_id,observed,owner in selected:groups.setdefault(day_name(owner),[]).append(event_id)
                 gaps=[]
-                acquisition=db.get_meta(c,'q:recent_acquisition_start')
+                acquisition_identity=self.store.acquisition(c)
+                acquisition=acquisition_identity['started_at']
                 if start<acquisition:gaps.append({'start':start,'end':min(end,acquisition),'reason':'not_observed'})
                 for lo,hi,reason in c.execute('SELECT start,end,reason FROM q_recent_gaps WHERE end>? AND start<? ORDER BY start',(start,end)):
                     gaps.append({'start':max(start,lo),'end':min(end,hi),'reason':reason})
                 if db.get_meta(c,'q:recent_gap_overflow')=='1' or len(gaps)>128:
                     gaps=[{'start':start,'end':end,'reason':'unknown'}]
-                coverage={'status':'unknown','gaps':gaps}
+                coverage={'status':'unknown','gaps':gaps,'acquisition':acquisition_identity}
                 catalog=VerifiedCatalog(self.archive,store=self.store)
                 owners={owner:(p,r) for owner,p,r in custody.committed(c)}
                 archives=[]

@@ -26,7 +26,7 @@ class Provider:
             rows=[r for r in self.rows if after_id<r['id']<=upper]
             selected=rows[:max_rows]
             yield {'rows':selected,'upper_id':upper,'next_after_id':selected[-1]['id'] if selected else after_id,
-                   'has_more':len(rows)>max_rows,'coverage':{'status':'unknown','gaps':[]},'frontier':'fixed-test-source'}
+                   'has_more':len(rows)>max_rows,'coverage':{'status':'unknown','gaps':[], 'acquisition':{'schema':'labelwatch.acquisition.v1','generation_id':'12345678-1234-4234-9234-123456789012','started_at':'2026-09-01T00:00:00Z','basis':'local_acceptance_clock'}},'frontier':'fixed-test-source'}
         finally:self.leased=False
 
 

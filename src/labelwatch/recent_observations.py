@@ -14,6 +14,7 @@ import json
 import secrets
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -150,6 +151,19 @@ class RecentObservations:
     def _coverage(value, start, end):
         if not isinstance(value, dict) or value.get("status") not in ("observed", "gapped", "unknown"):
             raise Refused("coverage_unavailable")
+        acquisition=value.get('acquisition')
+        try:
+            if not isinstance(acquisition,dict) or set(acquisition)!={'schema','generation_id','started_at','basis'}:
+                raise ValueError('acquisition fields')
+            if acquisition['schema']!='labelwatch.acquisition.v1' or acquisition['basis']!='local_acceptance_clock':
+                raise ValueError('acquisition schema or basis')
+            identity=uuid.UUID(acquisition['generation_id'])
+            if identity.version!=4 or str(identity)!=acquisition['generation_id']:raise ValueError('acquisition identity')
+            acquired=timestamp(acquisition['started_at'])
+        except (ValueError,TypeError,AttributeError,KeyError) as exc:
+            raise Refused('acquisition_metadata_unavailable') from exc
+        acquisition={**acquisition,'started_at':iso(acquired)}
+        warmup={'start':iso(start),'end':iso(min(end,acquired)),'reason':'not_observed'} if start<acquired else None
         gaps = []
         for gap in value.get("gaps", []):
             if len(gaps) >= 128:
@@ -158,12 +172,12 @@ class RecentObservations:
             if not start <= lo < hi <= end:
                 raise Refused("invalid_coverage_gap")
             reason = gap.get("reason")
-            if reason not in ("not_observed", "source_unavailable", "unknown"):
+            if reason not in ("not_observed", "source_unavailable", "unknown", "ingest_paused", "cursor_reset", "maintenance", "warmup"):
                 reason = "unknown"
             gaps.append({"start": iso(lo), "end": iso(hi), "reason": reason})
-        if value["status"] == "observed" and gaps:
+        if value["status"] == "observed" and (gaps or warmup):
             raise Refused("conflicting_coverage")
-        return {"status": value["status"], "gaps": gaps,
+        return {"status": value["status"], "gaps": gaps, "acquisition":acquisition, "warmup":warmup,
                 "scope": "recorded_observations_only; not universal source coverage"}
 
     def create(self, did, start, end, *, labeler=None, value=None, action=None, target_kind=None):
@@ -261,6 +275,7 @@ class RecentObservations:
             prepared=self._export_read(state)
             state['upper']=prepared['upper_id']
             coverage=self._coverage(prepared['coverage'],lo,hi)
+            state['acquisition']=coverage['acquisition']
             manifest={'schema':'labelwatch.public-observations.v1','account':did,
                       'interval':{'start':iso(lo),'end':iso(hi),'end_exclusive':True},
                       'window_days':self.limits.days,'coverage':coverage,'frontier':prepared['frontier'],
@@ -296,6 +311,9 @@ class RecentObservations:
             raise
         except Exception as exc:
             raise Refused('snapshot_expired_or_unavailable') from exc
+        coverage=self._coverage(result['coverage'],timestamp(start),timestamp(end))
+        if state.get('acquisition') is not None and coverage['acquisition']!=state['acquisition']:
+            raise Refused('acquisition_generation_changed')
         upper,next_id,more=result.get('upper_id'),result.get('next_after_id'),result.get('has_more')
         if type(upper) is not int or type(next_id) is not int or type(more) is not bool or not state['after']<=next_id<=upper:
             raise Refused('provider_keyset_unavailable')
@@ -418,10 +436,18 @@ def account_html(account):
                         '<p class="subject">'+esc(row['uri'])+'</p></article></li>')
     reasons={'not_observed':'Acquisition had not begun; this interval was not observed.',
              'source_unavailable':'A source was unavailable during this interval.',
+             'ingest_paused':'Collection was stopped during this interval.',
+             'cursor_reset':'Source continuation was reset; continuity is not established.',
+             'maintenance':'Collection coverage was interrupted by maintenance.',
+             'warmup':'The collector was warming up; observation coverage is not established.',
              'unknown':'Observation coverage is not established for this interval.'}
     gaps=''.join('<li>'+esc(when(gap['start']))+' to '+esc(when(gap['end']))+': '+esc(reasons.get(gap['reason'],reasons['unknown']))+'</li>'
                  for gap in manifest['coverage']['gaps'])
     gap_content='<ul>'+gaps+'</ul>' if gaps else '<p>No specific gaps are recorded. This does not establish complete source coverage.</p>'
+    acquisition=manifest['coverage']['acquisition']
+    acquisition_content='<p>Local acquisition began '+esc(when(acquisition['started_at']))+'. Earlier source-authored dates are not historical observation times.</p>'
+    warmup=manifest['coverage']['warmup']
+    if warmup:acquisition_content+='<p>Warm-up: '+esc(when(warmup['start']))+' to '+esc(when(warmup['end']))+' was not observed by this acquisition generation.</p>'
     def field(name,label,value):
         return '<label>'+label+'<input name="'+name+'" value="'+esc(value)+'"></label>'
     def select(name,label,options):
@@ -443,7 +469,7 @@ def account_html(account):
             'th,td{text-align:left;padding:.5rem;border-bottom:1px solid #cbd5e1}details{margin:1.5rem 0}pre{white-space:pre-wrap}.table-wrap{overflow:auto}</style>'
             '<h1>Recent label observations</h1><p class="account">'+esc(manifest['account'])+'</p><p>'+esc(when(manifest['interval']['start']))+' to '+esc(when(manifest['interval']['end']))+' (end exclusive).</p>'
             '<div class="cards">'+cards+'</div><p><strong>Current label state is unknown.</strong> A recorded application or removal does not establish whether a label is currently active.</p>'
-            '<section class="coverage"><h2>Observation coverage</h2><p>These are recorded observations, not a complete view of every source.</p>'+gap_content+'</section>'
+            '<section class="coverage"><h2>Observation coverage</h2><p>These are recorded observations, not a complete view of every source.</p>'+acquisition_content+gap_content+'</section>'
             '<h2>Filter observations</h2><form action="/account">'+filters+'<button>Apply filters</button></form>'
             '<p><a href="'+esc(export)+'">Export this period</a> · Expires '+esc(when(manifest['expires_at']))+'.</p>'
             '<h2>Timeline · newest first</h2>'+('<ol class="timeline">'+''.join(timeline)+'</ol>' if timeline else empty)+
