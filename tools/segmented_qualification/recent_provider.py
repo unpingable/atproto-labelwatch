@@ -32,7 +32,7 @@ class RecentProvider:
             try:
                 self.store.require(c)
                 if c.execute('SELECT 1 FROM q_recent_transition').fetchone():raise RuntimeError('maintenance recovery pending')
-                frontier={k:db.get_meta(c,'q:recent_'+k) for k in ('start','end','generation')}
+                frontier={k:db.get_meta(c,'q:recent_'+k) for k in ('start','end','generation','events')}
                 if clock(start)<clock(frontier['start']) or clock(end)>clock(frontier['end']) or clock(start)>=clock(end):raise RuntimeError('requested observation range unavailable')
                 c.set_progress_handler(lambda:int(time.monotonic()>deadline),1000)
                 selected=list(c.execute('SELECT event_id,observed_at,owner FROM q_recent_seen WHERE target_did=? AND observed_at>=? AND observed_at<? ORDER BY observed_at,event_id LIMIT ?', (did,start,end,max_rows)))
