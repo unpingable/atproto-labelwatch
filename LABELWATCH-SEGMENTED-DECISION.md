@@ -1,6 +1,152 @@
 # Labelwatch segmented-storage decision — parked continuation
 
-**PENDING — PAUSED BY OPERATOR. No new architecture verdict.**
+**PENDING — CONDITIONALLY AUTHORIZED AFTER PRODUCTION STABILITY.**
+No producer has resumed and no adoption verdict is earned.
+
+## October 6 execution amendment — existing #7
+
+The owner forbids every recurring-cost increase and a fresh architecture
+campaign. The existing incident owner first evaluates safe reallocation within
+the already attached 200 GiB Zone volume. Existing #7 is then the permanent
+capacity solution to qualify, not optional optimization. This is a continuation
+of the same candidate and evidence; it does not select a new engine or authorize
+production migration. The prior pause is replaced by **conditional resume**,
+not an instruction to launch while production is unstable.
+
+Before any successor producer, the integration owner must name a reviewed
+production-stability receipt: admitted root/Zone capacity including concurrent
+maintenance and expected WAL/checkpoint demand, useful collector/API progress,
+fresh public aggregate publication, no unresolved active/pending transition,
+and an exact recovery boundary. The receipt must give observation interval,
+resource minima, workload, service/release identities and current monitoring
+that detects renewed exhaustion during qualification. A process being active,
+a paid allocation, or source-test success is not that receipt. Full incident
+closure still separately requires actual retention recovery, fresh public facts,
+and the missed obligations enrolled and demonstrated under Monitor #18.
+
+No new generic approval is required once this condition and existing storage
+admission hold. Read the sealed catalog producer/checkpoint first; never restart
+producer 04166ec3. Use a fresh unique successor run under the existing campaign,
+one integration/storage owner, serialized large runtime, and independent review.
+
+## Amended acceptance gates
+
+These extend the existing three gates below; they are not another research
+program. A successful 47-day fixture alone does not prove lifetime bounds.
+
+1. **All-state lifetime.** Inventory every actual production table, index,
+   file/queue and persistent state family, and its successor representation.
+   Reconcile the existing 21-table counts against the exact schema; do not treat
+   sampled first/tail lengths or currently empty tables as growth bounds.
+   Include alerts, probes, receipts, outcomes, discovery/boundary history,
+   quarantine, rollups, cursors, identity/replay authority, catalogs and logs.
+   For each family name its owner, semantic/replay obligation, location,
+   expiration or segment-retirement rule, refusal/recovery behavior and a
+   conservative byte bound. Demonstrate physical block release for retired
+   local data with live descriptor/link checks; SQLite freelist reuse alone
+   does not count as filesystem reclamation. Off-host custody must be committed
+   and recoverable before local retirement. No silent loss of required history.
+2. **Explicit workload envelope.** Bind measured sustained/peak ingest and
+   bytes/event, active source/identity cardinality, update/delete amplification,
+   lateness/replay rules, maximum admitted archive-unavailable duration, query
+   concurrency and required full-40-day query families. Give numeric limits and
+   an observation basis before allocating a specimen. Specify observable
+   refusal/backpressure and recovery at each limit without silently redefining
+   completeness. Retaining a finite number of days at an unbounded rate is not
+   a storage bound. Reuse production scalar/aggregate profiles and the immutable
+   12M specimen; do not export raw production records or build a new corpus
+   merely to restate established evidence.
+3. **Catalog growth and historical projections.** Qualify indexed candidate
+   admission and targeted interruption/range/orphan/missing/corrupt-entry
+   recovery, including independent acceptance of the repaired successor.
+   Separately account for all retained owner/receipt/index bytes and full-audit
+   and rebuild costs. The existing metadata index grows with segment count;
+   zero historical payload hashes does not establish bounded metadata storage.
+   State and enforce a local metadata/projection cap, or identify an explicit
+   lifetime-global exception with bytes/unit, growth rate, admitted operating
+   horizon, numeric budget and owner acceptance. An exception is not a strict
+   history-independent claim. Derived caches remain rebuildable and bounded;
+   canonical custody/completeness authority cannot be evicted as if it were a
+   cache. Preserve missing-history refusal and exact recovery.
+4. **Steady-state and peak space.** Derive the cloud-local bound from the
+   admitted envelope and each state family's rule, then verify repeated
+   rollover and recovery transitions with current-volume measurements.
+   Account per filesystem for live/hot data, WAL/checkpoint headroom, sealed
+   local segments, archive outage backlog, catalogs/projections, query spill,
+   rebuild space, staging, and simultaneous predecessor/successor/rollback
+   copies. Measure peak allocated blocks, inodes and minimum available capacity
+   across seal/archive/retire/query/restart/interruption, not just final sizes.
+   Exact existing root/Zone reserves and aggregate shared-host budgets remain;
+   another filesystem's free space is not a substitute. No recurring-cost
+   increase, provider allocation, hidden other-tenant consumption or lowering
+   a reserve is a passing result. Explicitly account for replay/readmission of
+   old data so it cannot silently recreate unbounded mutable state.
+5. **Physical and data-model compaction.** After required historical state is
+   durably sealed under the existing custody contract, demonstrate that retiring
+   whole segments or replacing a bounded hot generation actually returns local
+   filesystem blocks to the admitted bound. Reuse the existing mechanism;
+   select a rebuild only if needed for its residual mutable tables/indexes.
+   Do not mandate VACUUM, a new engine or another architecture campaign.
+   Measure separately logical retained rows/bytes (with an explicit encoding),
+   database/index logical sizes, physical allocated blocks, free space and
+   open/unlinked files before seal, at peak coexistence and after retirement.
+   A low row count, compressed archive or SQLite freelist is not physical
+   reclamation. Report observed compression/index-amplification ratios on the
+   retained production-shaped specimen; do not assume a compression ratio.
+
+   Exact archived events and canonical custody/replay authority remain available
+   for their required semantics. Smaller summaries/projections may answer only
+   the queries they preserve; they cannot silently replace exact history for
+   queries, replay, late arrivals, deletes, counts or provenance that need it.
+   Qualify per-family conversion preconditions and any refusal/loss conditions.
+   Preserve the existing 7-hot/40-historical qualification arrangement and
+   required query coverage unless measured consumer requirements justify an
+   explicit scope change; a full-40-day query requirement does not by itself
+   require 40 days of fully indexed local hot storage.
+
+   Generation replacement, if needed, must fence writers/readers, bind a
+   consistent source snapshot and cursor/authority frontier, verify candidate
+   completeness and schema/query behavior, atomically select the successor,
+   and test interrupted copy/selection/retirement and recovery. Old-generation
+   retirement requires accepted custody and named rollback-dependency discharge,
+   including mount/hard-link/open-descriptor checks. After the successor accepts
+   writes, selecting the old copy is not a lossless rollback; recovery must
+   account for those writes. Include duplication and conversion workspace in
+   the peak-space gate, with no cost increase or reserve reduction.
+
+The deliverable is a reviewed state-family ledger, numeric workload/resource
+contract, source-corresponding lifetime/capacity argument and retained executable
+evidence. A strict history-independent cloud-local claim requires all local terms
+to be bounded under the stated envelope; otherwise report the exact limited
+operating horizon and unresolved exception. No permanent-capacity acceptance is
+earned by merely moving an unbounded database to the existing volume.
+
+Retain the earned shared custody, 41 affected cases, exact coverage regression
+and 12M rollover/reclamation evidence. Rerun only materially affected properties;
+complete the remaining 47-day all-global capacity, full-40-day queries and
+catalog controls under these amended gates. Independent acceptance must name
+exact source/results and limits. ADOPT only when all applicable gates pass;
+implementation defects are repaired within this candidate. Production migration
+still requires a separate concrete cutover/recovery receipt.
+
+### Formalization consideration for the amendment
+
+Decision owner: incident/#7 integration owner, with independent gate review.
+Source base: bf7ffd2b4a8596deac1a763c4f4992e987f7249c; executed catalog source
+97b459d1f2cd9e8dbdc0422fafbeb53c41378e9a; shared custody 6a88178.
+The proposition is conditional bounded cloud-local allocation across admitted
+ingest, archive outage, compaction and recovery, preserving committed custody
+and coverage.
+Reuse the earned custody model. Add a small source-corresponding lifetime and
+capacity argument over state families and phases, with finite transition tests
+and measured byte maxima; a new model framework is unnecessary. If an exact
+bound cannot be established, refuse that claim instead of extrapolating a short
+run. Counterexamples include lifetime owner-index growth, repeated archived replay,
+unbounded outage backlog, lossy summary substitution, stale-generation rollback
+after successor writes, and overlapping rollback/query/rebuild allocation.
+The amended requirements themselves do not establish any of these properties.
+
+## Preserved October 6 parked evidence
 
 Lane `lane/labelwatch-segmented-horizon-capacity-20261005`, existing
 [Labelwatch #7](https://github.com/unpingable/atproto-labelwatch/issues/7).

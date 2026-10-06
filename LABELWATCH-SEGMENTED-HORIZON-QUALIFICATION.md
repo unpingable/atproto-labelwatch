@@ -1,5 +1,13 @@
 # Labelwatch segmented horizon qualification — catalog repaired, horizon parked
 
+**October 6 amendment:** the owner conditionally authorizes continuation of this
+same #7 after production stability, with no recurring-cost increase. The
+[amended decision gates](LABELWATCH-SEGMENTED-DECISION.md#amended-acceptance-gates)
+add all-state lifetime, explicit workload envelope, catalog-growth accounting
+and peak-space acceptance. They govern the next run; the sealed observations
+below are unchanged historical evidence, not completion of the new gates.
+No successor producer or production migration has started.
+
 Lane `lane/labelwatch-segmented-horizon-capacity-20261005`; existing #7.
 Root run `39657c30-4728-4598-9f48-262bbf154a63`;
 sealed producer `04166ec3-e0d6-404c-9667-d02c47a9f363`.

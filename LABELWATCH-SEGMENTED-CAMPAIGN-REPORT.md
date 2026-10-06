@@ -1,5 +1,13 @@
 # Labelwatch horizon continuation — parked campaign report
 
+**October 6 owner amendment:** the pause now has conditional resume authority
+after evidence-backed production stability. See the
+[current decision](LABELWATCH-SEGMENTED-DECISION.md) for all-state lifetime,
+workload-envelope, catalog-growth and peak-space gates. This does not change
+the sealed producer's disposition or launch a successor. Existing #7 owns the
+permanent-capacity qualification; no new campaign or recurring cost is authorized.
+The report below describes the prior parked run and remains historical evidence.
+
 **PAUSED BY OPERATOR at a sealed catalog-repair boundary. Not architecture closure.**
 
 Root run `39657c30-4728-4598-9f48-262bbf154a63`;
