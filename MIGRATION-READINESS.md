@@ -56,6 +56,46 @@ must connect that model to source and failure cuts. Native SQLite layouts are no
 an implicit migration schema. Decision owner: independent acceptance owner. This
 document contains a proposed gate inventory, not acceptance or a proof.
 
+## October 6 qualification frontier
+
+Independent finite acceptance is recorded for storage/catalog controls at
+`0b1d032` (run `c7669ac8`), ninety small daily generations at `1b33724`
+(`5d84177c`), dense snapshot exports at `0b1d032` (`18cfd0ef`), and public
+signature/complete attachment behavior at `95625bd` (`690674ee`). The collector
+process-group deadline/recovery test (`c82d6954`) applies to its sealed
+`1f4bf35` source. These receipts supersede “pending” above only within their
+named scopes. None admits a deployment, a 30-day volume, or a production path.
+
+The original twelve-million-event producer `4d8b4100` runs on sealed `657abb7`;
+its later-profile and collector-shaped supporting-state limits remain explicit.
+A constructed-state fixture can measure a larger population efficiently only
+after an independent differential against the actual writer graph. It cannot
+replace ingestion throughput, interruption atomicity or network service-rate
+qualification.
+
+Root's deterministic workload `49da7347` found that a roster sweep over 584
+sources, one producing twenty events/second and the others taking fifty
+milliseconds to return quiet responses, served only 3.49 events/second despite
+continuous rounds. Persistent ready-source scheduling is being repaired and
+qualified off-production. A passing finite request test does not establish that
+the collector keeps up. The selected request latency/failure assumptions,
+startup backlog, invocation cadence and maintenance outage must all belong to
+the admitted workload envelope.
+
+Daily maintenance is a separate workload. Do not call its full global compaction
+on every collector tick. Measure rollover, compaction and recovery duration at
+the admitted population, then select a bounded schedule and enclosing process
+limit with explicit collector fencing and gap behavior. The collector example's
+forty-five-second deadline does not establish a maintenance deadline.
+
+Runtime packaging must also name the journal/storage owner and an actual byte
+and retention ceiling. `LogRateLimitIntervalSec` and `LogRateLimitBurst` bound
+emission rate, not persistent journal allocation. No production journal policy
+has been observed or changed in this off-production phase. Account request
+logging remains disabled; a future deployment must qualify its remaining logs,
+status receipts and monitoring obligations without silently assuming infinite
+external retention.
+
 ## Trusted observation clock and warm start
 
 Legacy `label_events.ts` is source-authored time. Its schema does not establish a
