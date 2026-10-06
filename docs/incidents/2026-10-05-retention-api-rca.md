@@ -218,3 +218,26 @@ cases are sufficient for this bounded control-flow correction; no power-loss
 or scheduler-wide proof is claimed. Decision owner: Codex /root. Source and
 result identities are recorded in campaign receipts; independent acceptance
 remains separate.
+
+## October 6 independent candidate review
+
+Independent review refused `c476532` despite its 50 passing focused tests:
+a pre-plan refusal saved a nonempty checkpoint, so retry skipped planning and
+failed on a missing floor. The successor binds the original configuration before
+admission, distinguishes absent/complete/partial plans, preserves the first
+failure, and refuses incomplete plans or producer identities without a plan.
+An established floor is never recomputed. The added bounded retry and partial-plan
+controls pass alongside the existing coordinator controls (24 cases).
+
+Formalization consideration: the proposition is that a pre-plan refusal can
+resume only its bound configuration, while a partial plan or unplanned producer
+cannot be silently reconstructed. The scope is this coordinator's persisted
+state and finite local fixtures; it is not proof of power-loss safety or remote
+producer recovery. Decision owner is the incident integration owner `/root`.
+Practical refusal/retry/configuration/partial-state controls suffice for this
+small correction; independent successor acceptance is still required.
+
+Original failed occurrence `20261005T060809Z-98c7308f` remains failed. Retrying
+its work under a changed source requires a separately identified successor
+and immutable reconciliation under the existing occurrence lock. No production
+capacity, retention, publication, or monitoring recovery is claimed by this fix.

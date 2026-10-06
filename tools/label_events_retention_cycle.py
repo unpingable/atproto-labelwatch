@@ -164,21 +164,37 @@ class Cycle:
         try:
             return self._execute()
         except Exception as exc:
+            self.state.setdefault("first_failure", {
+                "time": datetime.now(timezone.utc).isoformat(),
+                "phase": self.state.get("phase"),
+                "failure_type": type(exc).__name__, "failure": str(exc),
+            })
             self.phase("failed", failed_phase=self.state.get("phase"),
                        failure_type=type(exc).__name__, failure=str(exc))
             raise
 
     def _execute(self):
         c = self.config
+        config_path = self.path / "config.json"
+        if config_path.exists():
+            if json.loads(config_path.read_text()) != c:
+                raise TrimRefused("resume must use the exact original coordinator configuration")
+        else:
+            # Bind even an admission refusal to its original configuration.
+            save(config_path, c)
         self.mounted_archive()
         identity = run(["git", "-C", c["source"], "rev-parse", "HEAD"], capture_output=True).stdout.strip()
         if identity != c["tools_revision"]:
             raise TrimRefused("coordinator source identity differs from admitted config")
         facts_code = "import sqlite3,json; c=sqlite3.connect('file:/var/lib/labelwatch/labelwatch.db?mode=ro',uri=True); print(json.dumps(dict(c.execute(\"select key,value from meta where key like 'retention:%'\"))))"
         facts = json.loads(self.remote(c["host_python"], "-c", facts_code))
-        if (self.path / "config.json").exists() and json.loads((self.path / "config.json").read_text()) != c:
-            raise TrimRefused("resume must use the exact original coordinator configuration")
-        if not self.state:
+        plan_keys = {"old_floor", "floor", "old_catalog_sha256", "source_revision", "host", "execution_identity"}
+        present_plan_keys = plan_keys.intersection(self.state)
+        if present_plan_keys and present_plan_keys != plan_keys:
+            raise TrimRefused("incomplete occurrence plan; reconcile original checkpoint")
+        if not present_plan_keys:
+            if self.state.get("export_launched") or self.state.get("apply_launched"):
+                raise TrimRefused("producer identity exists without occurrence plan; reconcile original checkpoint")
             if facts.get("retention:trim_pending"):
                 raise TrimRefused("host has a pending trim; reconcile its original occurrence")
             old_floor = datetime.fromisoformat(facts["retention:live_floor"].replace("Z", "+00:00"))
@@ -191,7 +207,6 @@ class Cycle:
             if health["retention"]["coverage"] != "complete":
                 raise TrimRefused("current API coverage is incomplete; reconcile before successor")
             self.phase("planned", old_floor=old_floor.strftime("%Y-%m-%dT00:00:00Z"), floor=new_floor.strftime("%Y-%m-%dT00:00:00Z"), old_catalog_sha256=health["retention"]["catalog"]["sha256"], source_revision=identity, host=c["host"], execution_identity=os.environ.get("INVOCATION_ID", "manual durable resume"))
-            save(self.path / "config.json", c)
         name = self.path.name
         remote_dir = c["host_work_root"] + "/" + name
         zone = c["zone_work_root"] + "/" + name

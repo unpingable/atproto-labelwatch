@@ -174,3 +174,62 @@ def test_neither_filesystem_can_cover_the_others_reserve(tmp_path, monkeypatch, 
         with pytest.raises(TrimRefused):
             cycle.admit_export_capacity()
         assert not (tmp_path / 'checkpoint.json').exists()
+
+
+def test_preplan_refusal_can_resume_original_config_and_reach_capacity_gate(tmp_path, monkeypatch):
+    """Recover an archive admission refusal without losing or fabricating a plan."""
+    from labelwatch.trim import TrimRefused
+    config = {'ssh_key': '/existing/key', 'host': 'root@existing',
+              'host_python': '/deployed/python', 'source': '/qualified/source',
+              'tools_revision': 'fixture-revision', 'host_work_root': '/remote/work',
+              'zone_work_root': '/zone/work', 'archive_root': str(tmp_path / 'archive')}
+    (tmp_path / 'archive').mkdir()
+    occurrence = tmp_path / 'occurrence'
+    cycle = module.Cycle(config, occurrence, 3)
+    def unavailable():
+        raise TrimRefused('NFS unavailable')
+    monkeypatch.setattr(cycle, 'mounted_archive', unavailable)
+    with pytest.raises(TrimRefused, match='NFS unavailable'):
+        cycle.execute()
+    assert cycle.state['phase'] == 'failed' and 'floor' not in cycle.state
+    assert json.loads((occurrence / 'config.json').read_text()) == config
+
+    resumed = module.Cycle(config, occurrence, 3)
+    monkeypatch.setattr(resumed, 'mounted_archive', lambda: None)
+    monkeypatch.setattr(module, 'run', lambda *a, **k: SimpleNamespace(stdout='fixture-revision'))
+    def remote(*args):
+        if args[0] == '/deployed/python':
+            return json.dumps({'retention:live_floor': '2026-08-15T00:00:00Z'})
+        if args[0] == 'curl':
+            return json.dumps({'retention': {'coverage': 'complete', 'catalog': {'sha256': 'exact-old'}}})
+        if args[0] == 'df':
+            return 'Avail\n' + str((31 if args[-1] == '/' else 48) * 1024**3)
+        pytest.fail('Unexpected producer work: ' + str(args))
+    monkeypatch.setattr(resumed, 'remote', remote)
+    with pytest.raises(TrimRefused, match='root32GiB'):
+        resumed.execute()
+    assert resumed.state['floor'] == '2026-08-22T00:00:00Z'
+    assert resumed.state['old_catalog_sha256'] == 'exact-old'
+    assert not resumed.state.get('export_launched')
+    assert resumed.state['first_failure']['failure'] == 'NFS unavailable'
+
+    changed = module.Cycle(dict(config, max_delta_days=1), occurrence, 3)
+    monkeypatch.setattr(changed, 'mounted_archive', lambda: pytest.fail('config mismatch must refuse first'))
+    with pytest.raises(TrimRefused, match='exact original coordinator configuration'):
+        changed.execute()
+    assert json.loads((occurrence / 'config.json').read_text()) == config
+
+
+@pytest.mark.parametrize('state', [{'floor': '2026-08-22T00:00:00Z'}, {'export_launched': True}])
+def test_partial_plan_or_unplanned_producer_is_not_replanned(tmp_path, monkeypatch, state):
+    from labelwatch.trim import TrimRefused
+    config = {'ssh_key': '/existing/key', 'host': 'root@existing',
+              'host_python': '/deployed/python', 'source': '/qualified/source',
+              'tools_revision': 'fixture-revision'}
+    module.save(tmp_path / 'checkpoint.json', state)
+    cycle = module.Cycle(config, tmp_path, 3)
+    monkeypatch.setattr(cycle, 'mounted_archive', lambda: None)
+    monkeypatch.setattr(module, 'run', lambda *a, **k: SimpleNamespace(stdout='fixture-revision'))
+    monkeypatch.setattr(cycle, 'remote', lambda *a: '{}')
+    with pytest.raises(TrimRefused, match='reconcile original checkpoint'):
+        cycle.execute()
