@@ -112,6 +112,31 @@ def main(args):
     before = progress('WINDOW_RETAINED')
     counts, physical = state_measurement()
     atomic(out/'RETAINED.json', dict(counts=counts, physical=physical, measurement=before))
+    # Exercise the actual account lookup against the retained measured store,
+    # not an independently generated small database. The last accepted batch
+    # supplies an exact short-interval oracle; the full-window query is bounded
+    # and establishes retrieval latency only, not complete dense-account export.
+    from recent_provider import RecentProvider
+    provider = RecentProvider(store)
+    subject = rows[-1]['target_did']
+    expected_ids = {row['event_hash'] for row in rows if row['target_did'] == subject}
+    query_started = time.monotonic()
+    query_end = iso(observed + dt.timedelta(microseconds=1))
+    with provider.snapshot(subject, iso(observed), query_end, 10001,
+                           timeout_seconds=30, max_bytes=16*1024**2) as answer:
+        actual_rows = answer['rows']
+        assert len(actual_rows) == len(expected_ids), 'last-batch account correspondence'
+        assert all(row['observed_at'] == iso(observed) for row in actual_rows)
+        assert {row['uri'] for row in actual_rows} == {row['uri'] for row in rows if row['target_did'] == subject}
+        exact_query = dict(rows=len(actual_rows), elapsed=time.monotonic()-query_started,
+                           frontier=answer['frontier'], coverage=answer['coverage'])
+    query_started = time.monotonic()
+    with provider.snapshot(subject, store.frontier()['start'], query_end, 101,
+                           timeout_seconds=30, max_bytes=1024**2) as answer:
+        bounded_query = dict(rows=len(answer['rows']), elapsed=time.monotonic()-query_started,
+                             maximum_rows=101, complete=False)
+    atomic(out/'ACCOUNT-QUERIES.json', dict(exact_last_batch=exact_query,
+                                           bounded_full_window=bounded_query))
     # Qualify actual block release after a full-window advance, not freelist reuse.
     after_time = start + dt.timedelta(days=61)
     admit_transition()
@@ -139,6 +164,7 @@ def main(args):
     result = dict(result='PASS', events=done, specimen_sha256=expected,
                   input_scope='Retained production-shaped pseudonymized fixture; 1000-row batches share synthetic observation time (~50.4s/batch). Repeated cycles have synthetic hashes/times; no valid-signature claim',
                   retained=before, retained_table_counts=counts, epochs=epochs,
+                  account_queries=dict(exact_last_batch=exact_query,bounded_full_window=bounded_query),
                   pre_expire=pre_expire, post_expire=after,
                   reclaimed_allocated_bytes=pre_expire['allocated_bytes']-after['allocated_bytes'],
                   limits='Sampled allocation peaks only. Does not establish continuous all-source coverage, full30day capacity unless actually run, global production-table population, migration, or activation.',

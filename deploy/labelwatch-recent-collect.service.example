@@ -1,0 +1,37 @@
+# Noninstalled candidate. Replace release/store paths only after separate
+# production admission; the current safe-hold marker must remain in place.
+# No timer is installed by this example. One invocation performs finite work.
+[Unit]
+Description=Labelwatch bounded recent-observation collection round
+After=network-online.target
+ConditionPathExists=!/etc/labelwatch-operator-safe-hold
+ConditionPathExists=/etc/labelwatch-recent-qualified-activation
+
+[Service]
+Type=oneshot
+User=labelwatch
+Group=labelwatch
+EnvironmentFile=/etc/labelwatch-recent-qualified.env
+WorkingDirectory=/REPLACE_WITH_QUALIFIED_RELEASE/source
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/REPLACE_WITH_QUALIFIED_RELEASE/source/src:/REPLACE_WITH_QUALIFIED_RELEASE/source
+ExecStart=/REPLACE_WITH_QUALIFIED_RELEASE/venv/bin/python tools/segmented_qualification/recent_collect.py --store ${LABELWATCH_RECENT_STORE} --network --discover
+# Async HTTP deadlines do not bound OS DNS executor shutdown. This enclosing
+# process-group ceiling remains independent of transport cooperation. A killed
+# round must recover its persisted attempt as an explicit observation gap.
+TimeoutStartSec=45
+TimeoutStopSec=5
+KillMode=control-group
+SendSIGKILL=yes
+Restart=no
+MemoryMax=2G
+CPUQuota=100%
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/REPLACE_WITH_ADMITTED_RECENT_STORE
+PrivateTmp=yes
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=20
