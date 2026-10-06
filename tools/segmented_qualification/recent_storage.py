@@ -82,7 +82,7 @@ class RecentStore(Store):
             CREATE TABLE q_recent_sources(did TEXT PRIMARY KEY,endpoint TEXT,
                 provider_cursor TEXT,last_page TEXT,last_observed TEXT,attempt_token TEXT,attempt_start TEXT);
             ''')
-            for key, value in {'version':'3','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
+            for key, value in {'version':'4','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
                                'end':iso(stamp),'generation':'0','clock':iso(stamp),'events':'0'}.items():
                 db.set_meta(c, 'q:recent_'+key, value)
             db.set_meta(c,'q:recent_start',iso(stamp-dt.timedelta(days=30)))
@@ -100,8 +100,8 @@ class RecentStore(Store):
         return cls(root)
 
     def require(self, c):
-        if db.get_meta(c,'q:recent_version') != '3':
-            raise RuntimeError('recent schema v3 enrollment required; old evidence preserved, no implicit conversion')
+        if db.get_meta(c,'q:recent_version') != '4':
+            raise RuntimeError('recent schema v4 enrollment required; old evidence preserved, no implicit conversion')
 
     def recover(self, c, death=None):
         self.require(c)
@@ -314,25 +314,40 @@ class RecentStore(Store):
 
     def archive(self, identity, destination=None, **kwargs):
         dest=self.root/'archive'
+        with connect(self.state,readonly=True) as c:self.require(c)
         if destination is not None and Path(destination).resolve()!=dest.resolve():
             raise RuntimeError('recent archive must be owned by this new store')
-        return super().archive(identity,dest,**kwargs)
+        return super().archive(identity,dest,lock_name='archive.lock',**kwargs)
 
     def retire(self, identity, **kwargs):
-        allocated=super().retire(identity,**kwargs)
-        # The earned immutable membership index now owns replay identity.
-        # This cache need not grow with every day in the retained window.
-        # A crash before this transaction only retains extra cache entries;
-        # retrying verified retirement discharges the same owner safely.
-        with lock(self.root):
-            c=connect(self.state)
-            try:
-                self.require(c)
-                c.execute('BEGIN IMMEDIATE')
-                custody.expire_owner(c,identity)
-                c.commit()
-            finally:c.close()
-        return allocated
+        # Same archive lock domain prevents an archive retry reopening SQLite
+        # while the verified retired owner's exact sidecars are discharged.
+        with lock(self.root,'archive.lock'):
+            allocated=super().retire(identity,**kwargs)
+            with lock(self.root),lock(self.root,'reader.lock'):
+                c=connect(self.state)
+                try:
+                    self.require(c)
+                    row=c.execute('SELECT status FROM q_segments WHERE identity=?',(identity,)).fetchone()
+                    source=self.root/(identity+'.sqlite')
+                    if row is None or row[0]!='RETIRED' or source.exists():raise RuntimeError('sidecar retirement authority absent')
+                    sidecars=[Path(str(source)+suffix) for suffix in ('-wal','-shm')]
+                    # All supported readers honor reader.lock; direct SQLite
+                    # consumers are outside this new-generation ownership rule.
+                    import os,stat
+                    for path in sidecars:
+                        if not path.exists() and not path.is_symlink():continue
+                        info=path.lstat()
+                        if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_dev!=self.root.stat().st_dev or os.path.ismount(path):
+                            raise RuntimeError('retired sidecar ownership boundary')
+                        if path.name.endswith('-wal') and info.st_size:
+                            raise RuntimeError('nonempty retired WAL preserved')
+                    for path in sidecars:
+                        if path.exists():allocated+=path.stat().st_blocks*512;path.unlink()
+                    syncdir(self.root)
+                    c.execute('BEGIN IMMEDIATE');custody.expire_owner(c,identity);c.commit()
+                finally:c.close()
+            return allocated
 
     def frontier(self):
         c=connect(self.state,readonly=True)
@@ -378,10 +393,11 @@ class RecentStore(Store):
                 with connect(self.state) as c:self.recover(c)
             def drain():
                 with connect(self.state,readonly=True) as c:
-                    rows=list(c.execute("SELECT identity,status FROM q_segments WHERE status IN ('SEALED','ARCHIVED') ORDER BY identity LIMIT 34"))
+                    rows=list(c.execute("SELECT identity,status FROM q_segments WHERE status IN ('SEALED','ARCHIVED','RETIRED') ORDER BY identity LIMIT 34"))
                 if len(rows)>33:raise RuntimeError('daily owner bound exceeded')
                 for owner,status in rows:
-                    if status=='SEALED':
+                    if status=='RETIRED' and (self.root/'archive'/(owner+'.retired.json')).exists() and not any(Path(str(self.root/(owner+'.sqlite'))+suffix).exists() for suffix in ('-wal','-shm')):continue
+                    if status in ('SEALED','ARCHIVED'):
                         source=self.root/(owner+'.sqlite')
                         need=source.stat().st_size*2+1048576
                         # Preserve reserve after the archive temporary envelope,

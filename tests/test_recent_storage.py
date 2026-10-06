@@ -118,7 +118,7 @@ def test_v2_exact_integer_clock_and_v1_refusal(store):
     with connect(store.state) as c:
         assert [r[1] for r in c.execute('PRAGMA table_info(q_recent_seen)')]==['event_id','owner_day','observed_us','target_did']
         storage.db.set_meta(c,'q:recent_version','1')
-    with pytest.raises(RuntimeError,match='schema v3'):store.frontier()
+    with pytest.raises(RuntimeError,match='schema v4'):store.frontier()
 
 def test_maximum_clock_refuses_without_acceptance(store):
     # Year9999 is representable, but no half-open exclusive successor exists.
@@ -224,3 +224,56 @@ def test_daily_driver_refuses_archive_allocation_before_output(store,monkeypatch
     with pytest.raises(RuntimeError,match='allocation not admitted'):store.advance_day('2026-09-03T00:00:00Z')
     assert (store.root/'2026-09-01.sqlite').exists()
     assert list((store.root/'archive').iterdir())==[]
+
+@pytest.mark.parametrize('phase',['after_archive_commit_before_receipt','after_unlink_before_retired'])
+def test_daily_recovers_publication_and_retirement_cuts(store,monkeypatch,phase):
+    seed(store);store.rotate('2026-09-02')
+    original=storage.cut
+    def interrupt(requested,here):
+        if here==phase:raise RuntimeError('interrupted')
+    monkeypatch.setattr(storage,'cut',interrupt)
+    with pytest.raises(RuntimeError,match='interrupted'):
+        store.archive('2026-09-01')
+        store.retire('2026-09-01')
+    monkeypatch.setattr(storage,'cut',original)
+    store.advance_day('2026-10-03T00:00:00Z')
+    assert not (store.root/'archive/2026-09-01.parquet').exists()
+    assert store.advance_day('2026-10-03T00:00:00Z')['retired']==[]
+
+def test_fixed_archive_lock_domain_bounds_names_and_serializes_waiters(store,monkeypatch):
+    import datetime as dt
+    import threading
+    import time
+    entered=threading.Event();release=threading.Event();second=threading.Event()
+    def operation(identity,*args):
+        if identity=='2026-01-01':entered.set();assert release.wait(2)
+        elif identity=='2026-01-02':second.set()
+    monkeypatch.setattr(store,'_archive',operation)
+    first=threading.Thread(target=lambda:store.archive('2026-01-01'))
+    other=threading.Thread(target=lambda:store.archive('2026-01-02'))
+    first.start();assert entered.wait(2);other.start();time.sleep(.03)
+    assert not second.is_set();release.set();first.join(2);other.join(2)
+    assert second.is_set() and not first.is_alive() and not other.is_alive()
+    for day in range(1000):store.archive((dt.date(2020,1,1)+dt.timedelta(days=day)).isoformat())
+    assert len(list(store.root.glob('archive*.lock')))==1
+    assert (store.root/'archive.lock').exists()
+
+def test_retired_sqlite_sidecars_discharge_and_nonempty_wal_refusal(store):
+    seed(store);store.rotate('2026-09-02');store.archive('2026-09-01')
+    store.retire('2026-09-01')
+    source=store.root/'2026-09-01.sqlite'
+    assert not source.exists()
+    assert not Path(str(source)+'-wal').exists()
+    assert not Path(str(source)+'-shm').exists()
+    wal=Path(str(source)+'-wal');wal.write_bytes(b'pending')
+    shm=Path(str(source)+'-shm');shm.write_bytes(b'metadata')
+    with pytest.raises(RuntimeError,match='nonempty retired WAL'):store.retire('2026-09-01')
+    assert wal.read_bytes()==b'pending' and shm.read_bytes()==b'metadata'
+
+def test_retired_sqlite_sidecar_links_refused(store):
+    import os
+    seed(store);store.rotate('2026-09-02');store.archive('2026-09-01');store.retire('2026-09-01')
+    exact=store.root/'2026-09-01.sqlite-shm';other=store.root/'preserved-fixture';other.write_bytes(b'identity')
+    os.link(other,exact)
+    with pytest.raises(RuntimeError,match='ownership boundary'):store.retire('2026-09-01')
+    assert exact.exists() and other.read_bytes()==b'identity'

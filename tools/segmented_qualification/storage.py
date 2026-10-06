@@ -289,11 +289,11 @@ class Store:
                         'state_tables': {r[0]: digest(c.execute('SELECT * FROM "' + r[0] + '" ORDER BY rowid')) for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'q_%' AND name NOT IN ('meta','label_events','sqlite_sequence')").fetchall()}}
             finally: c.close()
 
-    def archive(self, identity, destination, death=None, injected=None):
+    def archive(self, identity, destination, death=None, injected=None, lock_name=None):
         dt.date.fromisoformat(identity)
         # Serialize retries; retain a source reader lease until checkpoint.
         # Ingestion keeps its independent writer fence and continues.
-        with lock(self.root, 'archive-' + identity + '.lock'), lock(self.root, 'reader.lock', shared=True):
+        with lock(self.root, lock_name or ('archive-' + identity + '.lock')), lock(self.root, 'reader.lock', shared=True):
             return self._archive(identity, destination, death, injected)
 
     def _archive(self, identity, destination, death=None, injected=None):
