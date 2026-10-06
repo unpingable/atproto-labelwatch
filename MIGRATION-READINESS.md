@@ -379,3 +379,22 @@ missing cuts are sufficient for this design gate; executable selection/rehearsal
 controls must accompany the eventual adapter. Root and the independent migration
 reviewer own acceptance. No new formalization campaign or runtime mechanism is
 introduced by this update.
+
+## Acquisition identity successor
+
+`c6bbcdc` introduces new-store schema v6 acquisition metadata; it does not
+convert retained v5 stores. Existing warmup gaps remain, with validated generation
+identity, acquisition start and clock basis now shared by account views and
+exports. Missing or inconsistent metadata refuses; changing generation invalidates
+unread export continuation. This is metadata authority within the admitted
+owner-controlled store, not authenticated provenance against arbitrary coherent
+rewrites. Historical observation-time mapping remains unqualified.
+
+The delta is one fixed metadata row (196 logical bytes in the measured fixture),
+with fixed validation reads and bounded public metadata. Event columns and indexes
+are unchanged. The running `c9f0144b` volume occurrence stays bound to v5
+`02a3a5d`; v6 finite controls do not convert that occurrence or make its pending
+result a v6 throughput, recovery or production acceptance. The corresponding
+constructor comparison at `490483e` validates acquisition metadata, requires
+distinct creation identities and compares start/schema/basis exactly while
+normalizing only generation UUID for the two independent fixture stores.
