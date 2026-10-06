@@ -13,6 +13,7 @@ from pathlib import Path
 from storage import Store, owned, connect, lock, db, custody, ingest, sha, syncdir
 
 UTC = dt.timezone.utc
+EPOCH = dt.datetime(1970,1,1,tzinfo=UTC)
 TIMED = {'alerts':'ts', 'labeler_evidence':'ts', 'labeler_probe_history':'ts',
          'derived_receipts':'ts', 'ingest_outcomes':'ts', 'discovery_events':'discovered_at',
          'posted_findings':'posted_at', 'quarantined_events':'last_quarantined_at'}
@@ -21,11 +22,11 @@ DERIVED = {'derived_label_fp','derived_labeler_lag_7d','derived_labeler_reversal
            'derived_author_day','derived_author_labeler_day','boundary_edges','boundary_targets'}
 CONTROL = {'meta','label_events','labelers','provider_registry','sqlite_sequence','q_segments',
            'q_pending','q_transition','q_archive','q_hot_keys','custody_archives','q_recent_seen',
-           'q_recent_transition','q_recent_protected','q_recent_counts','q_recent_gaps'}
+           'q_recent_transition','q_recent_protected','q_recent_counts','q_recent_gaps','q_recent_sources'}
 
 LIMITS={'meta':4096,'provider_registry':10000,'labelers':100000,
         'q_recent_seen':100000000,'q_hot_keys':100000000,'custody_archives':32,
-        'q_segments':33,'q_recent_protected':32,'q_recent_gaps':128}
+        'q_segments':33,'q_recent_protected':32,'q_recent_gaps':128,'q_recent_sources':2048}
 LIMITS.update({name:10000000 for name in TIMED.keys() | DERIVED})
 
 
@@ -40,6 +41,23 @@ def iso(value):
     return value.isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 
+def micros(value):
+    delta=clock(value)-EPOCH if isinstance(value,str) else value-EPOCH
+    return (delta.days*86400+delta.seconds)*1000000+delta.microseconds
+
+
+def from_micros(value):
+    return iso(EPOCH+dt.timedelta(microseconds=value))
+
+
+def day_number(owner):
+    return (dt.date.fromisoformat(owner)-EPOCH.date()).days
+
+
+def day_name(number):
+    return (EPOCH.date()+dt.timedelta(days=number)).isoformat()
+
+
 class RecentStore(Store):
     @classmethod
     def create(cls, root, now, days=30):
@@ -50,17 +68,19 @@ class RecentStore(Store):
         (store.root/'archive').mkdir()
         with connect(store.state) as c:
             c.executescript('''
-            CREATE TABLE q_recent_seen(event_id INTEGER PRIMARY KEY, owner TEXT NOT NULL,
-                observed_at TEXT NOT NULL, labeler_did TEXT NOT NULL, target_did TEXT NOT NULL);
-            CREATE INDEX recent_account_clock ON q_recent_seen(target_did,observed_at,event_id);
-            CREATE INDEX recent_owner ON q_recent_seen(owner);
+            CREATE TABLE q_recent_seen(event_id INTEGER PRIMARY KEY, owner_day INTEGER NOT NULL,
+                observed_us INTEGER NOT NULL, target_did TEXT NOT NULL);
+            CREATE INDEX recent_account_clock ON q_recent_seen(target_did,observed_us,event_id);
+            CREATE INDEX recent_owner ON q_recent_seen(owner_day);
             CREATE TABLE q_recent_transition(singleton INTEGER PRIMARY KEY CHECK(singleton=1), body TEXT NOT NULL);
             CREATE TABLE q_recent_protected(owner TEXT PRIMARY KEY, dependency TEXT NOT NULL);
             CREATE TABLE q_recent_gaps(start TEXT NOT NULL,end TEXT NOT NULL,reason TEXT NOT NULL,
                 PRIMARY KEY(start,end,reason));
             CREATE TABLE q_recent_counts(name TEXT PRIMARY KEY,n INTEGER NOT NULL,ceiling INTEGER NOT NULL);
+            CREATE TABLE q_recent_sources(did TEXT PRIMARY KEY,endpoint TEXT,
+                provider_cursor TEXT,last_page TEXT,last_observed TEXT);
             ''')
-            for key, value in {'version':'1','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
+            for key, value in {'version':'2','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
                                'end':iso(stamp),'generation':'0','clock':iso(stamp),'events':'0'}.items():
                 db.set_meta(c, 'q:recent_'+key, value)
             db.set_meta(c,'q:recent_start',iso(stamp-dt.timedelta(days=30)))
@@ -78,8 +98,8 @@ class RecentStore(Store):
         return cls(root)
 
     def require(self, c):
-        if db.get_meta(c,'q:recent_version') != '1':
-            raise RuntimeError('new recent-observation enrollment required; old evidence preserved')
+        if db.get_meta(c,'q:recent_version') != '2':
+            raise RuntimeError('recent schema v2 enrollment required; old evidence preserved, no implicit conversion')
 
     def recover(self, c, death=None):
         self.require(c)
@@ -105,13 +125,35 @@ class RecentStore(Store):
         if c.execute('SELECT 1 FROM meta WHERE length(value)>65536 LIMIT 1').fetchone():
             raise RuntimeError('recent control value ceiling')
 
-    def ingest(self, rows, source, cursor, observed_at, death=None, injected=None):
-        stamp=clock(observed_at)
+    @staticmethod
+    def validate_rows(rows):
         if len(rows)>10000: raise RuntimeError('bounded ingest page exceeded')
         if any(any(isinstance(value,str) and len(value.encode())>16384 for value in row) for row in rows):
             raise RuntimeError('recent event field byte ceiling')
         sizes=[len(json.dumps(row,ensure_ascii=False).encode()) for row in rows]
         if any(n>65536 for n in sizes) or sum(sizes)>16*1024**2:raise RuntimeError('recent event/batch byte ceiling')
+
+    def _stage_observations(self,c,rows,stamp,death=None):
+        if stamp<clock(db.get_meta(c,'q:recent_clock')):raise RuntimeError('observation clock regression')
+        end=iso(stamp+dt.timedelta(microseconds=1))
+        owner=db.get_meta(c,'q:active')
+        if owner!=stamp.date().isoformat():raise RuntimeError('rotate daily observation owner before ingestion')
+        accepted,duplicates=custody.stage(c,rows,owner,death)
+        count=int(db.get_meta(c,'q:recent_events'))+len(accepted)
+        if count>100000000:raise RuntimeError('recent observation cardinality ceiling')
+        evidence=set()
+        for event_id,row in accepted:
+            c.execute('INSERT INTO q_pending VALUES (?,?)',(event_id,owner))
+            target=row[2][5:].split('/')[0] if row[2].startswith('at://') else row[2]
+            c.execute('INSERT INTO q_recent_seen VALUES (?,?,?,?)',(event_id,day_number(owner),micros(stamp),target))
+            db.upsert_labeler(c,row[0],iso(stamp));ingest._track_observed_src(c,row[1] or row[0],iso(stamp),evidence)
+        db.set_meta(c,'q:recent_clock',iso(stamp));db.set_meta(c,'q:recent_end',end)
+        db.set_meta(c,'q:recent_events',str(count))
+        return accepted,duplicates
+
+    def ingest(self, rows, source, cursor, observed_at, death=None, injected=None):
+        stamp=clock(observed_at)
+        self.validate_rows(rows)
         if len(source)>1024 or len(str(cursor))>4096: raise RuntimeError('source continuation size ceiling')
         self.check_local(injected)
         with lock(self.root):
@@ -129,18 +171,7 @@ class RecentStore(Store):
                     if saved['batch']!=batch:raise RuntimeError('opaque continuation reused with different batch')
                     return {'inserted':0,'accepted_ids':[],'duplicate_ids':[],'cursor':cursor,'replayed_page':True}
                 c.execute('BEGIN IMMEDIATE')
-                accepted,duplicates=custody.stage(c,rows,owner,death)
-                count=int(db.get_meta(c,'q:recent_events'))+len(accepted)
-                if count>100000000:raise RuntimeError('recent observation cardinality ceiling')
-                evidence=set()
-                for event_id,row in accepted:
-                    c.execute('INSERT INTO q_pending VALUES (?,?)',(event_id,owner))
-                    target=row[2][5:].split('/')[0] if row[2].startswith('at://') else row[2]
-                    c.execute('INSERT INTO q_recent_seen VALUES (?,?,?,?,?)',(event_id,owner,iso(stamp),row[0],target))
-                    db.upsert_labeler(c,row[0],iso(stamp));ingest._track_observed_src(c,row[1] or row[0],iso(stamp),evidence)
-                db.set_meta(c,'q:recent_clock',iso(stamp))
-                db.set_meta(c,'q:recent_end',iso(stamp+dt.timedelta(microseconds=1)))
-                db.set_meta(c,'q:recent_events',str(count))
+                accepted,duplicates=self._stage_observations(c,rows,stamp,death)
                 db.set_meta(c,continuation,json.dumps({'batch':batch,'count':len(rows)}))
                 self.caps(c,scan=False)
                 if death: death('before_recent_ingest_commit')
@@ -148,6 +179,93 @@ class RecentStore(Store):
                 if death: death('after_recent_ingest_commit')
                 self.flush(c)
                 return {'inserted':len(accepted),'accepted_ids':[x[0] for x in accepted], 'duplicate_ids':duplicates,'cursor':cursor}
+            finally:c.close()
+
+    def remember_sources(self,rows,limit=2048):
+        if not 0<limit<=2048 or len(rows)>limit:raise RuntimeError('source enrollment ceiling')
+        with lock(self.root):
+            c=connect(self.state)
+            try:
+                self.recover(c);c.execute('BEGIN IMMEDIATE')
+                for row in rows:
+                    did,endpoint=row['did'],row.get('endpoint')
+                    if not isinstance(did,str) or not did.startswith('did:') or len(did.encode())>1024:raise ValueError('invalid source DID')
+                    if endpoint is not None and (not isinstance(endpoint,str) or len(endpoint.encode())>2048 or not endpoint.startswith('https://')):raise ValueError('invalid source endpoint')
+                    old=c.execute('SELECT endpoint FROM q_recent_sources WHERE did=?',(did,)).fetchone()
+                    if old and old[0] and endpoint and old[0]!=endpoint:raise RuntimeError('source endpoint change requires explicit cursor reset')
+                    c.execute('INSERT INTO q_recent_sources(did,endpoint) VALUES (?,?) ON CONFLICT(did) DO UPDATE SET endpoint=COALESCE(q_recent_sources.endpoint,excluded.endpoint)',(did,endpoint))
+                if c.execute('SELECT COUNT(*) FROM q_recent_sources').fetchone()[0]>limit:raise RuntimeError('source enrollment ceiling; no discovered source dropped')
+                self.caps(c,scan=False);c.commit()
+            finally:c.close()
+
+    def collector_sources(self,limit):
+        if not 0<limit<=2049:raise ValueError('source listing bound')
+        c=connect(self.state,readonly=True)
+        try:
+            self.require(c)
+            return [dict(r) for r in c.execute('SELECT did,endpoint FROM q_recent_sources ORDER BY did LIMIT ?',(limit,))]
+        finally:c.close()
+
+    def collector_cursor(self,did):
+        c=connect(self.state,readonly=True)
+        try:
+            self.require(c);row=c.execute('SELECT provider_cursor FROM q_recent_sources WHERE did=?',(did,)).fetchone()
+            if row is None:raise RuntimeError('source is not enrolled')
+            return row[0]
+        finally:c.close()
+
+    def collector_claim_source(self,limit=2048):
+        if not 0<limit<=2048:raise ValueError('source claim bound')
+        with lock(self.root):
+            c=connect(self.state)
+            try:
+                self.recover(c);c.execute('BEGIN IMMEDIATE')
+                if c.execute('SELECT COUNT(*) FROM q_recent_sources').fetchone()[0]>limit:raise RuntimeError('source enrollment ceiling')
+                previous=db.get_meta(c,'q:recent_last_source') or ''
+                row=c.execute('SELECT did,endpoint FROM q_recent_sources WHERE did>? ORDER BY did LIMIT 1',(previous,)).fetchone()
+                if row is None:row=c.execute('SELECT did,endpoint FROM q_recent_sources ORDER BY did LIMIT 1').fetchone()
+                if row is None:c.rollback();return None
+                db.set_meta(c,'q:recent_last_source',row['did']);c.commit();return dict(row)
+            finally:c.close()
+
+    def accept_page(self,rows,*,source,request_cursor,next_cursor,observed_at,death=None):
+        """Opaque provider continuation CAS; no manufactured upstream cursor.
+
+        The last bounded page remembers its exact hashes after window expiry,
+        so repeated terminal tails do not become newly observed historical data.
+        This is not unbounded replay identity or proof of stream continuity.
+        """
+        if len(rows)>100:raise RuntimeError('collector page ceiling')
+        for value in (request_cursor,next_cursor):
+            if value is not None and (not isinstance(value,str) or len(value.encode())>4096):raise ValueError('opaque cursor bound')
+        self.validate_rows(rows);stamp=clock(observed_at);self.check_local()
+        page={'request':request_cursor,'next':next_cursor,'hashes':[r[9] for r in rows],
+              'payloads':[custody.payload_digest(r) for r in rows]}
+        with lock(self.root):
+            c=connect(self.state)
+            try:
+                self.recover(c);c.execute('BEGIN IMMEDIATE')
+                current=c.execute('SELECT provider_cursor,last_page FROM q_recent_sources WHERE did=?',(source,)).fetchone()
+                if current is None:raise RuntimeError('source is not enrolled')
+                previous=json.loads(current[1]) if current[1] else None
+                if previous==page:
+                    c.rollback();return {'inserted':0,'cursor':current[0],'replayed_page':True}
+                if current[0]!=request_cursor:raise RuntimeError('provider continuation changed; page refused')
+                # Guard the full payload digest as well as canonical source hash.
+                # Within retained custody, normal identity lookup checks payload.
+                tail=dict(zip(previous['hashes'],previous['payloads'])) if previous else {}
+                for row in rows:
+                    if row[9] in tail and tail[row[9]]!=custody.payload_digest(row):raise RuntimeError('retained terminal identity content conflict')
+                fresh=[row for row in rows if row[9] not in tail]
+                accepted,duplicates=self._stage_observations(c,fresh,stamp,death)
+                position=next_cursor if next_cursor is not None else request_cursor
+                c.execute('UPDATE q_recent_sources SET provider_cursor=?,last_page=?,last_observed=? WHERE did=?',(position,json.dumps(page,sort_keys=True),iso(stamp),source))
+                self.caps(c,scan=False)
+                if death:death('before_recent_ingest_commit')
+                c.commit()
+                if death:death('after_recent_ingest_commit')
+                self.flush(c)
+                return {'inserted':len(accepted),'accepted_ids':[x[0] for x in accepted],'duplicate_ids':duplicates,'cursor':position}
             finally:c.close()
 
     def archive(self, identity, destination=None, **kwargs):
@@ -241,10 +359,11 @@ class RecentStore(Store):
                 # Idempotent transaction removes all authoritative references.
                 c.execute('BEGIN IMMEDIATE')
                 for owner in plan['owners']:
-                    for table,column in [('q_recent_seen','owner'),('q_hot_keys','segment'),('custody_archives','identity'),('q_archive','identity'),('q_segments','identity')]:
+                    c.execute('DELETE FROM q_recent_seen WHERE owner_day=?',(day_number(owner),))
+                    for table,column in [('q_hot_keys','segment'),('custody_archives','identity'),('q_archive','identity'),('q_segments','identity')]:
                         c.execute(f'DELETE FROM {table} WHERE {column}=?',(owner,))
                 for table,column in TIMED.items():c.execute(f'DELETE FROM {table} WHERE {column}<?',(plan['start'],))
-                c.execute('DELETE FROM q_recent_seen WHERE observed_at<?',(plan['start'],))
+                c.execute('DELETE FROM q_recent_seen WHERE observed_us<?',(micros(plan['start']),))
                 c.execute('DELETE FROM q_recent_gaps WHERE end<=?',(plan['start'],))
                 db.set_meta(c,'q:recent_events',str(c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]))
                 for table in DERIVED:c.execute(f'DELETE FROM {table}')

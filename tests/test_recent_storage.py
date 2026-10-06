@@ -109,3 +109,61 @@ def test_discovered_source_without_events_survives_event_expiry(store):
         assert tuple(row)==('https://fixture.invalid',1)
         assert c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]==0
         store.caps(c)
+
+def test_v2_exact_integer_clock_and_v1_refusal(store):
+    from recent_storage import micros,from_micros,day_number,day_name
+    for value in ('1969-12-31T23:59:59.999999Z','2026-09-01T00:00:00.000001Z','9999-12-31T23:59:59.999999Z'):
+        assert from_micros(micros(value))==value
+    assert day_name(day_number('2026-09-01'))=='2026-09-01'
+    with connect(store.state) as c:
+        assert [r[1] for r in c.execute('PRAGMA table_info(q_recent_seen)')]==['event_id','owner_day','observed_us','target_did']
+        storage.db.set_meta(c,'q:recent_version','1')
+    with pytest.raises(RuntimeError,match='schema v2'):store.frontier()
+
+def test_maximum_clock_refuses_without_acceptance(store):
+    # Year9999 is representable, but no half-open exclusive successor exists.
+    store.rotate('9999-12-31')
+    with pytest.raises(OverflowError):store.ingest([event()],'source','opaque1','9999-12-31T23:59:59.999999Z')
+    with connect(store.state) as c:assert c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]==0
+
+def test_collector_opaque_pages_tail_and_endpoint_policy(store):
+    did='did:plc:labeler'
+    store.remember_sources([{'did':did,'endpoint':None}])
+    store.remember_sources([{'did':did,'endpoint':'https://fixture.invalid'}])
+    first=store.accept_page([event()],source=did,request_cursor=None,next_cursor='raw/opaque',observed_at='2026-09-01T00:01:00Z')
+    assert first['inserted']==1 and store.collector_cursor(did)=='raw/opaque'
+    # A successful commit can be retried with the original request position.
+    assert store.accept_page([event()],source=did,request_cursor=None,next_cursor='raw/opaque',observed_at='2026-09-01T00:01:00Z')['inserted']==0
+    terminal=store.accept_page([event(),event('second')],source=did,request_cursor='raw/opaque',next_cursor=None,observed_at='2026-09-01T00:02:00Z')
+    assert terminal['inserted']==1 and store.collector_cursor(did)=='raw/opaque'
+    # Polling a changed terminal tail does not invent an upstream cursor.
+    assert store.accept_page([event('second'),event('third')],source=did,request_cursor='raw/opaque',next_cursor=None,observed_at='2026-09-01T00:03:00Z')['inserted']==1
+    with pytest.raises(RuntimeError,match='continuation changed'):store.accept_page([],source=did,request_cursor='other',next_cursor=None,observed_at='2026-09-01T00:04:00Z')
+    with pytest.raises(RuntimeError,match='endpoint change'):store.remember_sources([{'did':did,'endpoint':'https://changed.invalid'}])
+    store.remember_sources([{'did':did,'endpoint':None}])
+    assert store.collector_sources(2)==[{'did':did,'endpoint':'https://fixture.invalid'}]
+
+def test_collector_claim_survives_restart_and_retained_tail_expiry(store):
+    store.remember_sources([{'did':'did:plc:a','endpoint':None},{'did':'did:plc:b','endpoint':None}])
+    assert store.collector_claim_source()['did']=='did:plc:a'
+    reopened=RecentStore(store.root)
+    assert reopened.collector_claim_source()['did']=='did:plc:b'
+    assert reopened.collector_claim_source()['did']=='did:plc:a'
+    store.accept_page([event()],source='did:plc:a',request_cursor=None,next_cursor=None,observed_at='2026-09-01T00:01:00Z')
+    store.rotate('2026-10-02');store.archive('2026-09-01');store.retire('2026-09-01');store.maintain('2026-10-02T00:00:00Z')
+    assert store.accept_page([event()],source='did:plc:a',request_cursor=None,next_cursor=None,observed_at='2026-10-02T00:01:00Z')['inserted']==0
+    assert store.accept_page([event(),event('new')],source='did:plc:a',request_cursor=None,next_cursor=None,observed_at='2026-10-02T00:01:00Z')['inserted']==1
+
+@pytest.mark.parametrize('phase',['before_recent_ingest_commit','after_recent_ingest_commit'])
+def test_collector_atomic_page_recovery(store,phase):
+    store.remember_sources([{'did':'did:plc:labeler','endpoint':'https://fixture.invalid'}])
+    def fail(here):
+        if here==phase:raise RuntimeError('interrupted')
+    with pytest.raises(RuntimeError,match='interrupted'):
+        store.accept_page([event()],source='did:plc:labeler',request_cursor=None,next_cursor='next',observed_at='2026-09-01T00:01:00Z',death=fail)
+    result=store.accept_page([event()],source='did:plc:labeler',request_cursor=None,next_cursor='next',observed_at='2026-09-01T00:01:00Z')
+    assert result['inserted']==(1 if phase=='before_recent_ingest_commit' else 0)
+    with connect(store.state) as c:
+        assert c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]==1
+        assert c.execute('SELECT COUNT(*) FROM q_pending').fetchone()[0]==0
+        assert store.collector_cursor('did:plc:labeler')=='next'

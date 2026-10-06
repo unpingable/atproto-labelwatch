@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 import duckdb
-from recent_storage import RecentStore, clock, iso
+from recent_storage import RecentStore, clock, iso, micros, from_micros, day_name
 from storage import connect, lock, FIELDS, db, custody
 from tier import VerifiedCatalog
 
@@ -35,10 +35,10 @@ class RecentProvider:
                 frontier={k:db.get_meta(c,'q:recent_'+k) for k in ('start','end','generation','events')}
                 if clock(start)<clock(frontier['start']) or clock(end)>clock(frontier['end']) or clock(start)>=clock(end):raise RuntimeError('requested observation range unavailable')
                 c.set_progress_handler(lambda:int(time.monotonic()>deadline),1000)
-                selected=list(c.execute('SELECT event_id,observed_at,owner FROM q_recent_seen WHERE target_did=? AND observed_at>=? AND observed_at<? ORDER BY observed_at,event_id LIMIT ?', (did,start,end,max_rows)))
-                seen={r[0]:r[1] for r in selected}
+                selected=list(c.execute('SELECT event_id,observed_us,owner_day FROM q_recent_seen WHERE target_did=? AND observed_us>=? AND observed_us<? ORDER BY observed_us,event_id LIMIT ?', (did,micros(start),micros(end),max_rows)))
+                seen={r[0]:from_micros(r[1]) for r in selected}
                 groups={}
-                for event_id,observed,owner in selected:groups.setdefault(owner,[]).append(event_id)
+                for event_id,observed,owner in selected:groups.setdefault(day_name(owner),[]).append(event_id)
                 gaps=[]
                 acquisition=db.get_meta(c,'q:recent_acquisition_start')
                 if start<acquisition:gaps.append({'start':start,'end':min(end,acquisition),'reason':'not_observed'})
