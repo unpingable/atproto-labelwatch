@@ -99,7 +99,8 @@ physical owner/sidecar plateau under its declared100-event/day synthetic shape;
 it does not qualify current-volume capacity. V5 scheduler controls, strict
 constructor differential and scratch/admission controls have separate independent
 receipts. The full-window producer `c9f0144b` on archived02a3a5d is **pending**;
-its original invocation is `9062cd1fea12464d9339c83ffeb56b72`. No result is asserted
+Its two later advances expire without replenishment and cannot establish sustained
+full-volume replacement or recovery-burst capacity. Its original invocation is `9062cd1fea12464d9339c83ffeb56b72`. No result is asserted
 here. It measures actual current supporting-state density, retained bytes,
 compaction and top-account export completion; constructor throughput is not actual
 collector acceptance throughput. Earlier stopped v3 scale work remains scoped

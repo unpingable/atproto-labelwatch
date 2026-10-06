@@ -19,7 +19,7 @@ a window-only answer labeled complete history.
 | Semantic contract | Exact window clock/boundary, future/late/replay rules, unknown/missing coverage, negative-claim standing | Candidate work; independently review integrated revision |
 | Physical model | Raw columns/dictionaries/indexes/views mapped to every supported query and reconstruction need | Candidate work; no capacity acceptance |
 | Workload | Retained production aggregate counts/shapes plus 12M specimen, explicit synthetic distribution | Available with sampling limitations |
-| Capacity | Measured integrated payload/global/index/WAL/scratch/overlap peaks, independent host reserves, refusal behavior | New 30-day current-volume run NOT_RUN |
+| Capacity | Measured integrated payload/global/index/WAL/scratch/overlap peaks, independent host reserves, refusal behavior | Constructed current-volume c9f0144b pending; sustained replacement/recovery not established |
 | Product views | Fresh computation identities; disabled/stale derivation cannot become calm or zero; bounded export completeness | Candidate work; qualification pending |
 | Migration conversion | Exact source snapshot/cursor/generation; deterministic mapping; row/count/digest parity within promised scope; deliberate omissions enumerated | Not qualified |
 | Cutover | External acceptance owner; writer fencing/quiescence; successor validation; atomic selection; reader generation handling | Not qualified |
@@ -66,21 +66,21 @@ process-group deadline/recovery test (`c82d6954`) applies to its sealed
 `1f4bf35` source. These receipts supersede “pending” above only within their
 named scopes. None admits a deployment, a 30-day volume, or a production path.
 
-The original twelve-million-event producer `4d8b4100` runs on sealed `657abb7`;
-its later-profile and collector-shaped supporting-state limits remain explicit.
-A constructed-state fixture can measure a larger population efficiently only
-after an independent differential against the actual writer graph. It cannot
-replace ingestion throughput, interruption atomicity or network service-rate
-qualification.
+The original twelve-million-event producer `4d8b4100` on `657abb7` was
+owner-stopped at a 5.6M prefix with three daily retirements. It is not a completed
+12M or current-v5 capacity result. The strict constructed-state differential and
+resource controls were independently accepted at `02a3a5d`; full constructed
+window `c9f0144b` is running on that archived source. Its two later daily advances
+expire data without replenishing ingestion. Even a passing terminal result would
+establish full-population capacity and expiry/compaction, **not sustained
+full-volume replacement or a recovery burst**. No result is assumed here.
 
-Root's deterministic workload `49da7347` found that a roster sweep over 584
-sources, one producing twenty events/second and the others taking fifty
-milliseconds to return quiet responses, served only 3.49 events/second despite
-continuous rounds. Persistent ready-source scheduling is being repaired and
-qualified off-production. A passing finite request test does not establish that
-the collector keeps up. The selected request latency/failure assumptions,
-startup backlog, invocation cadence and maintenance outage must all belong to
-the admitted workload envelope.
+The former uniform roster sweep service-rate defect is superseded by the v5
+persisted hot/warm/cold scheduler and separately accepted actual-store controls
+(`6591f77a`). Their selected latency/failure assumptions and startup backlog remain
+part of scope: known busy sources keep priority, but discovery/startup can still
+wait behind slow sources. These controls do not replace actual volume throughput,
+maintenance outage or admitted deployment cadence qualification.
 
 Daily maintenance is a separate workload. Do not call its full global compaction
 on every collector tick. Measure rollover, compaction and recovery duration at
@@ -120,8 +120,10 @@ Qualify: empty startup queried over the full nominal window; first accepted even
 at the exact acquisition boundary; gaps during stopped collection; restart
 preserving acquisition identity; missing/unknown acquisition metadata refusal;
 and expiry that advances retention without rewriting historical acquisition.
-The current provider's generic `coverage=unknown` is truthful but does not by
-itself establish an explicit warmup interval or a ready migration. Initial
+The v5 provider emits an explicit `not_observed` interval before acquisition start,
+clips recorded gaps, and falls back to whole-range unknown on overflow. Its
+coverage status remains unknown; this is not proof of source completeness or
+a ready migration. Initial
 allocation can be far smaller than reindexing the legacy database, but sustained
 capacity, old-evidence custody and the actual cutover still require acceptance.
 
@@ -262,3 +264,118 @@ changing a marker is a separately authorized cutover, not packaging. Operational
 readiness also needs selected scheduling, accepted maintenance/publication failure
 observations and recovery ownership. Current held capacity and old-evidence custody
 constraints above still apply. No new activation or deletion is authorized.
+
+
+## Concrete transfer and selection design — v5, October 6
+
+This design is bound to `02a3a5d` and the existing
+`RESTART-PREREQUISITES-RECONCILED-20261006.md` campaign evidence. It repairs the
+transfer description; it does not supply the missing converter, deployment-root
+adapter, selection mechanism or production authorization. The retained production
+evidence has no qualified per-event observation-time map. Therefore the currently
+implementable semantic choice is **new acquisition with old evidence retained**,
+not a claim to import thirty previously observed days. Full thirty-day acquisition
+coverage can only accrue through collection and disclosed gaps; a synthetic
+thirty-day capacity fixture does not accelerate that provenance.
+
+### Transfer manifest and independent oracle
+
+Before a separately admitted rehearsal, the integration owner must bind a manifest
+to the exact retained source snapshot/custody receipt: source generation, database
+and any required WAL identity, snapshot consistency method, existing archive and
+receipt hashes, applicable cursor/source identities, schema revision, capture
+clock and known missing evidence. A main SQLite file copied without reconciling
+its WAL is not a source snapshot. Retained original incident and failed-occurrence
+evidence stays unchanged. No new source snapshot is authorized by this document.
+
+The successor portion names its new generation, v5 schema and exact executable /
+dependency source, admitted absolute store/archive roots and filesystem devices,
+source roster mapping, acquisition start, observation-clock authority, and declared
+omissions. Stable source DID/provider identity is distinct from this generation.
+Each transferred source cursor needs a demonstrated upstream meaning and exact
+source/endpoint correspondence. Endpoint changes currently refuse. Old opaque
+cursors are not ordered timestamps and may not be copied merely because a field
+name matches; absent qualified correspondence, enroll with an explicit unknown
+continuation and gap policy. Likewise do not copy global sequence, scheduler,
+pending-attempt or old derived/cache tables as though they were v5 authority.
+New generation IDs have their own namespace; old IDs remain evidence identities.
+
+An independent verifier checks the source manifest separately from the builder.
+For warm start, the initial event-set oracle is empty, the roster is an exact
+approved set (at most2048), and a full nominal-window query exposes acquisition
+unknowns rather than historical negatives. For subsequently accepted records,
+verify normalized identity/content, observed clock, source/cursor correspondence,
+counts and public projections against independently captured acceptance input.
+For any proposed legacy subset import, require an external exact identity-to-
+observation-clock map first; enumerate excluded or conflicting rows and refuse
+unmapped claims. Existing shape samples, `ts`, mtimes and capacity-oracle hashes
+cannot provide this map. No legacy import converter is presently qualified.
+
+### Path-bound custody and preparation
+
+Prepare in the **final admitted destination namespace**, with production readers
+and writers still fenced. Current custody receipts and `custody_archives` bind
+archive roots, while reader-catalog filenames bind the resolved archive path and
+entries bind receipt/output fingerprints. Copying a completed fixture to another
+path, renaming its directory, or cloning its catalog is not a qualified transfer.
+A future relocation adapter would have to verify preserved immutable bytes,
+explicitly publish new path bindings under authorized generation identity, rebuild
+only the derived reader catalog from verified custody, then independently test
+queries/refusals at that destination. Such an adapter does not yet exist here.
+For an empty warm start, create fresh destination authority and catalog; keep old
+custody at its existing path. Do not edit old receipts to make a new path appear
+historically accepted. Campaign `owned()` remains enforced until an explicit
+admitted-root adapter has been qualified; documentation does not waive it.
+
+### Cutover and refusal matrix
+
+| Phase / interruption | Required behavior and verification | Current implementation boundary |
+| --- | --- | --- |
+| Before preparation | Hold remains; manifest, host/tenant admission and source custody must agree. | Read-only design; no production access or selected destination. |
+| Preparation incomplete or capacity refusal | Leave successor unpublished, preserve diagnostic receipt; old generation/hold unchanged. Account for allocated partial output until exact closeout. | Constructor is not an atomic migration tool and must not be resumed as an accepted store. |
+| Prepared and independently verified | Verify generation, schema, acquisition/gaps, source mapping, custody and sample public queries; accept outside the producer. | Small semantic controls exist; production destination and full-envelope acceptance missing. |
+| Selection boundary | Fence old/new writers and old readers as required; one explicit durable generation selection must bind store path, acquisition identity and public contract. Refuse ambiguous/mixed selection. | No deployed selector or qualified selection transaction is claimed. Installing config, moving a symlink or removing a hold marker is not implicitly atomic across processes. |
+| Failure before selection | Keep hold or unchanged old selection; discard only independently released successor substrates. | Old evidence remains required; no delete authority inferred. |
+| Failure after selection, before new effects | Stop successor, establish whether effects occurred, then independently authorize any return to old selection. | Indeterminate effects require reconciliation, not automatic rollback. |
+| Failure after accepted writes or served new facts | Preserve successor journal/cursor and output identities, fence service, recover that generation or remain held. | Old retained DB cannot undo upstream continuation or externally observed answers; downgrade requires explicit loss/replay/coverage rules. |
+| Later retirement | Independently verify new recovery custody and every old evidence/reader dependency before exact old-object release. | Separate authorization and physical-release receipt; never automatic after successful start. |
+
+The rehearsal must inject or otherwise exercise the selected preparation and
+selection cuts once an adapter is admitted. Existing `q_pending`, rollover,
+maintenance and attempt-token recovery controls apply only inside an already
+selected v5 store; they do not prove the cross-generation selection transaction.
+Reader snapshot/export tokens are process/generation-local. Cutover must refuse
+or expire old tokens and disclose the new acquisition frontier, not carry a
+cursor into a different authority namespace. Monitoring must distinguish held,
+unknown warmup, failed maintenance and fresh qualified service before activation.
+
+### Coexistence and next decision
+
+The per-filesystem inequality above remains the admission rule. Its allocation
+schedule must enumerate old held DB/WAL and archives already reflected in free
+space; additional successor growth up to the promised window; conversion/copy or
+rebind scratch if any; active/sealed and compaction overlap; reader/catalog/export
+workspace; new rollback copies only if actually made; and bounded competing tenant
+growth. Existing old bytes get no prospective reclamation credit. Warm start
+reduces initial conversion demand but still requires the old-plus-grown-successor
+coexistence peak or a separately accepted intervening custody retirement. Neither
+a rename nor NFS copies restore space on the originating filesystem by themselves.
+
+After the original full producer terminates, root should inspect its actual
+capacity/query results before selecting another experiment. One possible missing
+gate is sustained replenishment plus a bounded recovery burst using an accepted
+disposable fixture under explicit custody transfer; this is not yet admitted and
+must not blindly clone path-bound catalogs or rebuild the entire population.
+Migration rehearsal is downstream of the measured envelope and the explicit
+root/selection adapter. Production remains held throughout this design work.
+
+Formalization consideration: the durable proposition separates preparation from
+externally accepted selection and forbids revival of old authority after new
+effects without an explicit transition rule. The matrix is a bounded design model
+with assumptions of fenced writers, identifiable effects and independently checked
+custody; it is not executable proof. Existing local cut tests support only their
+within-generation correspondence. Practical documented preconditions and explicit
+missing cuts are sufficient for this design gate; executable selection/rehearsal
+controls must accompany the eventual adapter. Root and the independent migration
+reviewer own acceptance. No new formalization campaign or runtime mechanism is
+introduced by this update.
