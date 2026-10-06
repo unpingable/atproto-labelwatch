@@ -277,3 +277,16 @@ def test_retired_sqlite_sidecar_links_refused(store):
     os.link(other,exact)
     with pytest.raises(RuntimeError,match='ownership boundary'):store.retire('2026-09-01')
     assert exact.exists() and other.read_bytes()==b'identity'
+
+def test_old_profile_retirement_refuses_before_lock_or_file_effect(store,monkeypatch):
+    import recent_storage
+    seed(store);store.rotate('2026-09-02');store.archive('2026-09-01')
+    with connect(store.state) as c:
+        storage.db.set_meta(c,'q:recent_version','3')
+        authority=[tuple(r) for r in c.execute('SELECT * FROM q_segments')]
+    before={p.name:storage.sha(p) for p in store.root.iterdir() if p.is_file() and p.name.startswith('2026-09-01')}
+    def forbid_lock(*args,**kwargs):raise AssertionError('old profile reached mutable lock acquisition')
+    monkeypatch.setattr(recent_storage,'lock',forbid_lock)
+    with pytest.raises(RuntimeError,match='schema v4'):store.retire('2026-09-01')
+    assert before=={p.name:storage.sha(p) for p in store.root.iterdir() if p.is_file() and p.name.startswith('2026-09-01')}
+    with connect(store.state) as c:assert authority==[tuple(r) for r in c.execute('SELECT * FROM q_segments')]

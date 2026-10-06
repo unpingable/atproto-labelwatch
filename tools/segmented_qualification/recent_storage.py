@@ -6,6 +6,7 @@ claim survives retirement. This is not an enrollment/migration tool.
 """
 from __future__ import annotations
 import datetime as dt
+from contextlib import closing
 import json
 import hashlib
 import sqlite3
@@ -68,7 +69,7 @@ class RecentStore(Store):
         # Custody source-time floor remains separate from observation retention.
         store = super().create(root, period=stamp.date().isoformat(), floor='0001-01-01T00:00:00Z')
         (store.root/'archive').mkdir()
-        with connect(store.state) as c:
+        with closing(connect(store.state)) as c:
             c.executescript('''
             CREATE TABLE q_recent_seen(event_id INTEGER PRIMARY KEY, owner_day INTEGER NOT NULL,
                 observed_us INTEGER NOT NULL, target_did TEXT NOT NULL);
@@ -209,7 +210,7 @@ class RecentStore(Store):
             finally:c.close()
 
     def collector_discovery_cursor(self):
-        with connect(self.state,readonly=True) as c:
+        with closing(connect(self.state,readonly=True)) as c:
             self.require(c)
             return db.get_meta(c,'q:recent_discovery_cursor')
 
@@ -314,12 +315,13 @@ class RecentStore(Store):
 
     def archive(self, identity, destination=None, **kwargs):
         dest=self.root/'archive'
-        with connect(self.state,readonly=True) as c:self.require(c)
+        with closing(connect(self.state,readonly=True)) as c:self.require(c)
         if destination is not None and Path(destination).resolve()!=dest.resolve():
             raise RuntimeError('recent archive must be owned by this new store')
         return super().archive(identity,dest,lock_name='archive.lock',**kwargs)
 
     def retire(self, identity, **kwargs):
+        with closing(connect(self.state,readonly=True)) as c:self.require(c)
         # Same archive lock domain prevents an archive retry reopening SQLite
         # while the verified retired owner's exact sidecars are discharged.
         with lock(self.root,'archive.lock'):
@@ -384,15 +386,15 @@ class RecentStore(Store):
         import os
         stamp=clock(now);completed=[]
         with lock(self.root,'daily.lock'):
-            with connect(self.state,readonly=True) as c:
+            with closing(connect(self.state,readonly=True)) as c:
                 self.require(c)
                 if stamp<clock(db.get_meta(c,'q:recent_clock')):raise RuntimeError('observation clock regression')
                 pending=c.execute('SELECT 1 FROM q_recent_transition').fetchone()
             if pending:self.maintain(now)
             with lock(self.root):
-                with connect(self.state) as c:self.recover(c)
+                with closing(connect(self.state)) as c:self.recover(c)
             def drain():
-                with connect(self.state,readonly=True) as c:
+                with closing(connect(self.state,readonly=True)) as c:
                     rows=list(c.execute("SELECT identity,status FROM q_segments WHERE status IN ('SEALED','ARCHIVED','RETIRED') ORDER BY identity LIMIT 34"))
                 if len(rows)>33:raise RuntimeError('daily owner bound exceeded')
                 for owner,status in rows:
