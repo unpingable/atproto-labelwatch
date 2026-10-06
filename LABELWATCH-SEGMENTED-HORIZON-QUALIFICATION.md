@@ -1,221 +1,128 @@
-# Labelwatch segmented horizon qualification
+# Labelwatch segmented horizon qualification — reopened custody-qualified candidate
 
-Lane `lane/labelwatch-segmented-horizon-capacity-20261005`; existing Labelwatch #7.
-Starting source `b2b9a416761b6e9daace4c8f4d5beef3ca282f2c`.
-Exact executable source `01cb5f610796fefdf5e2a783b626424001ccb559`.
-Root run `3fcdf829-e8d8-4a30-b8d7-400775a92d4e`; terminal producer `225859f1-ea73-4ad5-9af5-747229cc8ba0`.
+Starting/exercised source: `6a88178f8d30fed13c582acccd532128c6b306ce`.
+Existing branch `lane/labelwatch-segmented-horizon-capacity-20261005` was
+fast-forwarded from `872693a`; the segmented adapter already uses the qualified
+shared custody contract. No implementation, engine, semantic model, fixture
+framework or storage topology was added. Owner: existing Labelwatch #7.
+Root occurrence `28e39263-168f-46e7-8f22-25a7f29fc684`.
 
-Independent disposition and terminal decision are in
-[LABELWATCH-SEGMENTED-DECISION.md](LABELWATCH-SEGMENTED-DECISION.md).
-This lane examines only the three remaining gates. It does not repeat the
-previous 12M qualification or claim another storage-engine comparison.
+## Result
 
-## Specimen and scope
+`REJECT_SEGMENTED_SQLITE_PARQUET_DUCKDB` for the current catalog admission design.
+One required gate fails concretely. Custody remains qualified; rejection does
+not identify a SQLite/Parquet/DuckDB defect or authorize another engine.
 
-The first step is a small deterministic counterexample to the required lifetime
-bound. It precedes any current-volume macro allocation. Existing `Store`,
-`normalize_label`, event generator, archive/retire/floor machinery, catalog and
-coverage regression are reused. Only the exact new campaign fixture paths are
-added to the existing path guards; storage semantics remain unchanged.
+| Reopened gate | Result | Evidence |
+|---|---|---|
+| 40+7-day current-volume all-global capacity | NOT_RUN | No macro allocation after an independently confirmed admission failure. No extrapolated capacity acceptance. |
+| Required full 40-day current-volume queries | NOT_RUN | Existing one-week query and exact coverage evidence retained, not promoted to full horizon. |
+| Long-history catalog admission | FAIL | Every usable new-owner admission rehashes all historical Parquet. |
 
-The lifetime fixture represents 96 synthetic days, including a checkpoint at
-47 days, across 13 closed arrival-week segments plus one active segment. One
-labeler, one subject and one cursor source stay fixed. Each day offers 256
-normal dated events, 256 events authored at `2100-01-01`, and 256 unique events
-below the floor. Total accepted before the diagnostic substitution: 49,152;
-below-floor offers: 24,576. The authored-time controls are disclosed synthetic
-qualification inputs, not claimed production frequencies or valid signatures.
+The explicit gate requires no rescan of every historical payload to admit today's
+segment. The current candidate does require that rescan. The decision follows
+that failed property; it is not NO_DECISION for more confidence.
 
-**This is not a 47-day current-volume acceptance specimen.** At the prior
-12M/week margin that specimen would require approximately 80.57M accepted
-events. No such capacity/query result is claimed. The finite case tests whether
-any normal-horizon resource bound can preserve the unchanged candidate contract.
-Previous 12M current-volume evidence stays at immutable source `b2b9a416`.
+## Exact existing path and specimen
 
-## Gate 1: global-state lifetime
+`TierSession` consumes `VerifiedCatalog`. Its constructor enumerates receipt
+files and hashes each corresponding Parquet file. It has no incremental admission
+or indexed identity/time-range entry point. A cached catalog does not itself
+rehash payloads, but excludes a newly committed owner; complete query admission
+then refuses until a new catalog is constructed. Custody correctly prevents false
+completeness. Repairing custody did not repair this admission cost.
 
-The unchanged source accepts supplied authored `ts` without an upper-skew bound.
-Hot replay keys expire only where `ts < live_floor`. Advancing the existing
-40-day floor therefore cannot bound the keys by arrival age.
+The direct producer reuses `horizon_qualify.catalog`, `Store`, `qualify.event`,
+archive receipts and SHA instrumentation. A new one-row source is archived using
+the qualified custody path. 8,193 metadata identities hardlink that immutable
+4,196-byte Parquet specimen. These are metadata-cardinality fixtures, not years
+of production event history. No 47-day specimen or current-volume query latency
+is claimed. One seed source event is accepted by the producer.
 
-| Simulated days | Accepted | Future-authored keys | Normal dated keys | Full quarantine rows | Global SQLite page bytes |
+| Existing identities | Startup hashes / bytes read | Admit one new segment: hashes / bytes read | Admission seconds | Cached files p50 / p95 seconds | Receipt metadata bytes |
 |---:|---:|---:|---:|---:|---:|
-| 7 | 3,584 | 1,792 | 1,792 | 1,792 | 2,220,032 |
-| 40 | 20,480 | 10,240 | 10,240 | 10,240 | 11,042,816 |
-| 47 | 24,064 | 12,032 | 10,240 | 12,032 | 12,558,336 |
-| 80 | 40,960 | 20,480 | 10,240 | 20,480 | 19,574,784 |
-| 96 | 49,152 | 24,576 | 10,240 | 24,576 | 22,986,752 |
+| 128 | 128 / 537,088 | 129 / 541,284 | 0.01353 | 0.00230 / 0.00368 | 15,351 |
+| 1,024 | 1,024 / 4,296,704 | 1,025 / 4,300,900 | 0.11195 | 0.01907 / 0.01936 | 121,975 |
+| 8,192 | 8,192 / 34,373,632 | 8,193 / 34,377,828 | 0.95077 | 0.15340 / 0.19008 | 974,967 |
 
-All 24,576 future-authored keys remain at day96, while ordinary keys settle at
-10,240 = 40 × 256. After payload archive/retirement, exact replay with its key
-present inserts zero. A local substitution removes one old event's key; exact
-replay then inserts one and the cross-tier historical query counts two copies.
-The substitution is diagnostic only and is not a proposed repair.
+Seven cached observations per size; p95 is the maximum of these seven samples.
+Peak producer RSS: 157,646,848 bytes. Receipt metadata is about 119 bytes/identity
+in this minimal fixture, not the size of real custody receipts. Hardlinks save
+physical fixture space but do not change the code's hash invocation/bytes-read
+recurrence. Total physical fixture allocation: 34,074,624 bytes (deduplicated).
 
-Below-floor delivery calls the actual `quarantine_label_events` helper. Full
-historical event columns remain in global SQLite, keyed by event hash/reason;
-repeat delivery mutates `seen_count`, last-delivery time and current floor.
-Advancing the floor expires no quarantine rows. The fixed subject has 24,576
-quarantined events at day96. This is not unused compatibility material:
-`retention.quarantined_for_subject` feeds frontdoor history completeness, the
-CLI checks it, and `ops_status` reports distinct events and deliveries.
+For N old segments and payload bytes B_i, admitting segment N+1 reads
+`sum(B_i, i=1..N+1)` and examines N+1 receipts. This is
+`O(N + total historical payload bytes)`. Cached `files()` is O(N) stat work.
+No capacity or throughput claim is inferred from the tiny test file timings.
+The failure exists with two real owners; it is not a theoretical future-scale
+objection.
 
-Observed-source evidence also grows (141 rows at day47, 288 at day96), despite
-one fixed identity. This is supplementary inherited lifecycle debt, not the
-sole disqualifying property.
+## Independent falsification
 
-### Capacity relationship
+Independent owner `/root/independent_acceptance` verifies the producer's 16,407
+sealed pointers and exercises two real custody-committed owners. The first cached
+catalog returns complete history before the second owner. After the second
+commit it refuses `committed archive coverage unavailable`. Fresh catalog
+admission recovers correct count 2, but hashes both 4,196-byte old and4,193-byte new
+Parquet objects. Existing separate frontdoor summary-catalog machinery is not
+an incremental canonical-row/identity admission path consumed by this tier.
+The first independent preparation occurrence hit the existing two-local-vessel
+queue limit; it is preserved as a setup failure. The successor uses normal
+verified source retirement, with a fresh run identity. No candidate correctness
+failure is inferred from that setup error.
 
-Let λ be admitted events/day, H the live horizon including admitted catch-up,
-F(t) accepted events whose authored timestamps still exceed the moving floor,
-Q(t) distinct below-floor event identities retained by quarantine, E(t) retained
-evidence rows, and n the archive segment count.
+Exact independent receipt identity is recorded in the terminal report and
+[decision](LABELWATCH-SEGMENTED-DECISION.md). Independent review confirms the
+current admission-design failure, not that a bounded incremental repair is
+impossible. It does not repeat broad rollover/custody/engine review.
 
-- Normal replay keys can be O(λH); current future keys add O(F(t)), which is not
-  bounded by H under the admitted timestamp contract.
-- Full mutable quarantine is O(Q(t)); there is no finite existing retirement
-  rule. Historical reset/replay can increase it with historical event count.
-- Other mutable global tables require their actual owned lifecycle; treating
-  their preserved rows as a tiny seed is not a complete capacity qualification.
-- Payload vessels are capped at one active plus one closed local vessel;
-  this bounds payload by the admitted period volume. It does not bound global
-  replay/quarantine state.
-- Immutable archive payload appropriately grows with history. Receipts and the
-  expected-coverage manifest grow O(n) per current generation.
-- Stable cursor/active identity/generation state stays constant for fixed
-  source count. Pending acceptance is bounded by the existing 10,000-row page.
+## Preserved acceptance and scope
 
-An 8 GiB global page ceiling provides eventual refusal, not sustained bounded
-operation. Increasing that ceiling or moving the same immortal state file to
-another filesystem does not establish the required relationship.
+The12M-event rollover/reclamation/crash-replay evidence remains immutable at
+`b2b9a416`. Shared custody qualification at `1fdfd028` / published `6a88178`
+already includes both layouts and the exact 10-event historical-coverage case.
+No exercised implementation bytes changed in this reopened lane. Those accepted
+cases are therefore not rerun; no previous unearned macro claim becomes earned.
+Original horizon source/report bytes are retained from `872693a`, with exact
+hash mappings. Old rejection remains historical evidence, superseded only for
+custody by its separate qualified repair.
 
-No production policy change, timestamp rejection, quarantine deletion, new
-summary contract or storage adapter was introduced to hide this boundary.
+## Execution and recovery
 
-## Gate 2: full current-volume horizon queries
+Host crow; existing Python3.12.3/SQLite3.45.1/DuckDB1.4.3/PyArrow22.0.0 environment.
+Durable unit `labelwatch-horizon-catalog-28e39263.service` is terminal, MainPID 0,
+Result success/ExecMainStatus 0. Invocation was `fefdffdc1eb94962ba9e54dc70034cba`.
+Private registry: `portfolio-private/campaigns/labelwatch-segmented-horizon-capacity-20261005`.
+Exact dispatch `DISPATCH-28e39263-168f-46e7-8f22-25a7f29fc684.json` pins source,
+command, environment, script hash, allocation, log and expected terminal result.
+Existing venv and helper are reused; the direct script is campaign evidence,
+not another runner/framework. Inspect terminal/checkpoint/acceptance records;
+never restart the completed producer. Source drift during review is forbidden.
 
-**Not qualified in this lane.** Once the hard correctness/lifetime gate is
-established, allocating approximately 80.57M events cannot falsify that semantic
-counterexample. No new full-40-day p50/p95, dense-query or product usability claim
-is made. One-week query evidence remains the previously accepted finite result.
-A terminal rejection must be read as a failure of this candidate's state
-boundary, not as a measured rejection of historical DuckDB query performance.
+Storage owner /root; producer admitted 1 GiB/data and 256 MiB root, reviewer 64/16 MiB
+aggregate envelope (planned 4/1 MiB). Both independent 60 GiB reserves remain.
+No NFS or production-host allocation, production observations/mutations, new
+keys/packages/services, migration, retention-policy change or cleanup.
+All new evidence has existing#7 replay/repair dependency; review 2026-10-12 or
+successor acceptance. Exact final allocation/capacity is in the closeout receipt.
 
-## Gate 3: long-history catalog admission
+Formalization consideration: counted calls/bytes and source-loop recurrence
+suffice to falsify this cost bound. No new semantic model is needed. The finite
+specimen does not establish full-horizon usability, physical-loss behavior or
+production latency. Reviewer is decision owner for evidence acceptance.
 
-The existing `VerifiedCatalog` is measured directly at 128, 1,024 and 8,192
-identities. Each has a separate receipt and a hard link to the same verified
-4,192-byte, one-row regression Parquet. This exercises metadata/cardinality and
-actual hash-call count; it is not years of event payload or a payload-throughput
-benchmark. Metadata is the two fields consumed by this catalog constructor,
-so the byte constants are not complete production receipt sizes.
+## Required next change
 
-| Existing identities | Receipt metadata after new admission, bytes | Startup s | Cached files p50 / p95 s | New admission s | Payload hashes for new admission |
-|---:|---:|---:|---:|---:|---:|
-| 128 | 15,351 | 0.0140 | 0.0024 / 0.0025 | 0.0135 | 129 |
-| 1,024 | 121,975 | 0.1092 | 0.0191 / 0.0194 | 0.1113 | 1,025 |
-| 8,192 | 974,967 | 0.9223 | 0.1541 / 0.1907 | 0.9643 | 8,193 |
+Repair the existing catalog admission path to retain earned custody/completeness
+while admitting today's owner without rehashing every historical payload.
+Quantify identity/time-range/retirement lookup and interrupted-update recovery
+using existing machinery. Then reopen the same three gates; no engine comparison,
+new model, migration or automatic production activation follows this rejection.
 
-At 8,192 identities new admission hashes all 8,193 artifacts, reading
-34,345,056 logical payload bytes in this tiny fixture. Peak process RSS is
-194,686,976 bytes. All hard-linked payloads share a cacheable inode, so these
-tiny-file timings are not independent historical disk throughput. Cached `files()` performs two pathname-stat operations for
-every existing entry. It is not an O(log n) time-range lookup. The prototype has
-no separate indexed identity/range/retirement lookup or incremental new-segment
-admission API. The available direct admission path constructs a fresh catalog
-and rehashes all historical payload: O(n + total historical payload bytes).
-This observed algorithm, not the sub-second tiny-file result, is the scaling
-finding. The archived expected manifest also enumerates all expected entries;
-source pruning copies an entire generation. Long-lived generation disposition
-is not introduced by this lane.
-
-Catalog cardinality alone has modest metadata at this test scale. The lane does
-not claim admission independent of total history, nor measured full-payload
-startup/recovery/root-scratch bounds. This is secondary concrete design work,
-not proof that another database engine is necessary.
-
-## Permanent historical-coverage regression
-
-The existing `coverage_qualify.py` reproduces the exact original topology:
-nine retired periods plus one active event, oldest local retry record pruned.
-The corrected candidate returns all ten events; removal of the old receipt,
-Parquet or expected manifest refuses explicitly. Corrupting the anchor refuses.
-Death after coverage publication before the prune commit retains the old
-expected authority, and retry restores complete coverage.
-
-The original independent failing fixture/script and receipts remain unchanged
-in the prior campaign (run `27ee66da-0bb4-4e93-a338-687a281baeff`). That script
-is still executable against its exact original source; the new lane reuses the
-permanent corrected regression rather than replacing the counterexample.
-No 40-day current-volume history-completeness acceptance is invented here.
-
-## Reproduction, environment and custody
-
-Use the retained Python3.12.3 / SQLite3.45.1 / DuckDB1.4.3 / PyArrow22.0.0
-environment from the prior architecture campaign. Export `SQLITE_TMPDIR` and
-`TMPDIR` before Python starts; use the dispatched owned scratch directory.
-The exact command/limits/environment are in private `DISPATCH-225859f1-ea73-4ad5-9af5-747229cc8ba0.json`:
-
-```text
-<retained-venv>/bin/python tools/segmented_qualification/horizon_qualify.py <new-owned-occurrence> <new-terminal.json>
-```
-
-Producer limits: 2 GiB RSS, two CPUs, 900 seconds. New campaign data admission512 MiB;
-root admission256 MiB; shared hard60 GiB free floors on both filesystems unchanged.
-No compiler trees, VM, container, new packages, SSH identities or production
-contact. The fixture does not allocate the incident's cloud-root capacity.
-
-Primary terminal RESULT SHA256:
-`efd1d1db293b7bb5968cb9463a54fba93dc5f3f1420544554164dcaf6d9033e2`.
-Producer seal SHA256:
-`29e8a947cddb8187215efe400575032031890389ce441903484cf95ca1c5100b`.
-An earlier attempt refused the new archive path before executing a product gate;
-its terminal evidence is retained under run `46fe81f3-2b6b-4b0e-a399-32a97bdcbb56`.
-
-Formalization consideration: the durable proposition is hot-state boundedness
-under the actual accepted timestamp/replay contract. The finite alternate history
-and source recurrence falsify an unconditional bound; they do not establish an
-impossibility theorem for every segmented design. The prior logical custody model
-remains limited to its existing scope. Independent acceptance owns classification
-of this defect and terminal decision. Physical host/NFS loss is not tested.
-
-Production mutations: **NONE**. No migration, retention-policy change,
-destructive cleanup, reporting/derive activation or engine comparison.
-
-## Focused independent counterexamples
-
-Independent run `d1246d42-b22f-42b6-8032-5ff0f53d55a2` uses four ordinary
-events and one future-authored event/day. It accepts and archives the ordinary
-events first, then replays them after they cross the actual 40-day floor.
-At day 47/day 96, normal replay keys stay 160; future keys grow47→96; full
-quarantine rows for ordinary accepted historical events grow28→224. A repeated
-ordinary delivery changes seen_count to 2; the actual subject consumer reports 224.
-Removing one retired future event key permits a second historical copy.
-Thus the quarantine defect is not dependent on never-accepted historical offers
-or on future timestamps. This independently matches the user hard-failure rule
-for the **unchanged candidate's global-state boundary**.
-
-Independent run `e6f08c73-630f-456b-a4c5-76b8b36dce80` executes the exact
-unchanged original coverage generator bytes, preloading the newly sealed modules
-before its historical hard-coded import-path instruction. Actual source and
-hashes are recorded in EXECUTION-IDENTITY.json; the generator's static 29f3f76
-result label is historical. Complete10→missing required history refusal→restored10
-passes. Original producer artifacts and failing result remain untouched.
-
-Independent run `4534598a-c43c-4132-96e7-d0c67512da34` establishes another
-catalog correctness defect. In the equivalent durable state after archive receipt
-publication but before global ARCHIVED commit, the old vessel is SEALED while
-a verified receipt/Parquet already exists. TierSession includes both the local
-SEALED source and discovered archive, counting **one accepted event twice**
-without refusal. Explicit archive retry restores one count. The source really
-orders receipt publication before the global commit; the test constructs that
-state with owned SQLite substitutions, not an injected process death.
-
-This is distinct from the corrected missing-history regression: expected coverage
-now refuses missing history, but receipt discovery can still admit history before
-its tier ownership is committed. Catalog discovery and custody authority need an
-explicit boundary. Do not erase this counterexample merely because retry recovers.
-
-Full 40-day dense/current-volume query and root/archive payload bounds remain
-untested. Independent confirmation of the hard disqualifier is not acceptance
-of those unrun properties.
+Independent acceptance: `4bf47479-ebb8-4661-85d7-ee53f6c1044e`, disposition
+`ACCEPTED_CONCRETE_GATE3_REJECTION`, SHA256
+`dcd7302bd8a6bf55a76ab55cf03ebe1e65b56e225b05148d046afc4874628693`.
+Exact private record: `ACCEPTANCE-4bf47479-ebb8-4661-85d7-ee53f6c1044e.json`
+in the owning existing horizon campaign. Review source equals exercised `6a88178`;
+final publication changes documents only.
