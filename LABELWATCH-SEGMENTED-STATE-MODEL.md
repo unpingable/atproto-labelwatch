@@ -1,7 +1,129 @@
 # Labelwatch segmented state and cursor model
 
+## Current v5 recent-observation candidate (2026-10-06)
+
+This section supersedes the lifetime claims of the historical model below for
+new `RecentStore` stores only. Source correspondence is the sealed `02a3a5d`
+implementation: `tools/segmented_qualification/{recent_storage,storage,tier,recent_provider}.py`,
+`src/labelwatch/{recent_collector,recent_observations}.py`, and the existing
+collector/daily command wrappers. The historical all-history adapter is not the
+current service contract. No production enrollment, old-store conversion, or
+production capacity acceptance follows from this inventory. `require()` refuses
+profiles other than v5; existing evidence remains under its original authority.
+
+### Named writer graph and window
+
+The successor collector discovers/resolves sources into a sticky roster, claims
+a bounded scheduled source, records an attempt, then accepts at most 100 strictly
+normalized rows from that source with an opaque provider cursor and attempt-token
+comparison in the global transaction. Pending accepted rows flush idempotently to
+the active daily vessel. The daily driver recovers existing journals, drains the
+sealed queue, rotates, archives/verifies/retires, and maintains the rolling window.
+`RecentProvider` and the account/export product consume this authority. The
+qualification-only direct `ingest` seam and offline constructor are separately
+scoped: neither establishes the collector's HTTP service rate or provider continuity.
+
+The service interval is `[now - 30 days, end)`, on trusted UTC observation time,
+with microsecond comparisons. Source-authored timestamps remain event content.
+Physical daily owners include the partially overlapping boundary day: normally
+at most 31 daily owners including active, with explicit control headroom below.
+New enrollment records acquisition start; pre-enrollment coverage is unknown,
+not reconstructed from old authored timestamps. Only 30 days is admitted by
+`RecentStore.create`; a generic product option accepting 45 does not qualify a
+45-day store. No lifetime deduplication guarantee survives window retirement.
+
+### Global tables and indexes
+
+All listed SQL indexes share the lifetime and physical compaction of their parent
+tables, including primary-key autoindexes. `policies()` refuses an unknown global
+table. Trigger-maintained row counters enforce admission; maintenance audits
+counter/table correspondence. These are fail-closed ceilings, not measured capacity.
+
+| Family | Current writer and lifetime | Bound / exhaustion / recovery |
+|---|---|---|
+| `q_recent_seen`, `recent_account_clock`, `recent_owner` | Acceptance adds event ID, integer owner day, integer observation microseconds, subject DID. Maintenance deletes observations before the exact rolling floor. | 100M rows; account/time and owner indexes count toward global bytes. Boundary-owner files may retain older rows that queries exclude. |
+| `label_events` in global state, `q_pending`; vessel `label_events` and deployed event indexes | One acceptance journal; flush copies exact ID/content to current vessel, then drains global rows. | Collector page100; generic qualification ingest page10,000. Interrupted post-commit flush recovers rather than reallocating IDs. Vessel pressure can leave accepted journal work pending. |
+| `q_hot_keys` and custody indexes | Active/local replay lookup; verified source retirement calls `expire_owner`. Retained archive identity index carries archived lookup authority. | 100M hot-key row ceiling; not a second full-window lookup by design. Retirement failure retains authority and refuses progression. |
+| `q_segments`, `q_archive`, `custody_archives` | Daily ownership and committed custody; expire only after verified retired owner leaves the window. | `q_segments`33, custody32; at most two non-retired local vessels. `q_archive` is owner-correlated, not independently capped. Missing/mutated custody refuses. |
+| `q_transition`, `q_recent_transition` | Singleton rollover and maintenance plans. Maintenance journals exact file hashes before authority expiry/unlink. | Singleton checks; normal reads/writes refuse unresolved recent maintenance. Daily retry completes the same plan; no silent authority reconstruction. |
+| `q_recent_protected` | Explicit retained-evidence dependencies. | 32 rows; a protected expired owner refuses the whole retirement transition. No automatic protection expiry. |
+| `q_recent_sources` | Discovery/configuration enrollment, source cursor, bounded last-page identity/content digests, last observation, attempt token/start, scheduler state. | Sticky lifetime-global2048 sources. DID1024 bytes, endpoint2048, cursor4096, last page100 identities/digests. No automatic source retirement or eviction; endpoint replacement requires explicit cursor-reset handling. Churn can exhaust enrollment despite bounded event retention. |
+| `labelers`, `provider_registry` | Accepted source tracking writes `labelers`; roster membership survives event absence. Provider registry has no new successor producer in this graph. | Lifetime-global labelers100,000; registry10,000. No invented expiry based on absent events. These are distinct from the2048 scheduled-source bound. |
+| `q_recent_gaps` | Known interruption intervals plus explicit unknown acquisition coverage. | 128 stored intervals, window expiry; overflow sets persistent unknown status rather than silently claiming complete coverage. Gaps do not prove upstream completeness. |
+| `q_recent_counts` | One trigger counter/ceiling per explicitly listed bounded table. | Fixed schema-derived family count; negative/count mismatch refuses. Replacements use qualified recursive-trigger semantics. |
+| `meta`, `sqlite_sequence` | Fixed recent authority/frontier/generation/acquisition/scheduler/discovery keys, retained schema/control keys, monotonic ID allocation. Direct qualification ingest also writes source-specific cursor keys. | Meta4096 entries and64KiB value ceiling; direct-ingest source churn can hit this independently. IDs do not reset after physical retirement. Product frontier includes committed observation state. |
+| `labeler_evidence` | Current observed-source helper writes evidence per source acceptance page, not per arbitrary mixed-source batch. | Time expiry by its recorded clock, 10M rows. Real source-homogeneous100-row density must be measured. |
+| `alerts`, `labeler_probe_history`, `derived_receipts`, `ingest_outcomes`, `discovery_events`, `posted_findings`, `quarantined_events` | Classified timed compatibility tables; no obligatory successor producer/consumer established by this graph. | Each10M rows; expiry uses `TIMED`'s named timestamp column. Keep unused tables empty in successor capacity qualification; their existence does not require legacy import. |
+| `derived_label_fp`, `derived_labeler_lag_7d`, `derived_labeler_reversal_7d`, `derived_labeler_boundary_load_7d`, `derived_val_dist_day`, `derived_labeler_entropy_7d`, `derived_author_day`, `derived_author_labeler_day`, `boundary_edges`, `boundary_targets` | No live successor derive/report writer or consumer. | Each10M refusal ceiling; all invalidated on maintenance. Empty-schema/index cost is included, fabricated full legacy populations are not a readiness requirement. |
+
+Scheduler fields are bounded state, not a history log: hot0/1/2 (cold/progress/warm),
+next-due clock and failures0–6. Persistent class pointers and streak allow at most
+four eligible hot claims before one eligible cold claim. Warm delay1s, quiet30s,
+failure backoff30–900s. Successful acceptance clears its exact pending attempt;
+failed completion compares its token. A later attempt reconciles an interrupted
+attempt to unknown coverage. This is process-interruption reporting, not proof of
+provider execution recovery. The independently qualified service-rate examples
+retain their disclosed startup backlog/latency; fairness does not imply universal
+real-time service at arbitrary roster size and response time.
+
+### Files, sidecars, catalogs and transient products
+
+| Family | Lifetime and bound | Refusal / residual scope |
+|---|---|---|
+| `state.sqlite`, WAL/SHM and all global indexes | Global SQLite ceiling8GiB, reapplied on writer connections; maintenance checkpoints and VACUUMs after authority expiry. | Page cap is not an8GiB total-filesystem bound. WAL admission threshold256MiB plus a bounded transaction, SHM, VACUUM overlap and other files require separate space admission. Pinned checkpoint refuses. |
+| Daily vessel SQLite, `segment_meta`, WAL/SHM | Vessel ceiling16GiB each; active plus at most one sealed/archived local queue member. Verified archive precedes unlink. | Exact source retirement under archive/writer/reader fences removes only owned validated sidecars; nonempty WAL, changed links or ownership refuses. Direct unfenced SQLite consumers are outside this ownership contract. |
+| Daily Parquet, identity-index SQLite, receipt JSON, retired JSON | One bounded group per retained daily archive owner; final partial boundary retained physically. | Maintenance checks namespace, links and hashes, removes authority, prunes catalog, then exact files. Hash mismatch preserves objects and leaves recoverable refusal. |
+| Reader catalog SQLite `entries`, `entries_time`, WAL/SHM | One archive-path-derived catalog on the current fixed owned archive path; entries follow retained owner membership and are pruned/checkpointed/VACUUMed. | Derived admission cache, not custody authority. Generic alternate archive roots could create more catalogs, but are not admitted by `RecentStore.archive`. No lifetime-growing historical generation manifests are produced by the current daily path. |
+| `ACTIVE.json`, transition markers and receipts | Reconstructible active projection; singleton journals and per-retained-owner receipts. | Stale projection is not authority; unknown/missing custody is not repaired by inventing a receipt. |
+| `writer.lock`, `reader.lock`, `archive.lock`, `daily.lock` | Stable store-wide lock domains. | No per-date archive-lock growth in v5. Never unlink lock authority merely because a waiter may exist; historical per-owner locks are not automatically enrolled or removed. |
+| Archive `.incomplete`, SQLite temp/journal files and compaction copies | Finite current operation, admission before archive/VACUUM work; interrupted operation uses existing custody repair/refusal paths. | Peak includes temporary copies, filesystem blocks/inodes, WAL and concurrent tenants. Deployment scratch placement remains separately unqualified. Qualifier-only pinned scratch is not production policy. |
+| Account snapshots and export cursors | Process memory: default four combined snapshots/exports,120s fixed TTL,1MiB snapshot budget, account view1000 rows, page100. Export keyset fixes upper ID and releases read lease between requests; adaptive bounded pages retain only finite cursor/page state. |64 retry/request budget applies as implemented; forward export progress is not an unlimited retained snapshot. Retirement/expiry refuses; no cursor pins old owners. Dense export completion within TTL is a measurement gate, not implied by bounded memory. No product export files are created by this API. |
+| Provider query workspace | Explicit row/byte/deadline limits, relevant owner selection, DuckDB128MB/one thread/no spill. | Refuses unavailable coverage or unsupported schema; bounded response does not prove acceptable full-window latency. |
+| Service logs and campaign artifacts | CLI output goes to the configured execution/logging owner; qualification produces finite run checkpoints, progress, samples and receipts. | Store retention does not bound an external journal or repeated campaign history. Deployment log policy and exact campaign closeout remain owner obligations; no background cleanup is introduced here. |
+
+Event input bounds are16KiB per string field,64KiB serialized row and16MiB per
+accepted generic batch. These limit admitted values but are not an aggregate
+production shape estimate. Shared admission preserves60GiB free independently on
+`/` and `/data`; local page limits do not replace that reserve or root's aggregate
+allocation ownership. Daily admission is conservative; full constructed qualifier
+charges extra space to the actual destination device and separately checks both
+floors. Its deprecated process-global SQLite scratch pragma is isolated to the
+one-shot qualification process and verified against an actual temp descriptor.
+
+### Evidence, unknowns and formalization correspondence
+
+The compact100k measurement found12,890,112 lookup/index bytes, approximately
+128.9 bytes/event, after hot-key retirement. Extrapolation alone is not acceptance
+of51.43M observations in8GiB. Small90-day qualification at source1b33724 showed
+physical owner/sidecar plateau under its declared100-event/day synthetic shape;
+it does not qualify current-volume capacity. V5 scheduler controls, strict
+constructor differential and scratch/admission controls have separate independent
+receipts. The full-window producer `c9f0144b` on archived02a3a5d is **pending**;
+its original invocation is `9062cd1fea12464d9339c83ffeb56b72`. No result is asserted
+here. It measures actual current supporting-state density, retained bytes,
+compaction and top-account export completion; constructor throughput is not actual
+collector acceptance throughput. Earlier stopped v3 scale work remains scoped
+prefix evidence, not a completed12M or current-v5 capacity result.
+
+Formalization consideration: the proposition is finite current-writer state and
+recoverable authority-before-file retirement under conforming fenced readers and
+writers, not arbitrary filesystem activity or provider continuity. The historical
+one-event model below supplies only its original journal/custody proposition.
+Current correspondence comes from explicit v5 schema/limits, trigger counter
+checks, exact transition-cut controls, source/attempt CAS controls, independent
+strict-identity differential, and physical plateau measurements. Practical bounded
+models/tests and this source-linked inventory suffice for this readiness update;
+a new model campaign would not resolve the outstanding measured-capacity gate.
+Root is the independent acceptance/decision owner. Protected evidence, sticky
+source churn, external logs, full-volume query deadlines and production packaging,
+owned-root admission and scratch configuration remain explicit limits. This
+static update creates no runtime or operational authorization.
+
+## Historical model and earned evidence (unchanged scope)
+
+
 > Historical qualification/model at `b2b9a416`, preserved in its original scope.
-> Current candidate is rejected by the [horizon decision](LABELWATCH-SEGMENTED-DECISION.md):
+> The historical candidate was rejected by the [horizon decision](LABELWATCH-SEGMENTED-DECISION.md):
 > mutable historical replay/quarantine lifetime and catalog custody are concrete defects.
 > See [new evidence](LABELWATCH-SEGMENTED-HORIZON-QUALIFICATION.md).
 
