@@ -187,7 +187,36 @@ def construct_specimen(args):
     import pyarrow.parquet as pq
     from labelwatch.recent_observations import RecentObservations, Refused
     if not 0<args.events<=100000000 or args.ceiling_bytes is None:raise ValueError('explicit count/occurrence budget required')
-    out=args.occurrence;out.mkdir();(out/'scratch').mkdir();os.environ['SQLITE_TMPDIR']=str(out/'scratch');storage.ROOT=out/'runtime';storage.ROOT.mkdir();(out/'evidence').mkdir()
+    out=args.occurrence;out.mkdir();scratch=out/'scratch';scratch.mkdir()
+    destination_dev=out.stat().st_dev
+    if scratch.is_symlink() or scratch.stat().st_dev!=destination_dev or not os.access(scratch,os.W_OK):raise RuntimeError('scratch destination unavailable; no fallback')
+    os.environ['SQLITE_TMPDIR']=str(scratch);os.environ['TMPDIR']=str(scratch)
+    import tempfile
+    tempfile.tempdir=None
+    if Path(tempfile.gettempdir()).resolve()!=scratch.resolve():raise RuntimeError('Python scratch fallback refused')
+    if sum(p.stat().st_blocks*512 for p in out.rglob('*') if p.is_file())+4*1024**2>args.ceiling_bytes:raise RuntimeError('scratch probe occurrence envelope exceeded')
+    for filesystem in ('/','/data'):
+        fs=os.statvfs(filesystem);charge=4*1024**2 if Path(filesystem).stat().st_dev==destination_dev else 0
+        if fs.f_bavail*fs.f_frsize-charge<64424509440:raise RuntimeError('scratch probe admission refused')
+    with closing(sqlite3.connect(':memory:')) as probe:
+        # SQLite may cache its process-wide temp directory during dependency imports.
+        # Pin explicitly before any qualification connection/thread; unsupported builds refuse.
+        probe.execute("PRAGMA temp_store_directory='"+str(scratch).replace("'","''")+"'")
+        configured=probe.execute('PRAGMA temp_store_directory').fetchone()
+        if not configured or Path(configured[0]).resolve()!=scratch.resolve():raise RuntimeError('SQLite scratch configuration unavailable')
+        probe.execute('PRAGMA temp_store=FILE');probe.execute('PRAGMA temp.cache_size=-64')
+        probe.execute('CREATE TEMP TABLE placement(value BLOB)')
+        probe.executemany('INSERT INTO placement VALUES(zeroblob(4096))',[()]*512)
+        actual=[]
+        for fd in Path('/proc/self/fd').iterdir():
+            try:link=os.readlink(fd);info=fd.stat()
+            except (OSError,FileNotFoundError):continue
+            if 'etilqs_' in link:
+                if not link.startswith(str(scratch)+'/') or info.st_dev!=destination_dev:raise RuntimeError('SQLite scratch fallback refused')
+                actual.append({'path':link,'device':info.st_dev,'allocated_bytes':info.st_blocks*512})
+        if not actual:raise RuntimeError('SQLite scratch placement not established')
+    atomic(out/'TEMP-PLACEMENT.json',{'destination':str(out),'device':destination_dev,'scratch':str(scratch),'actual_sqlite_temp':actual,'scope':'Forced2MiB FILE temp table; same-filesystem open-unlinked evidence, no fallback'})
+    storage.ROOT=out/'runtime';storage.ROOT.mkdir();(out/'evidence').mkdir()
     atomic(out/'evidence/ARCHIVE-DESTINATION.json',{'campaign_archive':str(storage.ROOT/'constructed/archive')})
     receipt=json.loads(args.specimen.with_name('SPECIMEN.json').read_text())
     if storage.sha(args.specimen)!=receipt['parquet_sha256']:raise RuntimeError('specimen identity mismatch')
@@ -199,8 +228,11 @@ def construct_specimen(args):
         used=sum(p.stat().st_blocks*512 for p in out.rglob('*') if p.is_file());peak=max(peak,used)
         if used+extra>args.ceiling_bytes:raise RuntimeError('constructed occurrence envelope exceeded')
         free={p:os.statvfs(p).f_bavail*os.statvfs(p).f_frsize for p in ('/','/data')}
-        if any(n-extra<64424509440 for n in free.values()):raise RuntimeError('shared reserve admission refused')
-        return {'allocated_bytes':used,'sampled_peak_bytes':peak,'free_bytes':free}
+        charges={p:extra if Path(p).stat().st_dev==destination_dev else 0 for p in free}
+        if any(n-charges[p]<64424509440 for p,n in free.items()):raise RuntimeError('shared reserve admission refused')
+        destination_free=os.statvfs(out).f_bavail*os.statvfs(out).f_frsize
+        if destination_free-extra<64424509440:raise RuntimeError('destination reserve admission refused')
+        return {'allocated_bytes':used,'sampled_peak_bytes':peak,'free_bytes':free,'admitted_extra_bytes_by_filesystem':charges,'destination_device':destination_dev}
     def sample():
         families=collections.Counter();seen=set()
         for path in out.rglob('*'):
