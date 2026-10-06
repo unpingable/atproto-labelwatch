@@ -118,7 +118,7 @@ def test_v2_exact_integer_clock_and_v1_refusal(store):
     with connect(store.state) as c:
         assert [r[1] for r in c.execute('PRAGMA table_info(q_recent_seen)')]==['event_id','owner_day','observed_us','target_did']
         storage.db.set_meta(c,'q:recent_version','1')
-    with pytest.raises(RuntimeError,match='schema v4'):store.frontier()
+    with pytest.raises(RuntimeError,match='schema v5'):store.frontier()
 
 def test_maximum_clock_refuses_without_acceptance(store):
     # Year9999 is representable, but no half-open exclusive successor exists.
@@ -287,6 +287,56 @@ def test_old_profile_retirement_refuses_before_lock_or_file_effect(store,monkeyp
     before={p.name:storage.sha(p) for p in store.root.iterdir() if p.is_file() and p.name.startswith('2026-09-01')}
     def forbid_lock(*args,**kwargs):raise AssertionError('old profile reached mutable lock acquisition')
     monkeypatch.setattr(recent_storage,'lock',forbid_lock)
-    with pytest.raises(RuntimeError,match='schema v4'):store.retire('2026-09-01')
+    with pytest.raises(RuntimeError,match='schema v5'):store.retire('2026-09-01')
     assert before=={p.name:storage.sha(p) for p in store.root.iterdir() if p.is_file() and p.name.startswith('2026-09-01')}
     with connect(store.state) as c:assert authority==[tuple(r) for r in c.execute('SELECT * FROM q_segments')]
+
+def test_scheduler_hot_cold_fairness_and_restart(store):
+    stamp='2026-09-01T00:01:00Z';hot='did:plc:hot'
+    store.remember_sources([{'did':hot}]+[{'did':'did:plc:cold'+str(i)} for i in range(3)])
+    store.accept_page([event()],source=hot,request_cursor=None,next_cursor='next',observed_at=stamp)
+    chosen=[]
+    for i in range(10):chosen.append(RecentStore(store.root).collector_claim_source(observed_at=stamp)['did'])
+    assert chosen[:4]==[hot]*4 and chosen[4]=='did:plc:cold0'
+    assert chosen[5:9]==[hot]*4 and chosen[9]=='did:plc:cold1'
+    with connect(store.state) as c:assert storage.db.get_meta(c,'q:recent_hot_streak')=='0'
+
+def test_scheduler_quiet_failure_backoff_and_replay(store):
+    import datetime as dt
+    from recent_storage import clock,iso
+    did='did:plc:labeler';store.remember_sources([{'did':did}]);stamp=clock('2026-09-01T00:01:00Z')
+    store.accept_page([event()],source=did,request_cursor=None,next_cursor='next',observed_at=iso(stamp))
+    # An exact retry is acknowledgement replay, not continuing upstream progress.
+    store.accept_page([event()],source=did,request_cursor=None,next_cursor='next',observed_at=iso(stamp))
+    assert store.collector_claim_source(observed_at=iso(stamp)) is None
+    stamp+=dt.timedelta(seconds=30)
+    assert store.collector_claim_source(observed_at=iso(stamp))['did']==did
+    for expected_delay in [30,60,120,240,480,900,900]:
+        token=store.begin_source_attempt(did,iso(stamp))
+        store.finish_source_attempt(did,token,observed_at=iso(stamp))
+        assert store.collector_claim_source(observed_at=iso(stamp+dt.timedelta(seconds=expected_delay-1))) is None
+        stamp+=dt.timedelta(seconds=expected_delay)
+        assert RecentStore(store.root).collector_claim_source(observed_at=iso(stamp))['did']==did
+    token=store.begin_source_attempt(did,iso(stamp))
+    store.accept_page([event('success')],source=did,request_cursor='next',next_cursor='advanced',observed_at=iso(stamp),attempt_token=token)
+    with connect(store.state) as c:
+        row=c.execute('SELECT hot,failures,next_due FROM q_recent_sources WHERE did=?',(did,)).fetchone()
+        assert tuple(row)==(1,0,iso(stamp))
+
+def test_scheduler_single_empty_warm_grace_and_terminal_tail(store):
+    import datetime as dt
+    from recent_storage import clock,iso
+    did='did:plc:labeler';store.remember_sources([{'did':did}]);stamp=clock('2026-09-01T00:01:00Z')
+    store.accept_page([event()],source=did,request_cursor=None,next_cursor='next',observed_at=iso(stamp))
+    store.accept_page([],source=did,request_cursor='next',next_cursor=None,observed_at=iso(stamp))
+    with connect(store.state) as c:assert c.execute('SELECT hot FROM q_recent_sources').fetchone()[0]==2
+    assert store.collector_claim_source(observed_at=iso(stamp)) is None
+    stamp+=dt.timedelta(seconds=1)
+    assert store.collector_claim_source(observed_at=iso(stamp))['did']==did
+    store.accept_page([],source=did,request_cursor='next',next_cursor=None,observed_at=iso(stamp))
+    with connect(store.state) as c:assert c.execute('SELECT hot FROM q_recent_sources').fetchone()[0]==0
+    stamp+=dt.timedelta(seconds=30)
+    store.accept_page([event('newtail')],source=did,request_cursor='next',next_cursor=None,observed_at=iso(stamp))
+    with connect(store.state) as c:assert c.execute('SELECT hot,provider_cursor FROM q_recent_sources').fetchone()[:]==(2,'next')
+    store.accept_page([event('newtail')],source=did,request_cursor='next',next_cursor=None,observed_at=iso(stamp))
+    with connect(store.state) as c:assert c.execute('SELECT hot FROM q_recent_sources').fetchone()[0]==0

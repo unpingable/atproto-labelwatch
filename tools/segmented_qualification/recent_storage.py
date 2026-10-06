@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from storage import Store, owned, connect, lock, db, custody, ingest, sha, syncdir
 
+SCHEDULER_POLICY={'warm_seconds':1,'quiet_seconds':30,'failure_base_seconds':30,'failure_max_seconds':900,'failure_counter_max':6,'hot_streak_max':4}
 _UNSET = object()
 UTC = dt.timezone.utc
 EPOCH = dt.datetime(1970,1,1,tzinfo=UTC)
@@ -81,9 +82,11 @@ class RecentStore(Store):
                 PRIMARY KEY(start,end,reason));
             CREATE TABLE q_recent_counts(name TEXT PRIMARY KEY,n INTEGER NOT NULL,ceiling INTEGER NOT NULL);
             CREATE TABLE q_recent_sources(did TEXT PRIMARY KEY,endpoint TEXT,
-                provider_cursor TEXT,last_page TEXT,last_observed TEXT,attempt_token TEXT,attempt_start TEXT);
+                provider_cursor TEXT,last_page TEXT,last_observed TEXT,attempt_token TEXT,attempt_start TEXT,
+                hot INTEGER NOT NULL DEFAULT 0 CHECK(hot IN (0,1,2)),next_due TEXT,
+                failures INTEGER NOT NULL DEFAULT 0 CHECK(failures BETWEEN 0 AND 6));
             ''')
-            for key, value in {'version':'4','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
+            for key, value in {'version':'5','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
                                'end':iso(stamp),'generation':'0','clock':iso(stamp),'events':'0'}.items():
                 db.set_meta(c, 'q:recent_'+key, value)
             db.set_meta(c,'q:recent_start',iso(stamp-dt.timedelta(days=30)))
@@ -101,8 +104,8 @@ class RecentStore(Store):
         return cls(root)
 
     def require(self, c):
-        if db.get_meta(c,'q:recent_version') != '4':
-            raise RuntimeError('recent schema v4 enrollment required; old evidence preserved, no implicit conversion')
+        if db.get_meta(c,'q:recent_version') != '5':
+            raise RuntimeError('recent schema v5 enrollment required; old evidence preserved, no implicit conversion')
 
     def recover(self, c, death=None):
         self.require(c)
@@ -230,14 +233,19 @@ class RecentStore(Store):
                 self.caps(c,scan=False);c.commit();return token
             finally:c.close()
 
-    def finish_source_attempt(self,did,attempt_token):
+    def finish_source_attempt(self,did,attempt_token,observed_at=None,failure=True):
         with lock(self.root):
             c=connect(self.state)
             try:
                 self.recover(c);c.execute('BEGIN IMMEDIATE')
-                row=c.execute('SELECT attempt_token FROM q_recent_sources WHERE did=?',(did,)).fetchone()
+                row=c.execute('SELECT attempt_token,attempt_start,failures FROM q_recent_sources WHERE did=?',(did,)).fetchone()
                 if row is None or not attempt_token or row[0]!=attempt_token:raise RuntimeError('source attempt changed')
-                c.execute('UPDATE q_recent_sources SET attempt_token=NULL,attempt_start=NULL WHERE did=?',(did,));c.commit()
+                stamp=clock(observed_at or max(row[1],db.get_meta(c,'q:recent_clock')))
+                if iso(stamp)<row[1]:raise RuntimeError('attempt clock regression')
+                failures=min(SCHEDULER_POLICY['failure_counter_max'],row[2]+1) if failure else 0
+                delay=min(SCHEDULER_POLICY['failure_max_seconds'],SCHEDULER_POLICY['failure_base_seconds']*2**(failures-1)) if failure else SCHEDULER_POLICY['quiet_seconds']
+                due=iso(stamp+dt.timedelta(seconds=delay))
+                c.execute('UPDATE q_recent_sources SET attempt_token=NULL,attempt_start=NULL,hot=0,next_due=?,failures=? WHERE did=?',(due,failures,did));c.commit()
             finally:c.close()
 
     def collector_sources(self,limit):
@@ -256,19 +264,43 @@ class RecentStore(Store):
             return row[0]
         finally:c.close()
 
-    def collector_claim_source(self,limit=2048):
+    def collector_claim_source(self,limit=2048,observed_at=None):
         if not 0<limit<=2048:raise ValueError('source claim bound')
         with lock(self.root):
             c=connect(self.state)
             try:
                 self.recover(c);c.execute('BEGIN IMMEDIATE')
                 if c.execute('SELECT COUNT(*) FROM q_recent_sources').fetchone()[0]>limit:raise RuntimeError('source enrollment ceiling')
-                previous=db.get_meta(c,'q:recent_last_source') or ''
-                row=c.execute('SELECT did,endpoint FROM q_recent_sources WHERE did>? ORDER BY did LIMIT 1',(previous,)).fetchone()
-                if row is None:row=c.execute('SELECT did,endpoint FROM q_recent_sources ORDER BY did LIMIT 1').fetchone()
+                stamp=iso(clock(observed_at or db.get_meta(c,'q:recent_clock')))
+                streak=int(db.get_meta(c,'q:recent_hot_streak') or '0')
+                if not 0<=streak<=SCHEDULER_POLICY['hot_streak_max']:raise RuntimeError('scheduler streak bound')
+                def candidate(hot):
+                    key='q:recent_last_hot' if hot else 'q:recent_last_cold'
+                    previous=db.get_meta(c,key) or ''
+                    sql='SELECT did,endpoint FROM q_recent_sources WHERE '+('hot>0' if hot else 'hot=0')+' AND (next_due IS NULL OR next_due<=?)'
+                    row=c.execute(sql+' AND did>? ORDER BY did LIMIT 1',(stamp,previous)).fetchone()
+                    if row is None:row=c.execute(sql+' ORDER BY did LIMIT 1',(stamp,)).fetchone()
+                    return row,key
+                cold,cold_key=candidate(0);hot,hot_key=candidate(1)
+                choose_hot=hot is not None and (streak<SCHEDULER_POLICY['hot_streak_max'] or cold is None)
+                row,key=(hot,hot_key) if choose_hot else (cold,cold_key)
                 if row is None:c.rollback();return None
-                db.set_meta(c,'q:recent_last_source',row['did']);c.commit();return dict(row)
+                db.set_meta(c,key,row['did'])
+                db.set_meta(c,'q:recent_hot_streak',str(min(SCHEDULER_POLICY['hot_streak_max'],streak+1) if choose_hot else 0))
+                self.caps(c,scan=False);c.commit();return dict(row)
             finally:c.close()
+
+    @staticmethod
+    def _schedule_success(c,source,rows,request_cursor,next_cursor,stamp,force_quiet=False):
+        previous=c.execute('SELECT hot FROM q_recent_sources WHERE did=?',(source,)).fetchone()[0]
+        progressing=bool(rows) and next_cursor is not None and next_cursor!=request_cursor
+        if force_quiet:hot=0
+        elif progressing:hot=1
+        elif rows or previous==1:hot=2  # One bounded warm observation after activity.
+        else:hot=0
+        delay=0 if hot==1 else SCHEDULER_POLICY['warm_seconds'] if hot==2 else SCHEDULER_POLICY['quiet_seconds']
+        due=iso(stamp+dt.timedelta(seconds=delay))
+        c.execute('UPDATE q_recent_sources SET hot=?,next_due=?,failures=0 WHERE did=?',(hot,due,source))
 
     def accept_page(self,rows,*,source,request_cursor,next_cursor,observed_at,death=None,attempt_token=None):
         """Opaque provider continuation CAS; no manufactured upstream cursor.
@@ -293,6 +325,7 @@ class RecentStore(Store):
                 if current[3] and iso(stamp)<current[3]:raise RuntimeError('attempt clock regression')
                 previous=json.loads(current[1]) if current[1] else None
                 if previous==page:
+                    self._schedule_success(c,source,[],request_cursor,next_cursor,stamp,force_quiet=True)
                     c.execute('UPDATE q_recent_sources SET attempt_token=NULL,attempt_start=NULL WHERE did=?',(source,))
                     c.commit();return {'inserted':0,'cursor':current[0],'replayed_page':True}
                 if current[0]!=request_cursor:raise RuntimeError('provider continuation changed; page refused')
@@ -304,6 +337,7 @@ class RecentStore(Store):
                 fresh=[row for row in rows if row[9] not in tail]
                 accepted,duplicates=self._stage_observations(c,fresh,stamp,death)
                 position=next_cursor if next_cursor is not None else request_cursor
+                self._schedule_success(c,source,rows,request_cursor,next_cursor,stamp)
                 c.execute('UPDATE q_recent_sources SET provider_cursor=?,last_page=?,last_observed=?,attempt_token=NULL,attempt_start=NULL WHERE did=?',(position,json.dumps(page,sort_keys=True),iso(stamp),source))
                 self.caps(c,scan=False)
                 if death:death('before_recent_ingest_commit')
