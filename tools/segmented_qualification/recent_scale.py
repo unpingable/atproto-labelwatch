@@ -5,6 +5,7 @@ This runner never selects or opens production state. Dispatch supplies exact
 source identity, occurrence ceiling and independent host reserves.
 """
 import argparse
+from contextlib import closing
 import datetime as dt
 import hashlib
 import json
@@ -99,7 +100,7 @@ def main(args):
         if done < args.events and cycle == done//12000000:
             raise RuntimeError('unexpected specimen row count')
     before = progress('WINDOW_RETAINED')
-    with connect(store.state, readonly=True) as c:
+    with closing(connect(store.state, readonly=True)) as c:
         counts = {name:c.execute('SELECT COUNT(*) FROM "'+name+'"').fetchone()[0]
                   for (name,) in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         physical = dict(page_count=c.execute('PRAGMA page_count').fetchone()[0],
@@ -114,7 +115,7 @@ def main(args):
     pre_expire = progress('BEFORE_EXPIRE')
     store.maintain(iso(after_time))
     after = progress('AFTER_EXPIRE')
-    with connect(store.state, readonly=True) as c:
+    with closing(connect(store.state, readonly=True)) as c:
         assert c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0] == 0
         assert c.execute('SELECT COUNT(*) FROM q_hot_keys').fetchone()[0] == 0
         assert c.execute('SELECT COUNT(*) FROM custody_archives').fetchone()[0] == 0
