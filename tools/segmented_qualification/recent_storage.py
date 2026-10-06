@@ -156,6 +156,22 @@ class RecentStore(Store):
             raise RuntimeError('recent archive must be owned by this new store')
         return super().archive(identity,dest,**kwargs)
 
+    def retire(self, identity, **kwargs):
+        allocated=super().retire(identity,**kwargs)
+        # The earned immutable membership index now owns replay identity.
+        # This cache need not grow with every day in the retained window.
+        # A crash before this transaction only retains extra cache entries;
+        # retrying verified retirement discharges the same owner safely.
+        with lock(self.root):
+            c=connect(self.state)
+            try:
+                self.require(c)
+                c.execute('BEGIN IMMEDIATE')
+                custody.expire_owner(c,identity)
+                c.commit()
+            finally:c.close()
+        return allocated
+
     def frontier(self):
         c=connect(self.state,readonly=True)
         try:
@@ -232,7 +248,10 @@ class RecentStore(Store):
                 c.execute('DELETE FROM q_recent_gaps WHERE end<=?',(plan['start'],))
                 db.set_meta(c,'q:recent_events',str(c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]))
                 for table in DERIVED:c.execute(f'DELETE FROM {table}')
-                c.execute('DELETE FROM labelers WHERE labeler_did NOT IN (SELECT DISTINCT labeler_did FROM q_recent_seen)')
+                # Discovery and configured-source enrollment outlive observed
+                # event expiry. Preserve their sticky endpoint/probe state;
+                # the explicit 100k source cap refuses overflow. Retirement
+                # of a source needs its own operator rule, never event absence.
                 for key in ('start','end','clock'):db.set_meta(c,'q:recent_'+key,plan[key])
                 c.commit()
                 if death:death('after_recent_authority')

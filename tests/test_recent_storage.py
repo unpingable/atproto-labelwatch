@@ -86,3 +86,26 @@ def test_partial_owner_survives_full_thirty_day_cut(store):
     assert store.frontier()['start']=='2026-09-01T00:00:00.000000Z'
     assert (store.root/'archive/2026-09-01.parquet').exists()
     with RecentProvider(store).snapshot('did:plc:subject','2026-09-01T00:00:00Z','2026-09-01T00:02:00Z',10) as result:assert len(result['rows'])==1
+
+def test_retirement_discharges_hot_identity_cache_preserving_replay(store):
+    seed(store);store.rotate('2026-10-01');store.archive('2026-09-01');store.retire('2026-09-01')
+    with connect(store.state) as c:
+        assert c.execute('SELECT COUNT(*) FROM q_hot_keys').fetchone()[0]==0
+        assert c.execute("SELECT n FROM q_recent_counts WHERE name='q_hot_keys'").fetchone()[0]==0
+        assert c.execute('SELECT COUNT(*) FROM custody_archives').fetchone()[0]==1
+    result=store.ingest([event()],'source','opaque2','2026-10-01T00:00:00Z')
+    assert result['inserted']==0 and result['duplicate_ids']==[1]
+    # Verified idempotent retirement can resume a previously completed transfer.
+    assert store.retire('2026-09-01')==0
+
+def test_discovered_source_without_events_survives_event_expiry(store):
+    archive(store)
+    with connect(store.state) as c:
+        storage.db.upsert_labeler(c,'did:plc:new-discovery','2026-09-01T00:00:00Z')
+        c.execute("UPDATE labelers SET service_endpoint='https://fixture.invalid',declared_record=1 WHERE labeler_did='did:plc:new-discovery'")
+    store.maintain('2026-10-02T00:00:00Z')
+    with connect(store.state) as c:
+        row=c.execute("SELECT service_endpoint,declared_record FROM labelers WHERE labeler_did='did:plc:new-discovery'").fetchone()
+        assert tuple(row)==('https://fixture.invalid',1)
+        assert c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]==0
+        store.caps(c)
