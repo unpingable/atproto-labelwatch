@@ -1,6 +1,6 @@
 # Campaign disposition — bounded recent-observation #7
 
-The [approved product contract](LABELWATCH-SEGMENTED-DECISION.md#approved-product-contract--october-6-2026) governs future work. Production remains held; no new runtime acceptance or migration is claimed. Select one measured30–45day service window, qualify account UX and public bounded snapshot exports, all-state lifetimes, catalog bounds and physical retirement/peak recovery space. Future indefinite archival is not required; existing archives and earned custody evidence remain preserved.
+The [approved product contract](LABELWATCH-SEGMENTED-DECISION.md#approved-product-contract--october-6-2026) governs future work. Production remains held; scoped off-production acceptance is recorded below, with no production runtime or migration acceptance. Select one measured30–45day service window, qualify account UX and public bounded snapshot exports, all-state lifetimes, catalog bounds and physical retirement/peak recovery space. Future indefinite archival is not required; existing archives and earned custody evidence remain preserved.
 
 New or changed acceptance must exercise window edges/late arrivals, explicit gaps, observed-versus-current-state wording, summary/export agreement, public-data allowlisting, paginated snapshot consistency under ingest/retirement, finite export leases and expired-cursor refusal, repeated physical reclamation, and the selected N-day workload/query/capacity envelope. Reuse prior cases only where assumptions match. Off-production producers are authorized now under their own resource admission. Production migration/activation remains separately gated; old hold prerequisites do not block successor engineering.
 
@@ -18,14 +18,18 @@ receipts, not deployment acceptance. Integration/storage owner: root, run
 | Repeated window retirement | 90-day/9,000-event run `5d84177c` at `1b33724`, independently accepted: days 35–89 stayed at 130 files and 2,371,584 allocated bytes; partial boundary preserved its owner while expiring exact events |
 | Interrupted collection | Real local cgroup control `c82d6954` at `1f4bf35`: 45-second deadline plus five-second TERM grace killed the blocked job and resistant child; exact-source restart recorded an unknown gap and refused stale attempt authority |
 | Dense public export | Independent `18cfd0ef` at `0b1d032`: 1,207 identical-time events, bounded pages, fixed upper ID, independent terminal count/hash, retry parity, explicit TTL/retirement refusal; no generation lease across requests |
-| Account view | Summary, readable timeline, attribution, labeled filters and gaps; expert rows secondary. Observations never imply current effective state. Public signature inclusion is a subsequent bounded projection change, not a signature-verification claim |
-| Current-volume measurement | New 12M occurrence `4d8b4100` uses sealed `657abb7` source, the retained specimen and a 32 GiB local experimental ceiling; result pending. It does not include later v4 sidecar fixes or newer export UI |
+| Account view | Summary, timeline, attribution, filters, gaps and complete bounded download independently accepted at `95625bd` (`690674ee`); expert rows secondary. Public signatures are included without a verification claim; current effective state remains unknown |
+| Persisted collector scheduling | `b704064`: 62 focused controls and independent v5 transition checks (`9acb3cb1`); hot/warm/cold eligibility, bounded backoff, attempt/cursor fencing and restart fairness |
+| Charged workload | `425deeba`, independently reviewed (`6591f77a`): 584 sources, twenty sources at one event/second; actual SQLite processing charged to arrivals/deadlines. Startup debt peaked at 2,192 with a 205-second revisit; settled commits19.995/s versus arrivals19.973/s, final debt9. Zero inter-round idle; no real-network or installed-cadence claim |
+| Runtime dependencies | `0bada713`, independent `df82fe5a`: offline locked HTTP dependency closure, exact installed-file/source/interpreter identities, actual HTTP client with local substitute transport and real store; version preflight works with Python optimization enabled. Composite qualification runtime, not a standalone deployed environment |
+| Earlier volume prefix | `4d8b4100` on `657abb7` is **NOT_COMPLETED_OWNER_STOPPED**; independent disposition `44105048`. Last progress5.6M accepted/three daily retirements, sampledpeak4.365GB. No12M/final-query/expiry pass; partial state and evidence preserved |
+| Current full-window measurement | `c9f0144b` on sealed `02a3a5d`: target51,428,572 events over30days plus two retirement advances, durable6h limit/64GiB experiment ceiling. Tiny strict-normalization, actual-writer differential, duplicate-identity refusal and scratch/admission controls independently accepted (`416a8af7`). Full-volume result pending |
 
 The small-window run found and repaired daily lock-file accumulation, incomplete
 archive receipt retry, missing retirement-marker recovery and retired SQLite
 sidecars. v4 uses a stable archive lock and refuses old profile conversion;
 existing historical locks and production evidence were not deleted. The repaired
-small-volume plateau is not a substitute for measured-volume capacity.
+small-volume plateau is not a substitute for measured-volume capacity. v5 adds the separately qualified finite source scheduling state; no implicit migration of older profiles is accepted.
 
 The 30-day choice remains a candidate until the integrated steady-state and
 maintenance/recovery peak fit the admitted workload. Source-population and
@@ -43,7 +47,7 @@ recovered, and no migration, public activation or incident closure is claimed.
 Formalization consideration: source transition and lock-order inspection plus
 bounded negative controls cover the finite lifecycle claims above. The 90-day
 trace demonstrates its stated workload, not arbitrary-rate or arbitrary-reader
-behavior. The capacity proposition still needs measured-volume evidence. Exact
+behavior. Constructed fixture equivalence covers reachable post-flush state and independent input oracles; it does not establish runtime write atomicity or throughput. The charged scheduler test covers its stated finite latency/rate distribution, not arbitrary source churn or a deployment cadence. The capacity proposition still needs measured-volume evidence. Exact
 source, script and result hashes and independent acceptance are retained in the
 existing campaign registry; historical notices are immutable.
 
