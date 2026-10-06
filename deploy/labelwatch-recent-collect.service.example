@@ -15,6 +15,11 @@ EnvironmentFile=/etc/labelwatch-recent-qualified.env
 WorkingDirectory=/REPLACE_WITH_QUALIFIED_RELEASE/source
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONPATH=/REPLACE_WITH_QUALIFIED_RELEASE/source/src:/REPLACE_WITH_QUALIFIED_RELEASE/source
+# The qualified release must stage the recent extra plus the hash-locked HTTP
+# dependency closure. The architecture-only qualification venv lacks HTTP.
+# This presence/version gate precedes network work; artifact hashes remain part
+# of the separately accepted release receipt, not an implicit install action.
+ExecStartPre=/REPLACE_WITH_QUALIFIED_RELEASE/venv/bin/python -c "import importlib.metadata as m; expected={'httpx':'0.28.1','httpcore':'1.0.9','h11':'0.16.0','anyio':'4.15.1','certifi':'2026.7.22','idna':'3.19','typing-extensions':'4.16.0','duckdb':'1.4.3','pyarrow':'22.0.0'}; assert all(m.version(k)==v for k,v in expected.items()), 'unqualified dependency identity'"
 ExecStart=/REPLACE_WITH_QUALIFIED_RELEASE/venv/bin/python tools/segmented_qualification/recent_collect.py --store ${LABELWATCH_RECENT_STORE} --network --discover
 # Async HTTP deadlines do not bound OS DNS executor shutdown. This enclosing
 # process-group ceiling remains independent of transport cooperation. A killed
