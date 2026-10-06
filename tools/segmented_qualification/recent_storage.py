@@ -9,9 +9,11 @@ import datetime as dt
 import json
 import hashlib
 import sqlite3
+import uuid
 from pathlib import Path
 from storage import Store, owned, connect, lock, db, custody, ingest, sha, syncdir
 
+_UNSET = object()
 UTC = dt.timezone.utc
 EPOCH = dt.datetime(1970,1,1,tzinfo=UTC)
 TIMED = {'alerts':'ts', 'labeler_evidence':'ts', 'labeler_probe_history':'ts',
@@ -78,9 +80,9 @@ class RecentStore(Store):
                 PRIMARY KEY(start,end,reason));
             CREATE TABLE q_recent_counts(name TEXT PRIMARY KEY,n INTEGER NOT NULL,ceiling INTEGER NOT NULL);
             CREATE TABLE q_recent_sources(did TEXT PRIMARY KEY,endpoint TEXT,
-                provider_cursor TEXT,last_page TEXT,last_observed TEXT);
+                provider_cursor TEXT,last_page TEXT,last_observed TEXT,attempt_token TEXT,attempt_start TEXT);
             ''')
-            for key, value in {'version':'2','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
+            for key, value in {'version':'3','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
                                'end':iso(stamp),'generation':'0','clock':iso(stamp),'events':'0'}.items():
                 db.set_meta(c, 'q:recent_'+key, value)
             db.set_meta(c,'q:recent_start',iso(stamp-dt.timedelta(days=30)))
@@ -98,8 +100,8 @@ class RecentStore(Store):
         return cls(root)
 
     def require(self, c):
-        if db.get_meta(c,'q:recent_version') != '2':
-            raise RuntimeError('recent schema v2 enrollment required; old evidence preserved, no implicit conversion')
+        if db.get_meta(c,'q:recent_version') != '3':
+            raise RuntimeError('recent schema v3 enrollment required; old evidence preserved, no implicit conversion')
 
     def recover(self, c, death=None):
         self.require(c)
@@ -181,12 +183,17 @@ class RecentStore(Store):
                 return {'inserted':len(accepted),'accepted_ids':[x[0] for x in accepted], 'duplicate_ids':duplicates,'cursor':cursor}
             finally:c.close()
 
-    def remember_sources(self,rows,limit=2048):
+    def remember_sources(self,rows,limit=2048,request_cursor=_UNSET,next_cursor=_UNSET):
+        discovery=request_cursor is not _UNSET or next_cursor is not _UNSET
+        if discovery:
+            for value in (request_cursor,next_cursor):
+                if value is not None and (not isinstance(value,str) or len(value.encode())>4096):raise ValueError("discovery cursor bound")
         if not 0<limit<=2048 or len(rows)>limit:raise RuntimeError('source enrollment ceiling')
         with lock(self.root):
             c=connect(self.state)
             try:
                 self.recover(c);c.execute('BEGIN IMMEDIATE')
+                if discovery and db.get_meta(c,'q:recent_discovery_cursor')!=request_cursor:raise RuntimeError('discovery continuation changed')
                 for row in rows:
                     did,endpoint=row['did'],row.get('endpoint')
                     if not isinstance(did,str) or not did.startswith('did:') or len(did.encode())>1024:raise ValueError('invalid source DID')
@@ -195,7 +202,41 @@ class RecentStore(Store):
                     if old and old[0] and endpoint and old[0]!=endpoint:raise RuntimeError('source endpoint change requires explicit cursor reset')
                     c.execute('INSERT INTO q_recent_sources(did,endpoint) VALUES (?,?) ON CONFLICT(did) DO UPDATE SET endpoint=COALESCE(q_recent_sources.endpoint,excluded.endpoint)',(did,endpoint))
                 if c.execute('SELECT COUNT(*) FROM q_recent_sources').fetchone()[0]>limit:raise RuntimeError('source enrollment ceiling; no discovered source dropped')
+                if discovery:
+                    if next_cursor is None:c.execute("DELETE FROM meta WHERE key='q:recent_discovery_cursor'")
+                    else:db.set_meta(c,'q:recent_discovery_cursor',next_cursor)
                 self.caps(c,scan=False);c.commit()
+            finally:c.close()
+
+    def collector_discovery_cursor(self):
+        with connect(self.state,readonly=True) as c:
+            self.require(c)
+            return db.get_meta(c,'q:recent_discovery_cursor')
+
+    def begin_source_attempt(self,did,observed_at):
+        stamp=iso(clock(observed_at));token=str(uuid.uuid4())
+        with lock(self.root):
+            c=connect(self.state)
+            try:
+                self.recover(c);c.execute('BEGIN IMMEDIATE')
+                row=c.execute('SELECT attempt_token,attempt_start FROM q_recent_sources WHERE did=?',(did,)).fetchone()
+                if row is None:raise RuntimeError('source is not enrolled')
+                if stamp<db.get_meta(c,'q:recent_clock'):raise RuntimeError('observation clock regression')
+                if row[0]:
+                    if stamp<=row[1]:raise RuntimeError('pending attempt requires advancing recovery clock')
+                    self._record_gap(c,row[1],stamp,'unknown')
+                c.execute('UPDATE q_recent_sources SET attempt_token=?,attempt_start=? WHERE did=?',(token,stamp,did))
+                self.caps(c,scan=False);c.commit();return token
+            finally:c.close()
+
+    def finish_source_attempt(self,did,attempt_token):
+        with lock(self.root):
+            c=connect(self.state)
+            try:
+                self.recover(c);c.execute('BEGIN IMMEDIATE')
+                row=c.execute('SELECT attempt_token FROM q_recent_sources WHERE did=?',(did,)).fetchone()
+                if row is None or not attempt_token or row[0]!=attempt_token:raise RuntimeError('source attempt changed')
+                c.execute('UPDATE q_recent_sources SET attempt_token=NULL,attempt_start=NULL WHERE did=?',(did,));c.commit()
             finally:c.close()
 
     def collector_sources(self,limit):
@@ -228,7 +269,7 @@ class RecentStore(Store):
                 db.set_meta(c,'q:recent_last_source',row['did']);c.commit();return dict(row)
             finally:c.close()
 
-    def accept_page(self,rows,*,source,request_cursor,next_cursor,observed_at,death=None):
+    def accept_page(self,rows,*,source,request_cursor,next_cursor,observed_at,death=None,attempt_token=None):
         """Opaque provider continuation CAS; no manufactured upstream cursor.
 
         The last bounded page remembers its exact hashes after window expiry,
@@ -245,11 +286,14 @@ class RecentStore(Store):
             c=connect(self.state)
             try:
                 self.recover(c);c.execute('BEGIN IMMEDIATE')
-                current=c.execute('SELECT provider_cursor,last_page FROM q_recent_sources WHERE did=?',(source,)).fetchone()
+                current=c.execute('SELECT provider_cursor,last_page,attempt_token,attempt_start FROM q_recent_sources WHERE did=?',(source,)).fetchone()
                 if current is None:raise RuntimeError('source is not enrolled')
+                if current[2]!=attempt_token:raise RuntimeError('source attempt changed')
+                if current[3] and iso(stamp)<current[3]:raise RuntimeError('attempt clock regression')
                 previous=json.loads(current[1]) if current[1] else None
                 if previous==page:
-                    c.rollback();return {'inserted':0,'cursor':current[0],'replayed_page':True}
+                    c.execute('UPDATE q_recent_sources SET attempt_token=NULL,attempt_start=NULL WHERE did=?',(source,))
+                    c.commit();return {'inserted':0,'cursor':current[0],'replayed_page':True}
                 if current[0]!=request_cursor:raise RuntimeError('provider continuation changed; page refused')
                 # Guard the full payload digest as well as canonical source hash.
                 # Within retained custody, normal identity lookup checks payload.
@@ -259,7 +303,7 @@ class RecentStore(Store):
                 fresh=[row for row in rows if row[9] not in tail]
                 accepted,duplicates=self._stage_observations(c,fresh,stamp,death)
                 position=next_cursor if next_cursor is not None else request_cursor
-                c.execute('UPDATE q_recent_sources SET provider_cursor=?,last_page=?,last_observed=? WHERE did=?',(position,json.dumps(page,sort_keys=True),iso(stamp),source))
+                c.execute('UPDATE q_recent_sources SET provider_cursor=?,last_page=?,last_observed=?,attempt_token=NULL,attempt_start=NULL WHERE did=?',(position,json.dumps(page,sort_keys=True),iso(stamp),source))
                 self.caps(c,scan=False)
                 if death:death('before_recent_ingest_commit')
                 c.commit()
@@ -298,20 +342,22 @@ class RecentStore(Store):
             return {k:db.get_meta(c,'q:recent_'+k) for k in ('start','end','generation')}
         finally:c.close()
 
-    def record_gap(self,start,end,reason):
+    def _record_gap(self,c,start,end,reason):
         start,end=iso(clock(start)),iso(clock(end))
         if start>=end or reason not in ('ingest_paused','source_unavailable','cursor_reset','maintenance','unknown','warmup'):raise ValueError('invalid bounded gap')
+        start=max(start,db.get_meta(c,'q:recent_start'))
+        if start>=end:return
+        if c.execute('SELECT 1 FROM q_recent_gaps WHERE start=? AND end=? AND reason=?',(start,end,reason)).fetchone():return
+        if c.execute('SELECT COUNT(*) FROM q_recent_gaps').fetchone()[0]>=128:
+            db.set_meta(c,'q:recent_gap_overflow','1')
+        else:c.execute('INSERT INTO q_recent_gaps VALUES(?,?,?)',(start,end,reason))
+
+    def record_gap(self,start,end,reason):
         with lock(self.root):
             c=connect(self.state)
             try:
-                self.recover(c)
-                floor=db.get_meta(c,'q:recent_start');start=max(start,floor)
-                if start>=end:return
-                if c.execute('SELECT 1 FROM q_recent_gaps WHERE start=? AND end=? AND reason=?',(start,end,reason)).fetchone():return
-                if c.execute('SELECT COUNT(*) FROM q_recent_gaps').fetchone()[0]>=128:
-                    db.set_meta(c,'q:recent_gap_overflow','1')
-                else:c.execute('INSERT INTO q_recent_gaps VALUES(?,?,?)',(start,end,reason))
-                c.commit()
+                self.recover(c);c.execute('BEGIN IMMEDIATE')
+                self._record_gap(c,start,end,reason);c.commit()
             finally:c.close()
 
     def maintain(self, now, archive=None, death=None):

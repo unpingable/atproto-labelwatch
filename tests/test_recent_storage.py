@@ -118,7 +118,7 @@ def test_v2_exact_integer_clock_and_v1_refusal(store):
     with connect(store.state) as c:
         assert [r[1] for r in c.execute('PRAGMA table_info(q_recent_seen)')]==['event_id','owner_day','observed_us','target_did']
         storage.db.set_meta(c,'q:recent_version','1')
-    with pytest.raises(RuntimeError,match='schema v2'):store.frontier()
+    with pytest.raises(RuntimeError,match='schema v3'):store.frontier()
 
 def test_maximum_clock_refuses_without_acceptance(store):
     # Year9999 is representable, but no half-open exclusive successor exists.
@@ -167,3 +167,31 @@ def test_collector_atomic_page_recovery(store,phase):
         assert c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]==1
         assert c.execute('SELECT COUNT(*) FROM q_pending').fetchone()[0]==0
         assert store.collector_cursor('did:plc:labeler')=='next'
+
+def test_attempt_restart_gap_and_obsolete_response_cas(store):
+    did='did:plc:labeler';store.remember_sources([{'did':did}])
+    old=store.begin_source_attempt(did,'2026-09-01T00:01:00Z')
+    reopened=RecentStore(store.root)
+    token=reopened.begin_source_attempt(did,'2026-09-01T00:02:00Z')
+    with pytest.raises(RuntimeError,match='attempt changed'):store.finish_source_attempt(did,old)
+    with pytest.raises(RuntimeError,match='attempt changed'):
+        store.accept_page([event()],source=did,request_cursor=None,next_cursor=None,observed_at='2026-09-01T00:02:00Z',attempt_token=old)
+    result=store.accept_page([event()],source=did,request_cursor=None,next_cursor=None,observed_at='2026-09-01T00:02:00Z',attempt_token=token)
+    assert result['inserted']==1
+    token=store.begin_source_attempt(did,'2026-09-01T00:03:00Z')
+    assert store.accept_page([event()],source=did,request_cursor=None,next_cursor=None,observed_at='2026-09-01T00:03:00Z',attempt_token=token)['replayed_page']
+    with connect(store.state) as c:
+        assert tuple(c.execute('SELECT start,end,reason FROM q_recent_gaps').fetchone())==('2026-09-01T00:01:00.000000Z','2026-09-01T00:02:00.000000Z','unknown')
+        assert c.execute('SELECT attempt_token FROM q_recent_sources').fetchone()[0] is None
+
+def test_discovery_continuation_atomic_roster_and_terminal_reset(store):
+    assert store.collector_discovery_cursor() is None
+    store.remember_sources([{'did':'did:plc:a'}],request_cursor=None,next_cursor='opaque')
+    with pytest.raises(RuntimeError,match='continuation changed'):
+        store.remember_sources([{'did':'did:plc:b'}],request_cursor=None,next_cursor='bad')
+    with pytest.raises(RuntimeError,match='enrollment ceiling'):
+        store.remember_sources([{'did':'did:plc:b'}],limit=1,request_cursor='opaque',next_cursor=None)
+    assert store.collector_discovery_cursor()=='opaque'
+    assert store.collector_sources(2)==[{'did':'did:plc:a','endpoint':None}]
+    store.remember_sources([{'did':'did:plc:b'}],request_cursor='opaque',next_cursor=None)
+    assert store.collector_discovery_cursor() is None
