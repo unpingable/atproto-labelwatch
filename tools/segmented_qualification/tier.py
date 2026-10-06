@@ -39,28 +39,130 @@ def tier_queries(store):
 
 
 class VerifiedCatalog:
-    """Startup SHA admission; immutable fingerprints on request, like current cold catalog.
+    """Derived indexed reader admission; custody remains the authority.
 
-    Scope: one archive custodian, no conforming mutation after publication.
-    Unexpected replacement/content mutation refuses until a fresh admission.
-    Scheduled full integrity audits remain separate; stat is not a bit-rot proof.
+    Admit one committed candidate with one digest check. Existing payloads are
+    never scanned by admission or startup. Full integrity audit is explicit.
+    Immutable fingerprint checks on selected query files retain fail-closed
+    replacement/mutation behavior; fingerprints are not a bit-rot proof.
     """
     @staticmethod
     def fingerprint(path):
         st=Path(path).stat();return (st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns)
-    def __init__(self,archive):
-        self.archive=Path(archive);self.entries=[]
-        for path in sorted(self.archive.glob('*.receipt.json')):
-            receipt=json.loads(path.read_text());output=self.archive/(receipt['identity']+'.parquet')
-            before=self.fingerprint(output)
-            if sha(output)!=receipt['parquet_sha256'] or before!=self.fingerprint(output):raise RuntimeError('archive integrity/admission failed')
-            self.entries.append((receipt['identity'],output,before,path,self.fingerprint(path)))
-    def files(self):
+
+    def __init__(self,archive,store=None):
+        self.archive=Path(archive)
+        # Actual reader/writer stores keep mutable metadata on local storage,
+        # independent of archive NFS. The default is for local fixtures only.
+        root=store.root if store is not None else self.archive
+        self.path=root/('reader-catalog-'+__import__('hashlib').sha256(str(self.archive.resolve()).encode()).hexdigest()[:16]+'.sqlite')
+        with self.connection() as c:
+            c.executescript('''
+            CREATE TABLE IF NOT EXISTS entries(
+                identity TEXT PRIMARY KEY, receipt_path TEXT NOT NULL,
+                receipt_json TEXT NOT NULL, parquet_sha256 TEXT NOT NULL,
+                output_stamp TEXT NOT NULL, receipt_stamp TEXT NOT NULL,
+                min_ts TEXT, max_ts TEXT);
+            CREATE INDEX IF NOT EXISTS entries_time ON entries(min_ts,max_ts,identity);
+            ''')
+
+    @contextlib.contextmanager
+    def connection(self):
+        c=sqlite3.connect(self.path,timeout=30)
+        c.execute('PRAGMA journal_mode=WAL');c.execute('PRAGMA synchronous=FULL')
+        c.execute('PRAGMA cache_size=-2048')
+        try:
+            yield c
+            c.commit()
+        except BaseException:
+            c.rollback();raise
+        finally:c.close()
+
+    def admit(self,authority,identity,death=None,require_published=True):
+        """PK lookup of committed receipt, then bounded candidate-only work."""
+        if authority.in_transaction:
+            raise RuntimeError('reader admission requires committed custody outside staging')
+        row=authority.execute('SELECT receipt,receipt_json FROM custody_archives WHERE identity=?',(identity,)).fetchone()
+        if row is None:raise RuntimeError('reader admission requires committed custody owner')
+        path=Path(row[0]);receipt=json.loads(row[1]);output=self.archive/(identity+'.parquet')
+        if receipt['identity']!=identity or Path(receipt['archive_root']).resolve()!=self.archive.resolve() or path.resolve()!=(self.archive/(identity+'.receipt.json')).resolve():
+            raise RuntimeError('catalog candidate namespace/identity mismatch')
+        receipt_stamp=self.fingerprint(path) if path.exists() else None
+        if receipt_stamp is None and require_published:
+            raise RuntimeError('committed receipt publication incomplete/conflicting')
+        if receipt_stamp is not None and (json.loads(path.read_text())!=receipt or receipt_stamp!=self.fingerprint(path)):
+            raise RuntimeError('committed receipt publication incomplete/conflicting')
+        stamp=self.fingerprint(output)
+        with self.connection() as c:
+            old=c.execute('SELECT receipt_json,parquet_sha256,output_stamp,receipt_stamp FROM entries WHERE identity=?',(identity,)).fetchone()
+            if old:
+                if old[:2]!=(row[1],receipt['parquet_sha256']):
+                    raise RuntimeError('catalog identity conflicts with committed custody')
+                if tuple(json.loads(old[2]))==stamp:
+                    if json.loads(old[3])!=(list(receipt_stamp) if receipt_stamp else None):
+                        c.execute('UPDATE entries SET receipt_stamp=? WHERE identity=?',(json.dumps(receipt_stamp),identity))
+                    return {'identity':identity,'payload_hash_calls':0,'payload_bytes_read':0,'duplicate':True}
+            if sha(output)!=receipt['parquet_sha256'] or stamp!=self.fingerprint(output):
+                raise RuntimeError('archive integrity/admission failed')
+            import pyarrow.parquet as pq
+            pf=pq.ParquetFile(output);schema=pf.schema_arrow
+            if (schema.metadata or {}).get(b'labelwatch.segment_identity')!=identity.encode():
+                raise RuntimeError('archive identity metadata conflicts with custody')
+            if pf.metadata.num_rows!=receipt['content']['rows']:
+                raise RuntimeError('archive row count conflicts with custody')
+            column=schema.get_field_index('ts');lo=[];hi=[]
+            if column<0:raise RuntimeError('archive time column unavailable')
+            for i in range(pf.metadata.num_row_groups):
+                stats=pf.metadata.row_group(i).column(column).statistics
+                if stats and stats.has_min_max:lo.append(stats.min);hi.append(stats.max)
+                elif pf.metadata.row_group(i).num_rows:raise RuntimeError('archive range metadata unavailable')
+            if stamp!=self.fingerprint(output) or receipt_stamp!=(self.fingerprint(path) if path.exists() else None):
+                raise RuntimeError('catalog candidate changed during admission')
+            c.execute('BEGIN IMMEDIATE')
+            c.execute('INSERT OR REPLACE INTO entries VALUES(?,?,?,?,?,?,?,?)',
+                      (identity,str(path),row[1],receipt['parquet_sha256'],json.dumps(stamp),json.dumps(receipt_stamp),min(lo) if lo else None,max(hi) if hi else None))
+            if death:death('before_catalog_commit')
+        if death:death('after_catalog_commit')
+        return {'identity':identity,'payload_hash_calls':1,'payload_bytes_read':stamp[2],'duplicate':False}
+
+    @property
+    def entries(self):
+        with self.connection() as c:rows=c.execute('SELECT identity,receipt_path,output_stamp,receipt_stamp FROM entries ORDER BY identity').fetchall()
+        return [(identity,self.archive/(identity+'.parquet'),tuple(json.loads(stamp)),Path(path),tuple(json.loads(receipt_stamp)) if json.loads(receipt_stamp) else None) for identity,path,stamp,receipt_stamp in rows]
+
+    def lookup(self,identity):
+        with self.connection() as c:return c.execute('SELECT identity,receipt_path,min_ts,max_ts FROM entries WHERE identity=?',(identity,)).fetchone()
+
+    def validate_binding(self,identity,receipt):
+        with self.connection() as c:row=c.execute('SELECT receipt_json,parquet_sha256 FROM entries WHERE identity=?',(identity,)).fetchone()
+        if row is None or json.loads(row[0])!=receipt or row[1]!=receipt['parquet_sha256']:
+            raise RuntimeError('catalog derived binding conflicts with committed custody')
+
+    def files(self,start=None,end=None):
+        with self.connection() as c:
+            where=[];args=[]
+            if start is not None:where.append('max_ts>=?');args.append(start)
+            if end is not None:where.append('min_ts<?');args.append(end)
+            rows=c.execute('SELECT identity,receipt_path,output_stamp,receipt_stamp,receipt_json FROM entries'+(' WHERE '+' AND '.join(where) if where else '')+' ORDER BY identity',args).fetchall()
         answer=[]
-        for identity,output,stamp,receipt,receipt_stamp in self.entries:
-            if self.fingerprint(output)!=stamp or self.fingerprint(receipt)!=receipt_stamp:raise RuntimeError('catalog immutable identity changed; explicit readmission required')
+        for identity,path,stamp,receipt_stamp,expected in rows:
+            output=self.archive/(identity+'.parquet')
+            if self.fingerprint(output)!=tuple(json.loads(stamp)):
+                raise RuntimeError('catalog immutable identity changed; explicit readmission required')
+            observed=self.fingerprint(path);prior=json.loads(receipt_stamp)
+            if (prior is None or observed!=tuple(prior)) and (json.loads(Path(path).read_text())!=json.loads(expected) or observed!=self.fingerprint(path)):
+                raise RuntimeError('committed receipt publication incomplete/conflicting')
             answer.append((identity,output))
         return answer
+
+    def full_audit(self):
+        count=total=0
+        with self.connection() as c:rows=c.execute('SELECT identity,parquet_sha256 FROM entries ORDER BY identity').fetchall()
+        for identity,expected in rows:
+            path=self.archive/(identity+'.parquet');stamp=self.fingerprint(path)
+            if sha(path)!=expected or stamp!=self.fingerprint(path):raise RuntimeError('full historical integrity audit failed')
+            total+=stamp[2];count+=1
+        return {'objects':count,'payload_bytes_read':total,'scope':'Explicit full historical integrity audit; never implicit admission'}
 
 
 class Row(dict):
@@ -88,7 +190,7 @@ class TierSession:
         self.floor=None if self.all_history else retention.live_floor(self.sqlite)
         paths=[];identities=set()
         try:
-            catalog=self.catalog or VerifiedCatalog(self.archive)
+            catalog=self.catalog or VerifiedCatalog(self.archive,store=self.store)
             if catalog.archive.resolve()!=self.archive.resolve():raise RuntimeError('catalog namespace mismatch')
             committed = {owner: (path, receipt) for owner,path,receipt in custody.committed(self.sqlite)}
             for identity,status in records:
@@ -97,6 +199,7 @@ class TierSession:
             for identity,output in catalog.files():
                 if identity not in committed: continue  # Orphan receipt is never authority.
                 path, expected_receipt = committed[identity]
+                catalog.validate_binding(identity,expected_receipt)
                 if not path.exists() or json.loads(path.read_text()) != expected_receipt:
                     raise RuntimeError('committed receipt publication incomplete/conflicting')
                 if identity in identities:raise RuntimeError('duplicate catalog identity')

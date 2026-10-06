@@ -302,6 +302,10 @@ class Store:
         if not source.exists():
             if record[0] != 'RETIRED' or not receipt.exists() or sha(output) != json.loads(receipt.read_text())['parquet_sha256']:
                 raise RuntimeError('retired custody cannot be established')
+            from tier import VerifiedCatalog
+            authority=connect(self.state)
+            try:VerifiedCatalog(destination,store=self).admit(authority,identity)
+            finally:authority.close()
             return json.loads(receipt.read_text())
         # Preflight capacity and actual bounded I/O before expensive conversion.
         need = source.stat().st_size * 2 + 1048576
@@ -362,9 +366,13 @@ class Store:
             c.execute('INSERT OR REPLACE INTO q_archive VALUES (?,?)', (identity, str(receipt)))
             c.execute("UPDATE q_segments SET status='ARCHIVED' WHERE identity=?", (identity,))
             c.commit()
+            from tier import VerifiedCatalog
+            VerifiedCatalog(destination,store=self).admit(c,identity,require_published=False)
             cut(death, 'after_archive_commit_before_receipt')
             if not receipt.exists(): atomic(receipt, result)
             cut(death, 'after_receipt_before_ack')
+            from tier import VerifiedCatalog
+            VerifiedCatalog(destination,store=self).admit(c,identity)
         finally: c.close()
         cut(death, 'after_checkpoint_before_retirement')
         return result
@@ -377,9 +385,9 @@ class Store:
                 self.recover(c)
                 record = c.execute('SELECT status FROM q_segments WHERE identity=?', (identity,)).fetchone()
                 if not record or record[0] not in ('ARCHIVED', 'RETIRED'): raise RuntimeError('unverified retirement refused')
-                authority = {owner:(path, body) for owner,path,body in custody.committed(c)}
-                if identity not in authority: raise RuntimeError('retirement requires committed custody authority')
-                receipt_path, receipt = authority[identity]
+                authority = c.execute('SELECT receipt,receipt_json FROM custody_archives WHERE identity=?',(identity,)).fetchone()
+                if authority is None: raise RuntimeError('retirement requires committed custody authority')
+                receipt_path, receipt = Path(authority[0]), json.loads(authority[1])
                 if json.loads(Path(receipt_path).read_text()) != receipt: raise RuntimeError('retirement receipt projection conflict')
                 custody.verify_index(receipt)
                 dest = Path(receipt['archive_root']) / (identity + '.parquet')

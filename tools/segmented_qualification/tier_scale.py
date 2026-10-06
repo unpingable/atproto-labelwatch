@@ -23,7 +23,7 @@ def main(occurrence,primary):
     for i in range(100):
         raw={'src':p['labeler'],'uri':'at://'+p['dense']+'/app.bsky.feed.post/cross-'+str(i),'val':'cross-tier','ts':'2026-10-05T12:00:00Z'};r=ingest.normalize_label(raw);rows.append(tuple(getattr(r,k) for k in ['labeler_did','src','uri','cid','val','neg','exp','sig','ts','event_hash'])+(p['dense'],))
     assert s.ingest(rows,'fixture-cross-tier','100')['inserted']==100
-    admission_start=time.perf_counter();catalog=VerifiedCatalog(archive);startup_checksum_seconds=time.perf_counter()-admission_start
+    admission_start=time.perf_counter();catalog=VerifiedCatalog(archive,store=s);startup_checksum_seconds=time.perf_counter()-admission_start
     measures={}
     for name,subject in [('dense',p['dense']),('sparse',p['sparse'])]:
         times=[];admissions=[]

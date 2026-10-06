@@ -3,7 +3,7 @@ from pathlib import Path
 import sys,json,datetime as dt
 from storage import Store,connect,db,atomic,sha
 from qualify import event,child
-from tier import TierSession
+from tier import TierSession,VerifiedCatalog
 
 def main(out):
  out=Path(out);out.mkdir();s=Store.create(out/'store');archive=out/'archive';archive.mkdir();start=dt.date(2026,9,28);cases=[]
@@ -27,7 +27,10 @@ def main(out):
     with TierSession(s,archive,include_below_floor=True) as q:q.execute('SELECT COUNT(*) FROM label_events').fetchone()
    except (RuntimeError,OSError) as e:cases.append({'case':'pruned_history_missing_'+suffix,'result':'PASS_REFUSAL','error':repr(e)})
    else:raise AssertionError('missing historical custody silently omitted')
-  finally:saved.rename(path)
+  finally:
+   saved.rename(path)
+   if suffix=='.parquet':
+    c=connect(s.state);VerifiedCatalog(archive,store=s).admit(c,'2026-09-28');c.close()
  previous=coverage.read_bytes();coverage.write_text('{}')
  try:
   try:
