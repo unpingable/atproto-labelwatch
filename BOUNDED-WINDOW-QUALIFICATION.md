@@ -184,3 +184,51 @@ compaction overlap; it is an estimate, not a required or admitted full legacy
 import. Intra-operation allocation peaks were not continuously instrumented.
 Exact dispatch, source/script hashes and result/custody receipts remain under
 `runtime/global-ten-percent-a48310eb-b6e1-49c2-bb21-4b36b2cf0a15`.
+
+
+## Compact-index independent review (October 6, f4e818d)
+
+The 100k occurrence `41a043fa-f25a-457c-84f4-7436afe732f5` passed its stated
+prefix/expiry checks: sampled occurrence peak 139,513,856 B, pre-expiry
+76,992,512 B, post-expiry 614,400 B. This supersedes the old 220.90 B/event
+lookup estimate for the new source only. Three compact lookup objects occupy
+12,890,112 B (128.90112 B/event); active hot-key objects occupy 33,275,904 B
+(332.75904 B/event). After sealing, hot objects shrink to 16 KiB but state
+remains 47,624,192 B with 34,181,120 B on the freelist. Reusable pages are not
+filesystem release. No daily boundary occurred in this 100k prefix; repeated
+daily reuse, fragmentation and compaction overlap still require measurement.
+
+| Estimated workload | Lookup bytes | One active day hot bytes | Sum | Remaining below 8 GiB |
+| --- | ---: | ---: | ---: | ---: |
+| 41,845,758 events / measured-rate 30 days | 5,393,965,073 | 464,151,809 | 5,858,116,882 | 2,731,817,710 |
+| 51,428,572 events / stress 30 days | 6,629,200,531 | 570,444,075 | 7,199,644,606 | 1,390,289,986 |
+| 12M events / seven-day stress stage | 1,546,813,440 | 570,444,069 | 2,117,257,509 | 6,472,677,083 |
+
+These are prefix slopes, not bounds or acceptance. They exclude sticky source
+roster, evidence, pending attempts, catalog metadata, freelist fragmentation,
+WAL and filesystem compaction overlap. State-file cap and WAL cap are distinct.
+The current prefix has zero q_recent_sources and does not exercise collector
+pending-attempt/discovery state. An additional full active day costs roughly
+570 MB at the stress rate; delayed sealing must not silently consume the
+remaining 30-day margin. Independent collector finite qualification and its
+source seal must precede reliance on the new writer graph.
+
+The justified next measurement is the existing 12M specimen streamed once,
+with daily seal/retire, bounded queries/exports and final expiry. Request a
+**32 GiB maximum new occurrence envelope**, subject to root's fresh aggregate
+admission and both 60 GiB host reserves; this is a conservative experiment
+ceiling, not projected production usage. The 100k sampled occurrence scaled
+linearly is about 16.74 GB, while daily cache reuse should reduce it; doubling
+roughly accommodates transition uncertainty. Existing pre-transition admission
+reserves twice current SQLite logical bytes without reclaim credit. Retain that
+check and refuse the run if it cannot fit; do not silently raise the ceiling.
+Record global page count/freelist and all-store allocated bytes at each daily
+boundary, archive/index bytes and transition peaks. A sampled maximum is not a
+continuous maximum. Preserve the existing durable execution/checkpoint chain;
+root must separately admit runtime limits if 7200 seconds is insufficient.
+
+A successful 12M run earns its seven-day synthetic workload only. Full-volume
+30-day and repeated-window plateau remain unmeasured. No additional dictionary
+or engine change is justified solely by the 100k slope; inspect the next measured
+object distribution and fragmentation first. The existing independent lease
+qualification remains applicable only within its exact source/assumption scope.
