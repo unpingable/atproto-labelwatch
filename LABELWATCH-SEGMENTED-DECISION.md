@@ -1,3 +1,112 @@
+# Labelwatch bounded recent-observation product — existing #7
+
+## Approved product contract — October 6, 2026
+
+Labelwatch is a bounded recent-observation service, not an indefinite-history
+custody service. This owner-approved contract governs existing #7 and supersedes
+conflicting prospective requirements in the historical record below. Existing
+archives, sealed receipts, qualified custody work and earned evidence remain
+preserved; this amendment authorizes no historical evidence deletion.
+
+1. **One service window.** Select exactly N days, 30 <= N <= 45, from measured
+   capacity and operational margin. Record the choice and admission evidence;
+   do not choose N merely because a prior fixture used40days. A shorter UI
+   default and a smaller indexed hot tier may coexist with the one exact
+   query/export window. Define window boundaries, observation versus source
+   timestamps, late arrivals and clock behavior explicitly. Outside-window
+   requests receive an explicit out-of-window response, not apparent empty
+   completeness. Gaps remain visible; never synthesize observation continuity.
+   Window first, optimization second: N is the guaranteed service window subject
+   to disclosed observation gaps, not a promise that every source was observed.
+   Longer history may be explicitly best-effort only within a separate measured
+   resource cap; its presence never expands the guarantee or delays retirement.
+   A future larger guaranteed window is an earned capacity improvement requiring
+   qualification, explicit publication and the applicable semantic-change gate.
+   No90day implementation or speculative expansion is admitted now.
+2. **Account-centered product.** Deliver summary, timeline, filters, attribution,
+   coverage gaps and Export this period. Retain the raw event/table view as a
+   secondary expert surface. Summary counts and timelines must share the same
+   coverage and window semantics as exports. Observed application/removal events
+   are distinct from qualified current state. Absence of an observed removal
+   does not establish still active; older state needs qualified evidence or an
+   explicit unknown. No indefinite effective-state ledger is implied.
+3. **Bounded public export.** Expose intentionally public observations within N
+   days, never internal probes, quarantine, operational evidence or arbitrary
+   tables. Bind every export to a consistent snapshot/frontier across pages,
+   requested interval, actual coverage/gaps, schema/version and content identity.
+   Define completeness/count/terminal semantics and unambiguous expiry/refusal.
+   Use bounded lifetimes, concurrency, bytes and retry/resource budgets. An
+   export cannot extend its generation lease indefinitely; slow/expired exports
+   terminate explicitly without silently switching snapshots. Expiration and
+   physical retirement must be coordinated. No indefinite download hosting.
+4. **Finite production obligation.** Preserve historical archives already in
+   custody. Future indefinite archival is not a production requirement, nor a
+   prerequisite for expiring future observations under an accepted lifecycle.
+   User exports transfer retention responsibility; production need not track
+   their perpetual custody. Optional older aggregates must justify their
+   semantics and explicit lifetime/capacity bound. A separate research archive
+   is outside this work unless required and separately scoped.
+5. **All-state bounds and physical retirement.** Inventory every persistent
+   state family, including indexes, cursors/replay authority, identities, gaps,
+   catalog metadata, receipts, logs, caches, summaries and export leases/jobs.
+   Assign a measured lifetime/cardinality/byte rule and exhaustion behavior.
+   Finite days with unbounded ingest or identities is not finite space. Prove
+   repeated whole-unit/generation retirement returns filesystem blocks, with
+   descriptor/link/dependency checks. Bound steady-state and peak WAL,
+   checkpoint, export, compaction, query spill, interruption/recovery and
+   overlapping source/successor/rollback generations per filesystem. Preserve
+   admitted reserves and other tenants. Reuse existing candidate/custody work;
+   no new engine comparison absent a concrete hard requirement.
+
+## Execution and acceptance boundary
+
+The production safe hold remains in force. This message supplies explicit
+operator return and conditional continuation authority; it does not establish
+capacity or recovery readiness. Existing hold restart prerequisites are NOT_MET:
+last measured root31,438,950,400bytes is below32GiB; full maintenance/recovery
+peaks are unqualified. No new producer, migration, public service restart or
+retention-policy activation is admitted by this documentation amendment.
+
+Once documented prerequisites are satisfied, the integration owner continues
+existing #7 through implementation, independent qualification, migration
+planning and production readiness without another routine permission request.
+Do not remove hold guards to obtain a stability receipt. If prerequisites cannot
+be met within existing authority, retain the hold and report the specific
+boundary; do not start another capacity/architecture lane. The previous
+production-stability receipt remains an execution dependency, not something this
+product decision claims to have earned.
+
+One integration/storage owner coordinates bounded executors/reviewers and
+independent acceptance. Reconcile sealed producer04166ec3 and its checkpoint;
+never restart it. Reuse earned41-case custody and12M physical-reclamation
+results within their stated scope. Historical7-hot/40-history and47-day fixtures
+are evidence, not a mandatory new product window. Recompute only changed or
+missing qualification for measured N and its workload. Catalog repair independent
+acceptance, query scale and all-state resource proof remain unfinished.
+
+Escalate only material product-semantic changes, recurring cost/new paid
+capacity, destructive retirement of retained historical evidence outside an
+accepted lifecycle, or materially different production risk/availability.
+Existing archives do not become disposable because they exceed N. Migration
+plans must preserve exact rollback/recovery boundaries and disclose limits after
+successor writes; production readiness is not a migration receipt.
+
+## Formalization consideration
+
+Decision owner: existing #7 integration owner. Source baseline444d48a; this
+amendment changes requirements only. Durable propositions are bounded physical
+space under an admitted workload, snapshot consistency through concurrent
+retirement/expiry, and evidence-qualified claims across gaps. No new proof is
+claimed. On execution, prefer a small bounded state-transition model for export
+leases/retirement and interruption; bind assumptions to implementation and
+independent negative qualification cases. Practical prose/source review suffices
+for this requirements amendment. Tests/models must cover expired cursors,
+concurrent ingest, missing coverage, interrupted generation replacement, and
+non-extensible export lifetime; models alone do not establish measured capacity.
+
+<details>
+<summary>Historical decisions and qualification requirements — superseded where conflicting above</summary>
+
 # Labelwatch segmented-storage decision — parked continuation
 
 **PENDING — CONDITIONALLY AUTHORIZED AFTER PRODUCTION STABILITY.**
@@ -178,3 +287,5 @@ Emit ADOPT if all pass. Repair implementation defects within this candidate;
 reject architecture only for a required property that cannot be satisfied
 without materially changing it. No extra confidence-seeking campaign.
 Production mutations **NONE**; no migration, activation or destructive cleanup.
+
+</details>
