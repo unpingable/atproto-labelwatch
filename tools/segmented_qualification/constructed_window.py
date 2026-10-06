@@ -80,7 +80,11 @@ def table_image(store):
         for (table,) in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
             if table in ('custody_archives','q_archive'):continue  # Paths/timing differ; checked by independent content oracle.
             rows=[tuple(r) for r in c.execute('SELECT * FROM "'+table+'" ORDER BY rowid')]
-            if table=='meta':rows=[(k,'<fixture>' if k=='custody:lineage' else v) for k,v in rows]
+            if table=='meta':
+                acquisition=store.acquisition(c)  # Validate before normalizing only independent generation identity.
+                rows=[(k,'<fixture>' if k=='custody:lineage' else
+                       json.dumps({**acquisition,'generation_id':'<independent-generation>'},sort_keys=True)
+                       if k=='q:recent_acquisition' else v) for k,v in rows]
             result[table]=sorted(rows,key=repr)
         return result
 
@@ -91,6 +95,9 @@ def qualify(out):
     atomic(out/'CONSTRUCTION.json',{'state':'UNPUBLISHED','scope':'tiny differential only'})
     start=dt.datetime(2026,1,1,12,tzinfo=dt.timezone.utc)
     actual=RecentStore.create(storage.ROOT/'actual',iso(start));built=RecentStore.create(storage.ROOT/'constructed',iso(start))
+    identities=[s.frontier()['acquisition'] for s in (actual,built)]
+    assert identities[0]['generation_id']!=identities[1]['generation_id'],'independent acquisition generations'
+    assert [{k:v for k,v in item.items() if k!='generation_id'} for item in identities][0]=={k:v for k,v in identities[1].items() if k!='generation_id'},'equal acquisition schema/start/basis'
     source='did:plc:source';roster=[{'did':source,'endpoint':None}]
     for s in (actual,built):s.remember_sources(roster)
     next_id=1;expected=[];cursors=None;checks=[]
@@ -151,9 +158,9 @@ def qualify(out):
             assert not list((s.root/'archive').glob('*.parquet'))
         assert table_image(actual)==table_image(built)
     used=sum(p.stat().st_blocks*512 for p in out.rglob('*') if p.is_file());assert used<100*1024**2
-    result={'result':'PASS','constructed_events':600,'real_followup_events':1,'source_page_rows':100,'bulk_transaction_rows':200,'checks':checks,'allocated_bytes':used,
+    result={'result':'PASS','constructed_events':600,'real_followup_events':1,'source_page_rows':100,'bulk_transaction_rows':200,'checks':checks,'allocated_bytes':used,'acquisition_identities':identities,
             'public_oracle':'Independent input projection dense/sparse exact IDs,uri,value,source time,observation time',
-            'custody_oracle':'Input ordered complete FIELDS digest equals real archive receipt','state_oracle':'All non-path global tables and exactDDL/indexes equal; real archive/retire/maintain expires both',
+            'custody_oracle':'Input ordered complete FIELDS digest equals real archive receipt','state_oracle':'All non-path global tables and exactDDL/indexes equal after validated per-store acquisition UUID normalization only; real archive/retire/maintain expires both',
             'scope':'Constructed capacity correspondence only; not acceptance throughput, constructor crash recovery, full-volume capacity or empirical distribution',
             'next':'Independent review before admitting a specimen-driven larger constructed fixture'}
     atomic(out/'RESULT.json',result);atomic(out/'CONSTRUCTION.json',{'state':'QUALIFIED_TINY','events':600});return result
