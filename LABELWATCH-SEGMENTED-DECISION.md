@@ -1,46 +1,34 @@
-# Labelwatch segmented-storage decision — reopened October5 horizon lane
+# Labelwatch segmented-storage decision — parked continuation
 
-`REJECT_SEGMENTED_SQLITE_PARQUET_DUCKDB`
+**PENDING — PAUSED BY OPERATOR. No new architecture verdict.**
 
-Exercised source `6a88178f8d30fed13c582acccd532128c6b306ce`;
-root run `28e39263-168f-46e7-8f22-25a7f29fc684`.
+Lane `lane/labelwatch-segmented-horizon-capacity-20261005`, existing
+[Labelwatch #7](https://github.com/unpingable/atproto-labelwatch/issues/7).
+Root run `39657c30-4728-4598-9f48-262bbf154a63`.
+Starting source `cae2d4b490a8ad852accbed21f33997e4b82841c`;
+repaired/exercised source `97b459d1f2cd9e8dbdc0422fafbeb53c41378e9a`.
 
-| Property | Decision evidence |
-|---|---|
-| Shared event identity/custody | QUALIFIED; unchanged from independently accepted 1fdfd028 / publication 6a88178 |
-| Long-history new-segment admission | FAIL: adding one owner requires a fresh catalog hashing all old/new Parquet |
-| Real committed-owner correspondence | Independent two-owner case: stale catalog refuses; fresh admission hashes both files and returns count 2 |
-| 40+7-day capacity / full 40-day queries | NOT_RUN after concrete required-gate failure; no acceptance inferred |
-| Prior rollover/reclamation/coverage/crash regressions | Preserved, unchanged implementation; not repeated |
+The prior catalog finding was a repairable implementation defect. Its
+architecture-level rejection is superseded as the current execution frontier;
+the exact counterexample and prior records remain evidence in Git at `cae2d4b`.
+No engine comparison is reopened. Shared custody remains qualified at `6a88178`.
 
-The disqualifying property is **new-segment admission cost tied to all historical
-payload bytes**. The requested gate explicitly disallows this dependency.
-At8,192 old identities, one admission invokes8,193 full file hashes; independent
-qualification confirms the same requirement in the actual custody/TierSession
-path with two real committed owners. Cached queries avoid full hashes but cannot
-admit newly committed history without reconstruction.
+| Gate | Current evidence | Remaining |
+|---|---|---|
+| 40+7-day all-global capacity | Complete21-table production scalar counts and aggregate shape profiles acquired read-only; macro specimen NOT_CREATED | Construct current-volume specimen and measure actual resource/growth bounds |
+| Full40-day current-volume queries | Prior accepted one-week/coverage evidence retained | Execute required complete-horizon query families |
+| Long-history catalog admission | Producer PASS at8192 existing /8193 total real committed archive identities: one candidate hash; zero duplicate/startup historical hashes | Targeted interruption/range/orphan/corrupt-entry controls and independent review |
 
-This rejects the current catalog admission design. It does not reject the
-storage engines or prove incremental repair impossible. It does not reopen
-engine comparison, change the qualified custody contract, or authorize production.
+All41 affected custody cases and exact historical-coverage regression passed.
+The large horizon producer has not been launched. The operator requested a safe
+pause; no evidence-unavailable decision is asserted. No adoption is earned yet.
 
-[Qualification](LABELWATCH-SEGMENTED-HORIZON-QUALIFICATION.md) records measurements,
-provenance and limits. [Campaign report](LABELWATCH-SEGMENTED-CAMPAIGN-REPORT.md)
-records exact independent acceptance, published source and custody pointers.
+Resume from `portfolio-private/ATPROTO-RESUME.md`, which points to immutable
+`CHECKPOINT-PARKED-39657c30-4728-4598-9f48-262bbf154a63.json` in the existing
+private horizon campaign. Do not restart the completed catalog producer.
 
-Existing [#7](https://github.com/unpingable/atproto-labelwatch/issues/7) owns the
-bounded follow-on: adapt the existing catalog for incremental new-owner admission
-and indexed/range recovery under the earned custody/completeness contract; then
-complete the same three remaining gates. Do not rerun unchanged acceptance or
-launch another architecture comparison. Production mutations **NONE**.
-
-Earlier lifetime/custody rejection at 872693a remains historical evidence.
-Its three custody defects were superseded by the separate qualified shared repair;
-this reopened rejection is solely the still-failing catalog admission gate.
-
-Independent acceptance: `4bf47479-ebb8-4661-85d7-ee53f6c1044e`, disposition
-`ACCEPTED_CONCRETE_GATE3_REJECTION`, SHA256
-`dcd7302bd8a6bf55a76ab55cf03ebe1e65b56e225b05148d046afc4874628693`.
-Exact private record: `ACCEPTANCE-4bf47479-ebb8-4661-85d7-ee53f6c1044e.json`
-in the owning existing horizon campaign. Review source equals exercised `6a88178`;
-final publication changes documents only.
+After explicit resume, finish only these gates and independent acceptance.
+Emit ADOPT if all pass. Repair implementation defects within this candidate;
+reject architecture only for a required property that cannot be satisfied
+without materially changing it. No extra confidence-seeking campaign.
+Production mutations **NONE**; no migration, activation or destructive cleanup.
