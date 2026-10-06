@@ -2,7 +2,7 @@
 
 The [approved product contract](LABELWATCH-SEGMENTED-DECISION.md#approved-product-contract--october-6-2026) governs future work. Production remains held; no new runtime acceptance or migration is claimed. Select one measured30–45day service window, qualify account UX and public bounded snapshot exports, all-state lifetimes, catalog bounds and physical retirement/peak recovery space. Future indefinite archival is not required; existing archives and earned custody evidence remain preserved.
 
-New or changed acceptance must exercise window edges/late arrivals, explicit gaps, observed-versus-current-state wording, summary/export agreement, public-data allowlisting, paginated snapshot consistency under ingest/retirement, finite export leases and expired-cursor refusal, repeated physical reclamation, and the selected N-day workload/query/capacity envelope. Reuse prior cases only where assumptions match. No producer is launched while hold prerequisites remain unmet.
+New or changed acceptance must exercise window edges/late arrivals, explicit gaps, observed-versus-current-state wording, summary/export agreement, public-data allowlisting, paginated snapshot consistency under ingest/retirement, finite export leases and expired-cursor refusal, repeated physical reclamation, and the selected N-day workload/query/capacity envelope. Reuse prior cases only where assumptions match. Off-production producers are authorized now under their own resource admission. Production migration/activation remains separately gated; old hold prerequisites do not block successor engineering.
 
 <details>
 <summary>Sealed prior results and historical execution instructions</summary>

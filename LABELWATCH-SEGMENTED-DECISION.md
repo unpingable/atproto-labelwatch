@@ -1,5 +1,28 @@
 # Labelwatch bounded recent-observation product — existing #7
 
+## Execution authority correction — off-production engineering authorized now
+
+The operator explicitly removed the production-stability dependency for #7
+engineering and qualification. Existing #7 is the preferred permanent-capacity
+repair; production stability may depend on it. Resume implementation, all-state
+lifetime/physical-reclamation qualification, bounded export/account UX,
+peak-space/recovery testing and migration design on existing non-production
+resources now. Production stays in safe hold: no ingest restart, deployment,
+migration, production-evidence deletion or storage change.
+
+Production migration/activation is a SEPARATE gate requiring an admitted path
+within the existing account/resource envelope. Keep shared-host reserves and
+real source/WAL/rollback safety constraints. Reconcile old root32GiB / Zone47GiB
+and catalog/export peaks by their actual workloads: they remain binding for the
+old implementation, but are not automatically the successor's workload budget.
+Removing a superseded indefinite-archive operation requires source evidence and
+qualification of the successor's own steady/peak/recovery envelope, never simply
+lowering a guard to make the old workload restartable. No need to restore old
+publication or archive maintenance before off-production successor engineering.
+Routine choices remain delegated; the four previously recorded escalation
+exceptions remain. Earlier conflicting conditional-resume language below is
+historical and superseded by this section.
+
 ## Approved product contract — October 6, 2026
 
 Labelwatch is a bounded recent-observation service, not an indefinite-history
@@ -60,21 +83,12 @@ preserved; this amendment authorizes no historical evidence deletion.
 
 ## Execution and acceptance boundary
 
-The production safe hold remains in force. This message supplies explicit
-operator return and conditional continuation authority; it does not establish
-capacity or recovery readiness. Existing hold restart prerequisites are NOT_MET:
-last measured root31,438,950,400bytes is below32GiB; full maintenance/recovery
-peaks are unqualified. No new producer, migration, public service restart or
-retention-policy activation is admitted by this documentation amendment.
-
-Once documented prerequisites are satisfied, the integration owner continues
-existing #7 through implementation, independent qualification, migration
-planning and production readiness without another routine permission request.
-Do not remove hold guards to obtain a stability receipt. If prerequisites cannot
-be met within existing authority, retain the hold and report the specific
-boundary; do not start another capacity/architecture lane. The previous
-production-stability receipt remains an execution dependency, not something this
-product decision claims to have earned.
+The production safe hold remains in force, but does not block off-production
+engineering or qualification. The integration owner continues existing #7 now
+through implementation, independent qualification and migration planning using
+admitted non-production resources. No routine reapproval is required.
+Production readiness must separately qualify the actual successor workload and
+migration/recovery path; no deployment or activation is authorized in this run.
 
 One integration/storage owner coordinates bounded executors/reviewers and
 independent acceptance. Reconcile sealed producer04166ec3 and its checkpoint;
