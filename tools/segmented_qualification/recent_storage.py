@@ -1,0 +1,264 @@
+"""Opt-in recent-observation candidate; new isolated stores only.
+
+Thirty full UTC days, with one partial boundary owner. Source authored time is
+never used as the observation clock. No lifetime deduplication or continuity
+claim survives retirement. This is not an enrollment/migration tool.
+"""
+from __future__ import annotations
+import datetime as dt
+import json
+import hashlib
+import sqlite3
+from pathlib import Path
+from storage import Store, owned, connect, lock, db, custody, ingest, sha, syncdir
+
+UTC = dt.timezone.utc
+TIMED = {'alerts':'ts', 'labeler_evidence':'ts', 'labeler_probe_history':'ts',
+         'derived_receipts':'ts', 'ingest_outcomes':'ts', 'discovery_events':'discovered_at',
+         'posted_findings':'posted_at', 'quarantined_events':'last_quarantined_at'}
+DERIVED = {'derived_label_fp','derived_labeler_lag_7d','derived_labeler_reversal_7d',
+           'derived_labeler_boundary_load_7d','derived_val_dist_day','derived_labeler_entropy_7d',
+           'derived_author_day','derived_author_labeler_day','boundary_edges','boundary_targets'}
+CONTROL = {'meta','label_events','labelers','provider_registry','sqlite_sequence','q_segments',
+           'q_pending','q_transition','q_archive','q_hot_keys','custody_archives','q_recent_seen',
+           'q_recent_transition','q_recent_protected','q_recent_counts','q_recent_gaps'}
+
+LIMITS={'meta':4096,'provider_registry':10000,'labelers':100000,
+        'q_recent_seen':100000000,'q_hot_keys':100000000,'custody_archives':32,
+        'q_segments':33,'q_recent_protected':32,'q_recent_gaps':128}
+LIMITS.update({name:10000000 for name in TIMED.keys() | DERIVED})
+
+
+def clock(value):
+    parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
+        raise ValueError('explicit UTC observation clock required')
+    return parsed.astimezone(UTC)
+
+
+def iso(value):
+    return value.isoformat(timespec='microseconds').replace('+00:00', 'Z')
+
+
+class RecentStore(Store):
+    @classmethod
+    def create(cls, root, now, days=30):
+        if days != 30: raise ValueError('only 30-day candidate admitted; 45 is unqualified')
+        stamp = clock(now)
+        # Custody source-time floor remains separate from observation retention.
+        store = super().create(root, period=stamp.date().isoformat(), floor='0001-01-01T00:00:00Z')
+        (store.root/'archive').mkdir()
+        with connect(store.state) as c:
+            c.executescript('''
+            CREATE TABLE q_recent_seen(event_id INTEGER PRIMARY KEY, owner TEXT NOT NULL,
+                observed_at TEXT NOT NULL, labeler_did TEXT NOT NULL, target_did TEXT NOT NULL);
+            CREATE INDEX recent_account_clock ON q_recent_seen(target_did,observed_at,event_id);
+            CREATE INDEX recent_owner ON q_recent_seen(owner);
+            CREATE TABLE q_recent_transition(singleton INTEGER PRIMARY KEY CHECK(singleton=1), body TEXT NOT NULL);
+            CREATE TABLE q_recent_protected(owner TEXT PRIMARY KEY, dependency TEXT NOT NULL);
+            CREATE TABLE q_recent_gaps(start TEXT NOT NULL,end TEXT NOT NULL,reason TEXT NOT NULL,
+                PRIMARY KEY(start,end,reason));
+            CREATE TABLE q_recent_counts(name TEXT PRIMARY KEY,n INTEGER NOT NULL,ceiling INTEGER NOT NULL);
+            ''')
+            for key, value in {'version':'1','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
+                               'end':iso(stamp),'generation':'0','clock':iso(stamp),'events':'0'}.items():
+                db.set_meta(c, 'q:recent_'+key, value)
+            db.set_meta(c,'q:recent_start',iso(stamp-dt.timedelta(days=30)))
+            db.set_meta(c,'q:recent_acquisition_start',iso(stamp))
+            db.set_meta(c,'q:recent_gap_overflow','0')
+            for table,ceiling in LIMITS.items():
+                count=c.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                c.execute('INSERT INTO q_recent_counts VALUES(?,?,?)',(table,count,ceiling))
+                c.executescript(f'''CREATE TRIGGER recent_count_added_{table} AFTER INSERT ON "{table}" BEGIN
+                    SELECT CASE WHEN (SELECT n>=ceiling FROM q_recent_counts WHERE name='{table}') THEN RAISE(ABORT,'recent row ceiling') END;
+                    UPDATE q_recent_counts SET n=n+1 WHERE name='{table}'; END;
+                CREATE TRIGGER recent_count_deleted_{table} AFTER DELETE ON "{table}" BEGIN
+                    UPDATE q_recent_counts SET n=n-1 WHERE name='{table}'; END;''')
+            c.commit()
+        return cls(root)
+
+    def require(self, c):
+        if db.get_meta(c,'q:recent_version') != '1':
+            raise RuntimeError('new recent-observation enrollment required; old evidence preserved')
+
+    def recover(self, c, death=None):
+        self.require(c)
+        if c.execute('SELECT 1 FROM q_recent_transition').fetchone():
+            raise RuntimeError('recent maintenance recovery required before reads or writes')
+        return super().recover(c, death)
+
+    def policies(self, c):
+        tables={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        unknown=tables-set(TIMED)-DERIVED-CONTROL
+        if unknown: raise RuntimeError('unclassified global tables: '+','.join(sorted(unknown)))
+        return {name: ('observation-window' if name=='q_recent_seen' else
+                       'time-expiry' if name in TIMED else 'invalidate-on-maintenance' if name in DERIVED
+                       else 'bounded-control-or-owner') for name in sorted(tables)}
+
+    def caps(self,c,scan=True):
+        self.policies(c)
+        # Finite fail-closed limits; workload viability must be measured separately.
+        for table,n,maximum in c.execute('SELECT name,n,ceiling FROM q_recent_counts'):
+            if n<0 or n>maximum: raise RuntimeError('recent state row ceiling: '+table)
+            if scan and c.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]!=n:
+                raise RuntimeError('recent counter correspondence: '+table)
+        if c.execute('SELECT 1 FROM meta WHERE length(value)>65536 LIMIT 1').fetchone():
+            raise RuntimeError('recent control value ceiling')
+
+    def ingest(self, rows, source, cursor, observed_at, death=None, injected=None):
+        stamp=clock(observed_at)
+        if len(rows)>10000: raise RuntimeError('bounded ingest page exceeded')
+        if any(any(isinstance(value,str) and len(value.encode())>16384 for value in row) for row in rows):
+            raise RuntimeError('recent event field byte ceiling')
+        sizes=[len(json.dumps(row,ensure_ascii=False).encode()) for row in rows]
+        if any(n>65536 for n in sizes) or sum(sizes)>16*1024**2:raise RuntimeError('recent event/batch byte ceiling')
+        if len(source)>1024 or len(str(cursor))>4096: raise RuntimeError('source continuation size ceiling')
+        self.check_local(injected)
+        with lock(self.root):
+            c=connect(self.state)
+            try:
+                self.recover(c)
+                if stamp<clock(db.get_meta(c,'q:recent_clock')): raise RuntimeError('observation clock regression')
+                owner=db.get_meta(c,'q:active')
+                if owner!=stamp.date().isoformat(): raise RuntimeError('rotate daily observation owner before ingestion')
+                continuation='q:recent_source:'+hashlib.sha256(source.encode()).hexdigest()
+                batch=hashlib.sha256(json.dumps(rows,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+                previous=db.get_meta(c,continuation)
+                if db.get_cursor(c,source)==cursor and previous:
+                    saved=json.loads(previous)
+                    if saved['batch']!=batch:raise RuntimeError('opaque continuation reused with different batch')
+                    return {'inserted':0,'accepted_ids':[],'duplicate_ids':[],'cursor':cursor,'replayed_page':True}
+                c.execute('BEGIN IMMEDIATE')
+                accepted,duplicates=custody.stage(c,rows,owner,death)
+                count=int(db.get_meta(c,'q:recent_events'))+len(accepted)
+                if count>100000000:raise RuntimeError('recent observation cardinality ceiling')
+                evidence=set()
+                for event_id,row in accepted:
+                    c.execute('INSERT INTO q_pending VALUES (?,?)',(event_id,owner))
+                    target=row[2][5:].split('/')[0] if row[2].startswith('at://') else row[2]
+                    c.execute('INSERT INTO q_recent_seen VALUES (?,?,?,?,?)',(event_id,owner,iso(stamp),row[0],target))
+                    db.upsert_labeler(c,row[0],iso(stamp));ingest._track_observed_src(c,row[1] or row[0],iso(stamp),evidence)
+                db.set_meta(c,'q:recent_clock',iso(stamp))
+                db.set_meta(c,'q:recent_end',iso(stamp+dt.timedelta(microseconds=1)))
+                db.set_meta(c,'q:recent_events',str(count))
+                db.set_meta(c,continuation,json.dumps({'batch':batch,'count':len(rows)}))
+                self.caps(c,scan=False)
+                if death: death('before_recent_ingest_commit')
+                db.set_cursor(c,source,cursor)
+                if death: death('after_recent_ingest_commit')
+                self.flush(c)
+                return {'inserted':len(accepted),'accepted_ids':[x[0] for x in accepted], 'duplicate_ids':duplicates,'cursor':cursor}
+            finally:c.close()
+
+    def archive(self, identity, destination=None, **kwargs):
+        dest=self.root/'archive'
+        if destination is not None and Path(destination).resolve()!=dest.resolve():
+            raise RuntimeError('recent archive must be owned by this new store')
+        return super().archive(identity,dest,**kwargs)
+
+    def frontier(self):
+        c=connect(self.state,readonly=True)
+        try:
+            self.require(c)
+            if c.execute('SELECT 1 FROM q_recent_transition').fetchone():raise RuntimeError('recent maintenance recovery required')
+            return {k:db.get_meta(c,'q:recent_'+k) for k in ('start','end','generation')}
+        finally:c.close()
+
+    def record_gap(self,start,end,reason):
+        start,end=iso(clock(start)),iso(clock(end))
+        if start>=end or reason not in ('ingest_paused','source_unavailable','cursor_reset','maintenance','unknown','warmup'):raise ValueError('invalid bounded gap')
+        with lock(self.root):
+            c=connect(self.state)
+            try:
+                self.recover(c)
+                floor=db.get_meta(c,'q:recent_start');start=max(start,floor)
+                if start>=end:return
+                if c.execute('SELECT 1 FROM q_recent_gaps WHERE start=? AND end=? AND reason=?',(start,end,reason)).fetchone():return
+                if c.execute('SELECT COUNT(*) FROM q_recent_gaps').fetchone()[0]>=128:
+                    db.set_meta(c,'q:recent_gap_overflow','1')
+                else:c.execute('INSERT INTO q_recent_gaps VALUES(?,?,?)',(start,end,reason))
+                c.commit()
+            finally:c.close()
+
+    def maintain(self, now, archive=None, death=None):
+        """Journal authority expiry before unlink; retry exact remaining files.
+
+        All paths are new-fixture-owned. Existing campaign source/evidence is
+        never enrolled. A protection dependency refuses the whole transition.
+        """
+        stamp=clock(now);dest=self.root/'archive'
+        if archive is not None and Path(archive).resolve()!=dest.resolve():raise RuntimeError('archive mismatch')
+        with lock(self.root),lock(self.root,'reader.lock'):
+            c=connect(self.state)
+            try:
+                self.require(c)
+                pending=c.execute('SELECT body FROM q_recent_transition').fetchone()
+                if pending: plan=json.loads(pending[0])
+                else:
+                    super().recover(c)
+                    if stamp<clock(db.get_meta(c,'q:recent_clock')):raise RuntimeError('observation clock regression')
+                    if iso(stamp)==db.get_meta(c,'q:recent_clock') and db.get_meta(c,'q:recent_generation')!='0':
+                        return {'expired_owners':[],'frontier':db.get_meta(c,'q:recent_start'),'no_change':True}
+                    start=iso(stamp-dt.timedelta(days=30))
+                    owners=[];files=[]
+                    for owner,status in c.execute('SELECT identity,status FROM q_segments'):
+                        if owner>=start[:10]:continue
+                        if status!='RETIRED':raise RuntimeError('expired owner needs verified archive and source retirement first')
+                        if c.execute('SELECT 1 FROM q_recent_protected WHERE owner=?',(owner,)).fetchone():raise RuntimeError('owner has retained evidence dependency')
+                        row=c.execute('SELECT receipt_json FROM custody_archives WHERE identity=?',(owner,)).fetchone()
+                        if not row:raise RuntimeError('expired owner custody absent')
+                        receipt=json.loads(row[0])
+                        if Path(receipt['archive_root']).resolve()!=dest.resolve():raise RuntimeError('foreign evidence namespace preserved')
+                        members=[(dest/(owner+'.parquet'),receipt['parquet_sha256']),
+                                 (dest/receipt['identity_index']['file'],receipt['identity_index']['sha256']),
+                                 (dest/(owner+'.receipt.json'),None),(dest/(owner+'.retired.json'),None)]
+                        for path,expected in members:
+                            if path.parent.resolve()!=dest.resolve() or path.is_symlink() or path.stat().st_nlink!=1:raise RuntimeError('retirement path/link boundary')
+                            digest=sha(path)
+                            if expected and digest!=expected:raise RuntimeError('retirement custody corruption')
+                            files.append({'name':path.name,'sha256':digest})
+                        owners.append(owner)
+                    self.policies(c)
+                    plan={'start':start,'end':max(iso(stamp),db.get_meta(c,'q:recent_end')),'clock':iso(stamp),'owners':owners,'files':files}
+                    c.execute('INSERT INTO q_recent_transition VALUES (1,?)',(json.dumps(plan,sort_keys=True),));c.commit()
+                    if death:death('after_recent_plan')
+                # Idempotent transaction removes all authoritative references.
+                c.execute('BEGIN IMMEDIATE')
+                for owner in plan['owners']:
+                    for table,column in [('q_recent_seen','owner'),('q_hot_keys','segment'),('custody_archives','identity'),('q_archive','identity'),('q_segments','identity')]:
+                        c.execute(f'DELETE FROM {table} WHERE {column}=?',(owner,))
+                for table,column in TIMED.items():c.execute(f'DELETE FROM {table} WHERE {column}<?',(plan['start'],))
+                c.execute('DELETE FROM q_recent_seen WHERE observed_at<?',(plan['start'],))
+                c.execute('DELETE FROM q_recent_gaps WHERE end<=?',(plan['start'],))
+                db.set_meta(c,'q:recent_events',str(c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]))
+                for table in DERIVED:c.execute(f'DELETE FROM {table}')
+                c.execute('DELETE FROM labelers WHERE labeler_did NOT IN (SELECT DISTINCT labeler_did FROM q_recent_seen)')
+                for key in ('start','end','clock'):db.set_meta(c,'q:recent_'+key,plan[key])
+                c.commit()
+                if death:death('after_recent_authority')
+                # Derived catalog is repairable but must not retain missing entries.
+                for path in self.root.glob('reader-catalog-*.sqlite'):
+                    with sqlite3.connect(path) as cat:
+                        cat.executemany('DELETE FROM entries WHERE identity=?',[(x,) for x in plan['owners']])
+                        cat.commit()
+                        cat.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+                        cat.execute('VACUUM')
+                for item in plan['files']:
+                    path=dest/item['name']
+                    if path.exists():
+                        if path.is_symlink() or path.stat().st_nlink!=1 or sha(path)!=item['sha256']:raise RuntimeError('retirement candidate changed; preserve and reconcile')
+                        path.unlink();syncdir(dest)
+                    if death:death('during_recent_unlink')
+                # Projection invalidation + row ceilings bound semantics; VACUUM
+                # reclaims global high-water pages with a measured temporary peak.
+                # This isolated adapter has one state writer and fenced readers.
+                if c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0]:raise RuntimeError('state checkpoint pinned')
+                import shutil
+                if shutil.disk_usage(self.root).free-self.state.stat().st_size*2 < 64424509440:
+                    raise RuntimeError('global compaction allocation not admitted')
+                c.execute('VACUUM')
+                c.execute('DELETE FROM q_recent_transition')
+                db.set_meta(c,'q:recent_generation',str(int(db.get_meta(c,'q:recent_generation'))+1));c.commit()
+                self.caps(c)
+                return {'expired_owners':plan['owners'],'frontier':plan['start'],'policies':self.policies(c)}
+            finally:c.close()

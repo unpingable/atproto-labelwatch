@@ -74,9 +74,21 @@ def cut(requested, phase):
 
 
 @contextlib.contextmanager
-def lock(root, name='writer.lock', shared=False):
+def lock(root, name='writer.lock', shared=False, timeout=None):
     with (root / name).open('a') as f:
-        fcntl.flock(f, fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+        mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+        if timeout is None:
+            fcntl.flock(f, mode)
+        else:
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    fcntl.flock(f, mode | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('store lease deadline exceeded')
+                    time.sleep(min(.01, max(0, deadline-time.monotonic())))
         yield
 
 
@@ -84,6 +96,9 @@ def connect(path, readonly=False):
     c = sqlite3.connect(f'file:{path}?mode=ro' if readonly else str(path), uri=readonly, timeout=2)
     c.row_factory = sqlite3.Row
     if not readonly:
+        # Required by opt-in bounded-state counters when existing writers use
+        # INSERT OR REPLACE: implicit replacement deletion must fire triggers.
+        c.execute('PRAGMA recursive_triggers=ON')
         c.execute('PRAGMA journal_mode=WAL'); c.execute('PRAGMA synchronous=FULL')
         c.execute('PRAGMA wal_autocheckpoint=1000')
         # max_page_count is connection-local. Read the persisted owned limit
