@@ -146,3 +146,41 @@ recursive triggers. Separate retests passed, including explicit pre-acquisition
 gaps. Exact source hashes and results are in this campaign's
 `runtime/independent-provider-*` and `runtime/independent-final-*` receipts.
 Raw external writers are outside the candidate's helper-owned writer assumption.
+
+## Successor writer graph controls the required population
+
+The resumed raw-observation/account/export path writes custody journal/hot keys,
+q_recent_seen, pending/transition/owner metadata, source cursor metadata,
+labelers and observed-source labeler_evidence. Archive receipts/indexes and bounded
+query/export snapshots add their separately measured state. These are current
+successor dependencies. Old derived/report tables have no new writer merely
+because their DDL exists. They are invalidated by the candidate and must not be
+repopulated as a compatibility obligation without a named current consumer.
+Legacy evidence stays in its existing custody, outside the new bounded store.
+
+Accordingly, the measured 1% and admitted 10% global fixtures are conservative
+legacy-schema/counter/expiry stress. They do not require a 100% legacy import or
+prove the actual successor steady-state population. The latter must be measured
+on the real ingest/custody/product writer graph. The full legacy-count stage is
+optional and requires a concrete migration/consumer reason plus separate
+admission. Do not rebuild old derive/report machinery to make the stress fixture
+look like an active product requirement.
+
+The 1% measured run populated 167,192 rows, including full small populations,
+reached 52,625,408 allocated bytes at the retained sample, and passed counter,
+cap-refusal and expiry controls. Its measurement still had an open connection
+object after a context-manager transaction; after process exit the artifact
+allocation fell further. The 10% successor explicitly closes connections and
+records its own measurements. These are source-specific receipts, not additive
+capacity reservations or immutable worst-case peaks.
+
+The 10% successor run `a48310eb-b6e1-49c2-bb21-4b36b2cf0a15` populated
+1,662,048 rows. Its retained sample was 468,643,840 allocated bytes at 47.40 s;
+expiry and counter verification completed at 58.76 s with 102,023,168 bytes.
+The measured occurrence reduction was 366,620,672 bytes; RSS peak 96,927,744
+bytes. The original durable unit ended success/exit 0 and its terminal is PASS.
+Linear full-count projection is roughly 4.69 GB retained before separate
+compaction overlap; it is an estimate, not a required or admitted full legacy
+import. Intra-operation allocation peaks were not continuously instrumented.
+Exact dispatch, source/script hashes and result/custody receipts remain under
+`runtime/global-ten-percent-a48310eb-b6e1-49c2-bb21-4b36b2cf0a15`.

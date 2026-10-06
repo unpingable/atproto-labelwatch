@@ -59,6 +59,16 @@ def main(args):
             if fs.f_bavail*fs.f_frsize-extra < 64424509440:
                 raise RuntimeError('transition peak would consume shared reserve')
 
+    def state_measurement():
+        with closing(connect(store.state, readonly=True)) as c:
+            tables = {name:c.execute('SELECT COUNT(*) FROM "'+name+'"').fetchone()[0]
+                      for (name,) in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            physical = dict(page_count=c.execute('PRAGMA page_count').fetchone()[0],
+                            freelist_count=c.execute('PRAGMA freelist_count').fetchone()[0],
+                            page_size=c.execute('PRAGMA page_size').fetchone()[0],
+                            objects={r[0]:r[1] for r in c.execute('SELECT name,sum(pgsize) FROM dbstat GROUP BY name')})
+        return tables, physical
+
     done = 0
     progress('VERIFY_RETAINED_SPECIMEN')
     receipt = json.loads(args.specimen.with_name('SPECIMEN.json').read_text())
@@ -100,11 +110,7 @@ def main(args):
         if done < args.events and cycle == done//12000000:
             raise RuntimeError('unexpected specimen row count')
     before = progress('WINDOW_RETAINED')
-    with closing(connect(store.state, readonly=True)) as c:
-        counts = {name:c.execute('SELECT COUNT(*) FROM "'+name+'"').fetchone()[0]
-                  for (name,) in c.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        physical = dict(page_count=c.execute('PRAGMA page_count').fetchone()[0],
-                        freelist_count=c.execute('PRAGMA freelist_count').fetchone()[0])
+    counts, physical = state_measurement()
     atomic(out/'RETAINED.json', dict(counts=counts, physical=physical, measurement=before))
     # Qualify actual block release after a full-window advance, not freelist reuse.
     after_time = start + dt.timedelta(days=61)
@@ -113,6 +119,9 @@ def main(args):
     store.archive(active)
     store.retire(active)
     pre_expire = progress('BEFORE_EXPIRE')
+    sealed_counts, sealed_physical = state_measurement()
+    atomic(out/'SEALED.json', dict(counts=sealed_counts, physical=sealed_physical,
+                                 measurement=pre_expire))
     store.maintain(iso(after_time))
     after = progress('AFTER_EXPIRE')
     with closing(connect(store.state, readonly=True)) as c:
