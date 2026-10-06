@@ -4,6 +4,49 @@ The [approved product contract](LABELWATCH-SEGMENTED-DECISION.md#approved-produc
 
 New or changed acceptance must exercise window edges/late arrivals, explicit gaps, observed-versus-current-state wording, summary/export agreement, public-data allowlisting, paginated snapshot consistency under ingest/retirement, finite export leases and expired-cursor refusal, repeated physical reclamation, and the selected N-day workload/query/capacity envelope. Reuse prior cases only where assumptions match. Off-production producers are authorized now under their own resource admission. Production migration/activation remains separately gated; old hold prerequisites do not block successor engineering.
 
+## Off-production evidence update — October 6
+
+GitHub Project #7 remains the execution tracker. These are scoped technical
+receipts, not deployment acceptance. Integration/storage owner: root, run
+`28bf203d-e869-4d42-985f-a8f71404dfaa`.
+
+| Property | Evidence and disposition |
+| --- | --- |
+| Indexed catalog recovery | Six controls independently accepted; no automatic full-history rehash requirement |
+| Bounded state and lifecycle | v4 new-store profile; 28 storage plus six catalog controls independently passed at `0b1d032`; receipt `c7669ac8` |
+| Compact account lookup | 100k measurement `41a043fa` at `f4e818d`: 128.90 allocated lookup bytes/event after sealing, versus 220.90 before compaction; estimate only |
+| Repeated window retirement | 90-day/9,000-event run `5d84177c` at `1b33724`, independently accepted: days 35–89 stayed at 130 files and 2,371,584 allocated bytes; partial boundary preserved its owner while expiring exact events |
+| Interrupted collection | Real local cgroup control `c82d6954` at `1f4bf35`: 45-second deadline plus five-second TERM grace killed the blocked job and resistant child; exact-source restart recorded an unknown gap and refused stale attempt authority |
+| Dense public export | Independent `18cfd0ef` at `0b1d032`: 1,207 identical-time events, bounded pages, fixed upper ID, independent terminal count/hash, retry parity, explicit TTL/retirement refusal; no generation lease across requests |
+| Account view | Summary, readable timeline, attribution, labeled filters and gaps; expert rows secondary. Observations never imply current effective state. Public signature inclusion is a subsequent bounded projection change, not a signature-verification claim |
+| Current-volume measurement | New 12M occurrence `4d8b4100` uses sealed `657abb7` source, the retained specimen and a 32 GiB local experimental ceiling; result pending. It does not include later v4 sidecar fixes or newer export UI |
+
+The small-window run found and repaired daily lock-file accumulation, incomplete
+archive receipt retry, missing retirement-marker recovery and retired SQLite
+sidecars. v4 uses a stable archive lock and refuses old profile conversion;
+existing historical locks and production evidence were not deleted. The repaired
+small-volume plateau is not a substitute for measured-volume capacity.
+
+The 30-day choice remains a candidate until the integrated steady-state and
+maintenance/recovery peak fit the admitted workload. Source-population and
+burst/dense-account limits, full-window query performance, runtime packaging,
+actual resource placement and migration admission remain separate gates. A
+bounded refusal demonstrates safe containment, not workload viability.
+
+Production remains under its established safe hold. The canonical #6 restart
+prerequisites have been reconciled and independently reviewed: engineering is
+active now; old guards bind the old workload; removed archive/export/catalog
+work is not mechanically inherited by the successor. Genuine reserves and
+retained-evidence recovery remain required. No old failed export is described as
+recovered, and no migration, public activation or incident closure is claimed.
+
+Formalization consideration: source transition and lock-order inspection plus
+bounded negative controls cover the finite lifecycle claims above. The 90-day
+trace demonstrates its stated workload, not arbitrary-rate or arbitrary-reader
+behavior. The capacity proposition still needs measured-volume evidence. Exact
+source, script and result hashes and independent acceptance are retained in the
+existing campaign registry; historical notices are immutable.
+
 <details>
 <summary>Sealed prior results and historical execution instructions</summary>
 
