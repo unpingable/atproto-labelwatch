@@ -195,3 +195,32 @@ def test_discovery_continuation_atomic_roster_and_terminal_reset(store):
     assert store.collector_sources(2)==[{'did':'did:plc:a','endpoint':None}]
     store.remember_sources([{'did':'did:plc:b'}],request_cursor='opaque',next_cursor=None)
     assert store.collector_discovery_cursor() is None
+
+def test_daily_driver_drains_full_queue_then_rotates_and_retries(store):
+    seed(store);store.rotate('2026-09-02')
+    result=store.advance_day('2026-09-03T00:00:00Z')
+    assert result['retired']==['2026-09-01','2026-09-02']
+    assert store.advance_day('2026-09-03T00:00:00Z')['retired']==[]
+    with connect(store.state) as c:
+        assert c.execute("SELECT identity FROM q_segments WHERE status='ACTIVE'").fetchone()[0]=='2026-09-03'
+        assert c.execute("SELECT COUNT(*) FROM q_segments WHERE status!='RETIRED'").fetchone()[0]==1
+    store.advance_day('2026-10-04T00:00:00Z')
+    assert not (store.root/'archive/2026-09-01.parquet').exists()
+
+def test_daily_driver_resumes_expiry_journal(store):
+    archive(store)
+    def fail(phase):
+        if phase=='after_recent_authority':raise RuntimeError('interrupted')
+    with pytest.raises(RuntimeError,match='interrupted'):store.maintain('2026-10-02T00:00:00Z',death=fail)
+    result=RecentStore(store.root).advance_day('2026-10-02T00:00:00Z')
+    assert result['maintenance']['no_change']
+    assert not (store.root/'archive/2026-09-01.parquet').exists()
+
+def test_daily_driver_refuses_archive_allocation_before_output(store,monkeypatch):
+    import os
+    from types import SimpleNamespace
+    seed(store);store.rotate('2026-09-02')
+    monkeypatch.setattr(os,'statvfs',lambda p:SimpleNamespace(f_bavail=64424509440,f_frsize=1,f_favail=100))
+    with pytest.raises(RuntimeError,match='allocation not admitted'):store.advance_day('2026-09-03T00:00:00Z')
+    assert (store.root/'2026-09-01.sqlite').exists()
+    assert list((store.root/'archive').iterdir())==[]

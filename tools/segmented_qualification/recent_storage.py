@@ -360,6 +360,44 @@ class RecentStore(Store):
                 self._record_gap(c,start,end,reason);c.commit()
             finally:c.close()
 
+    def advance_day(self,now):
+        """Finite daily orchestration; existing journals own each transition.
+
+        A process interruption resumes those journals on the next invocation.
+        This command does not enroll legacy data or authorize production paths.
+        """
+        import os
+        stamp=clock(now);completed=[]
+        with lock(self.root,'daily.lock'):
+            with connect(self.state,readonly=True) as c:
+                self.require(c)
+                if stamp<clock(db.get_meta(c,'q:recent_clock')):raise RuntimeError('observation clock regression')
+                pending=c.execute('SELECT 1 FROM q_recent_transition').fetchone()
+            if pending:self.maintain(now)
+            with lock(self.root):
+                with connect(self.state) as c:self.recover(c)
+            def drain():
+                with connect(self.state,readonly=True) as c:
+                    rows=list(c.execute("SELECT identity,status FROM q_segments WHERE status IN ('SEALED','ARCHIVED') ORDER BY identity LIMIT 34"))
+                if len(rows)>33:raise RuntimeError('daily owner bound exceeded')
+                for owner,status in rows:
+                    if status=='SEALED':
+                        source=self.root/(owner+'.sqlite')
+                        need=source.stat().st_size*2+1048576
+                        # Preserve reserve after the archive temporary envelope,
+                        # independently on both shared filesystems.
+                        for path in ('/','/data',str(self.root/'archive')):
+                            fs=os.statvfs(path)
+                            if fs.f_bavail*fs.f_frsize-need<64424509440 or fs.f_favail<16:
+                                raise RuntimeError('daily archive allocation not admitted')
+                        self.archive(owner)
+                    self.retire(owner);completed.append(owner)
+            drain()  # Free the two-owner queue before creating today's owner.
+            self.rotate(stamp.date().isoformat())
+            drain()
+            result=self.maintain(now)
+            return {'retired':completed,'maintenance':result}
+
     def maintain(self, now, archive=None, death=None):
         """Journal authority expiry before unlink; retry exact remaining files.
 
