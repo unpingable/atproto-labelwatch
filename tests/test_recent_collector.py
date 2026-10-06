@@ -22,7 +22,7 @@ class Store:
     def collector_sources(self, limit):
         return self.sources[:limit]
 
-    def collector_claim_source(self, limit):
+    def collector_claim_source(self, limit,observed_at=None):
         rows = sorted(self.sources, key=lambda row: row['did'])
         row = rows[self.schedule % len(rows)]
         self.schedule += 1
@@ -46,7 +46,7 @@ class Store:
     def begin_source_attempt(self, did, observed_at):
         return did
 
-    def finish_source_attempt(self, did, attempt_token):
+    def finish_source_attempt(self, did, attempt_token,observed_at=None):
         assert did == attempt_token
 
     def accept_page(self, rows, source, request_cursor, next_cursor, observed_at, attempt_token=None):
@@ -74,6 +74,7 @@ class Transport:
 
 def collector(store, responses, **kwargs):
     transport = Transport(responses)
+    kwargs.setdefault("limits",Limits(pages=1))
     return Collector(store, transport, now=lambda: NOW, **kwargs), transport
 
 
@@ -129,7 +130,7 @@ def test_transport_budget_and_late_return_refused_before_commit():
     c, t = collector(s, [{'labels': [label()]}], monotonic=lambda: next(times))
     assert c.tick()['results'][0]['status'] == 'refused'
     assert not s.pages
-    assert t.calls[0][2] == {'max_bytes': 1048576, 'timeout_seconds': 10}
+    assert t.calls[0][2] == {'max_bytes': 1048576, 'timeout_seconds': 1}
 
 
 def test_discovery_atomic_sticky_roster_and_terminal_page():
@@ -249,13 +250,17 @@ def test_real_store_changed_terminal_page_and_restart_claim(tmp_path, monkeypatc
     s = RecentStore.create(tmp_path/'store', NOW.isoformat())
     s.remember_sources([{'did': DID, 'endpoint': None}])
     c, _ = collector(s, [{'labels': [label()]}, {'labels': [label(), label('later')]}, {'labels': [label(), label('later')]}])
+    from datetime import timedelta
     assert c.tick()['results'][0]['result']['inserted'] == 1
+    c.now=lambda:NOW+timedelta(seconds=31)
     assert c.tick()['results'][0]['result']['inserted'] == 1
+    c.now=lambda:NOW+timedelta(seconds=62)
     assert c.tick()['results'][0]['result']['inserted'] == 0
     assert s.collector_cursor(DID) is None
     s.remember_sources([{'did': 'did:plc:two', 'endpoint': None}])
-    first = s.collector_claim_source()['did']
-    assert RecentStore(tmp_path/'store').collector_claim_source()['did'] != first
+    stamp=(NOW+timedelta(seconds=100)).isoformat()
+    first = s.collector_claim_source(observed_at=stamp)['did']
+    assert RecentStore(tmp_path/'store').collector_claim_source(observed_at=stamp)['did'] != first
 
 
 def test_real_store_mock_http_discovery_and_collection(tmp_path, monkeypatch):
@@ -282,7 +287,7 @@ def test_failed_attempt_seals_gap_before_clearing_exact_token():
     s = Store(); steps = []
     s.begin_source_attempt = lambda did, observed_at: 'exact-attempt'
     s.record_gap = lambda *args: steps.append('gap')
-    def finish(did, token):
+    def finish(did, token,observed_at=None):
         assert did == DID and token == 'exact-attempt'
         steps.append('finished')
     s.finish_source_attempt = finish
@@ -299,3 +304,32 @@ def test_discovery_continuation_survives_adapter_restart_and_terminal_rescan():
     assert successor.discover()['terminal']
     assert t.calls[0][1]['cursor'] == 'page-two'
     assert s.collector_discovery_cursor() is None and len(s.sources) == 2
+
+
+def test_discovery_refusal_still_collects_enrolled_source():
+    s = Store()
+    c, _ = collector(s, [TimeoutError(), {'labels': [label()], 'cursor': 'next'}])
+    result = c.run_round(discover=True)
+    assert result['discovery']['status'] == 'refused'
+    assert len(s.pages) == 1 and s.gaps
+
+
+def test_request_timeout_does_not_join_resolver_before_next_request():
+    import asyncio
+    import threading
+    from labelwatch.recent_collector import HTTPTransport
+    release = threading.Event()
+    transport = HTTPTransport()
+    async def fixture(operation, params, max_bytes, timeout_seconds):
+        if operation == 'blocked':
+            await asyncio.get_running_loop().run_in_executor(None, release.wait)
+        return b'{}'
+    transport._request = fixture
+    with transport:
+        try:
+            with pytest.raises(TimeoutError):
+                transport.request('blocked', {}, max_bytes=100, timeout_seconds=.02)
+            assert transport.request('ready', {}, max_bytes=100, timeout_seconds=.1) == b'{}'
+            assert not release.is_set()
+        finally:
+            release.set()

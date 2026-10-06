@@ -19,11 +19,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not args.network:
         parser.error('network collection requires explicit --network')
-    collector = Collector(RecentStore(args.store), HTTPTransport())
-    discovery = collector.discover() if args.discover else None
-    result = collector.tick()
-    print(json.dumps({'discovery': discovery, 'collection': result}, sort_keys=True))
-    return 1 if any(row['status'] != 'accepted' for row in result['results']) else 0
+    with HTTPTransport() as transport:
+        collector=Collector(RecentStore(args.store),transport)
+        result=collector.run_round(discover=args.discover)
+        print(json.dumps(result,sort_keys=True),flush=True)
+    return 1 if (result['discovery'] and result['discovery']['status']=='refused') or any(row['status']!='accepted' for row in result['collection']['results']) else 0
 
 
 if __name__ == '__main__':

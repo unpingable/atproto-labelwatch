@@ -27,13 +27,14 @@ class Limits:
     pages: int = 128
     sources: int = 2048
     seconds: float = 10
+    request_seconds: float = 1
 
     def __post_init__(self):
         for value, maximum in ((self.response_bytes, 1024*1024), (self.page_rows, 100),
                                (self.pages, 128), (self.sources, 2048)):
             if type(value) is not int or not 1 <= value <= maximum:
                 raise Refused('invalid finite collector limit')
-        if not 0 < self.seconds <= 30:
+        if not 0 < self.seconds <= 30 or not 0 < self.request_seconds <= min(10,self.seconds):
             raise Refused('invalid collector deadline')
 
 
@@ -64,12 +65,15 @@ class Collector:
         self.monotonic, self.now = monotonic, now
 
     def _request(self, operation, params, deadline):
-        remaining = deadline-self.monotonic()
+        started=self.monotonic()
+        remaining = deadline-started
         if remaining <= 0:
             raise Refused('collector deadline exceeded')
+        allowance=min(remaining,self.limits.request_seconds)
+        request_deadline=started+allowance
         data = self.transport.request(operation, params, max_bytes=self.limits.response_bytes,
-                                      timeout_seconds=remaining)
-        if self.monotonic() >= deadline:
+                                      timeout_seconds=allowance)
+        if self.monotonic() >= request_deadline:
             raise Refused('collector deadline exceeded')
         if not isinstance(data, bytes) or len(data) > self.limits.response_bytes:
             raise Refused('response byte ceiling')
@@ -103,6 +107,18 @@ class Collector:
                                     request_cursor=continuation, next_cursor=next_cursor)
         return {'discovered': len(rows), 'cursor': next_cursor, 'terminal': next_cursor is None}
 
+    def run_round(self, discover=False):
+        """A discovery outage does not suppress already-enrolled ready work."""
+        discovery=None
+        if discover:
+            started=self.now()
+            try:discovery={'status':'accepted',**self.discover()}
+            except Exception as exc:
+                ended=max(self.now(),started+timedelta(microseconds=1))
+                self.store.record_gap(started.isoformat(),ended.isoformat(),'source_unavailable')
+                discovery={'status':'refused','reason':str(exc)[:160] if isinstance(exc,Refused) else type(exc).__name__}
+        return {'discovery':discovery,'collection':self.tick()}
+
     def tick(self):
         """Finite pages per invocation; persisted per-attempt claims preserve fairness.
 
@@ -122,19 +138,18 @@ class Collector:
             raise Refused('duplicate roster source')
         if not rows:
             return {'attempted': 0, 'results': [], 'coverage': 'unknown'}
-        ordered = rows
         deadline = self.monotonic()+self.limits.seconds
         results = []
-        for _ in ordered[:self.limits.pages]:
+        for _ in range(self.limits.pages):
             if self.monotonic() >= deadline:
                 break
-            item = self.store.collector_claim_source(limit=self.limits.sources)
-            if item is None:
-                break
-            item = source(item)
             stamp = self.now()
             if stamp.tzinfo is None or stamp.utcoffset() != timedelta(0):
                 raise Refused('UTC observation clock required')
+            item = self.store.collector_claim_source(limit=self.limits.sources,observed_at=stamp.isoformat())
+            if item is None:
+                break
+            item = source(item)
             attempt = self.store.begin_source_attempt(item['did'], stamp.isoformat())
             try:
                 position = cursor(self.store.collector_cursor(item['did']))
@@ -168,9 +183,9 @@ class Collector:
                 # Gap persistence failure is fatal: never report a recorded gap that was lost.
                 end = max(self.now(), stamp+timedelta(microseconds=1))
                 self.store.record_gap(stamp.isoformat(), end.isoformat(), 'source_unavailable')
-                self.store.finish_source_attempt(item['did'], attempt)
+                self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat())
                 results.append({'source': item['did'], 'status': 'refused', 'reason': str(exc)[:160] if isinstance(exc, Refused) else type(exc).__name__})
-        return {'attempted': len(results), 'deferred': len(rows)-len(results), 'results': results, 'coverage': 'unknown'}
+        return {'attempted': len(results), 'deferred': len(rows)-len({row['source'] for row in results}), 'results': results, 'coverage': 'unknown'}
 
 
 class HTTPTransport:
@@ -179,15 +194,42 @@ class HTTPTransport:
     ``http_transport`` accepts an httpx async test transport. An async deadline
     includes resolution and streamed body reads. OS resolver/executor shutdown
     can outlive cancellation: the invoking service must also bound process life.
-    No retries/redirects or ambient proxy credentials. Discovery retains unresolved DIDs, resolved on collection.
+    A context spans one finite invocation, so a request timeout does not join
+    resolver workers before other sources run. Four resolver workers bound memory;
+    exhaustion by uncancellable DNS still limits progress. No retries/redirects
+    or ambient proxy credentials. Discovery retains unresolved DIDs.
     """
     def __init__(self, http_transport=None):
         self.http_transport = http_transport
+        self._loop=None
+        self._executor=None
+
+    def __enter__(self):
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        if self._loop is not None:raise RuntimeError('transport invocation already open')
+        self._loop=asyncio.new_event_loop()
+        self._executor=ThreadPoolExecutor(max_workers=4,thread_name_prefix='labelwatch-resolver')
+        self._loop.set_default_executor(self._executor)
+        return self
+
+    def __exit__(self,*exc):
+        # A timed-out resolver must not force executor shutdown before the next
+        # enrolled source is attempted. Join only after this finite invocation.
+        # OS DNS may still stall here; the enclosing process deadline is required.
+        try:
+            self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+            self._executor.shutdown(wait=True,cancel_futures=True)
+        finally:
+            self._loop.close();self._loop=None;self._executor=None
 
     def request(self, operation, params, *, max_bytes, timeout_seconds):
         import asyncio
-        return asyncio.run(asyncio.wait_for(self._request(operation, params, max_bytes, timeout_seconds),
-                                             timeout=timeout_seconds))
+        if self._loop is None:
+            with self:
+                return self.request(operation,params,max_bytes=max_bytes,timeout_seconds=timeout_seconds)
+        return self._loop.run_until_complete(asyncio.wait_for(
+            self._request(operation,params,max_bytes,timeout_seconds),timeout=timeout_seconds))
 
     async def _request(self, operation, params, max_bytes, timeout_seconds):
         import httpx
