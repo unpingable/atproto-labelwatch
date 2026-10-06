@@ -118,8 +118,13 @@ def main(args):
     # and establishes retrieval latency only, not complete dense-account export.
     from recent_provider import RecentProvider
     provider = RecentProvider(store)
-    subject = rows[-1]['target_did']
-    expected_ids = {row['event_hash'] for row in rows if row['target_did'] == subject}
+    # Legacy target_did is nullable even for account labels. The public subject
+    # is the account URI or the repository authority of an at:// URI.
+    def subject_of(row):
+        uri = row['uri']
+        return uri.removeprefix('at://').partition('/')[0] if uri.startswith('at://') else uri
+    subject = subject_of(rows[-1])
+    expected_ids = {row['event_hash'] for row in rows if subject_of(row) == subject}
     query_started = time.monotonic()
     query_end = iso(observed + dt.timedelta(microseconds=1))
     with provider.snapshot(subject, iso(observed), query_end, 10001,
@@ -127,7 +132,7 @@ def main(args):
         actual_rows = answer['rows']
         assert len(actual_rows) == len(expected_ids), 'last-batch account correspondence'
         assert all(row['observed_at'] == iso(observed) for row in actual_rows)
-        assert {row['uri'] for row in actual_rows} == {row['uri'] for row in rows if row['target_did'] == subject}
+        assert {row['uri'] for row in actual_rows} == {row['uri'] for row in rows if subject_of(row) == subject}
         exact_query = dict(rows=len(actual_rows), elapsed=time.monotonic()-query_started,
                            frontier=answer['frontier'], coverage=answer['coverage'])
     query_started = time.monotonic()
