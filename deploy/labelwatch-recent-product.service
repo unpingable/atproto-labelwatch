@@ -1,0 +1,39 @@
+# Skeleton only; content is owned by the product implementer. Not installed.
+[Unit]
+Description=Labelwatch recent observatory: read-only product (127.0.0.1:8431)
+ConditionPathExists=!/etc/labelwatch-operator-safe-hold
+ConditionPathExists=/etc/labelwatch-recent-qualified-activation
+
+[Service]
+Type=simple
+User=labelwatch
+Group=labelwatch
+EnvironmentFile=/etc/labelwatch-recent.env
+WorkingDirectory=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source/src:/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source
+ExecStart=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/venv/bin/python tools/segmented_qualification/recent_product.py --store ${LABELWATCH_RECENT_STORE} --port 8431 --window-days ${LABELWATCH_RECENT_WINDOW_DAYS}
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=30
+TimeoutStopSec=10
+KillMode=control-group
+MemoryMax=2G
+CPUQuota=100%
+# Readers take reader.lock and the SQLite -shm in the store root.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0027
+ReadWritePaths=/REPLACE_WITH_ADMITTED_RECENT_ROOT
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=20

@@ -1,0 +1,49 @@
+# Example only; not installed. See deploy/README-recent.md for the release
+# layout, the shared environment file and the hold/activation markers.
+# One invocation is one finite collection round.
+[Unit]
+Description=Labelwatch recent observatory: one bounded collection round
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/etc/labelwatch-operator-safe-hold
+ConditionPathExists=/etc/labelwatch-recent-qualified-activation
+
+[Service]
+Type=oneshot
+User=labelwatch
+Group=labelwatch
+EnvironmentFile=/etc/labelwatch-recent.env
+WorkingDirectory=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source/src:/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source
+# Dependency identity gate before any network work.
+ExecStartPre=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/venv/bin/python -c "import importlib.metadata as m; import sys; expected={'httpx':'0.28.1','httpcore':'1.0.9','h11':'0.16.0','anyio':'4.15.1','certifi':'2026.7.22','idna':'3.19','typing-extensions':'4.16.0','duckdb':'1.4.3','pyarrow':'22.0.0'}; sys.exit(0 if all(m.version(k)==v for k,v in expected.items()) else 'unqualified dependency identity')"
+# units.lock serialises collection against daily maintenance. If maintenance
+# holds it, this round is skipped (exit 75, counted as success), not queued.
+ExecStart=/usr/bin/flock -n -E 75 ${LABELWATCH_RECENT_ADMITTED_ROOT}/units.lock /opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/venv/bin/python tools/segmented_qualification/recent_collect.py --store ${LABELWATCH_RECENT_STORE} --network --discover
+SuccessExitStatus=75
+# Process-group ceiling independent of transport cooperation; a killed round
+# recovers its persisted attempt as an explicit observation gap.
+TimeoutStartSec=45
+TimeoutStopSec=5
+KillMode=control-group
+SendSIGKILL=yes
+Restart=no
+MemoryMax=2G
+CPUQuota=100%
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0027
+ReadWritePaths=/REPLACE_WITH_ADMITTED_RECENT_ROOT
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=20

@@ -464,12 +464,9 @@ class RecentStore(Store):
                     if status in ('SEALED','ARCHIVED'):
                         source=self.root/(owner+'.sqlite')
                         need=source.stat().st_size*2+1048576
-                        # Preserve reserve after the archive temporary envelope,
-                        # independently on both shared filesystems.
-                        for path in ('/','/data',str(self.root/'archive')):
-                            fs=os.statvfs(path)
-                            if fs.f_bavail*fs.f_frsize-need<64424509440 or fs.f_favail<16:
-                                raise RuntimeError('daily archive allocation not admitted')
+                        # Preserve every configured filesystem reserve after the
+                        # archive temporary envelope lands on its filesystem.
+                        self.admit_reserves(need,(self.root,self.root/'archive'),'daily archive allocation not admitted')
                         self.archive(owner)
                     self.retire(owner);completed.append(owner)
             drain()  # Free the two-owner queue before creating today's owner.
@@ -555,9 +552,7 @@ class RecentStore(Store):
                 # reclaims global high-water pages with a measured temporary peak.
                 # This isolated adapter has one state writer and fenced readers.
                 if c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0]:raise RuntimeError('state checkpoint pinned')
-                import shutil
-                if shutil.disk_usage(self.root).free-self.state.stat().st_size*2 < 64424509440:
-                    raise RuntimeError('global compaction allocation not admitted')
+                self.admit_reserves(self.state.stat().st_size*2,(self.root,),'global compaction allocation not admitted')
                 c.execute('VACUUM')
                 c.execute('DELETE FROM q_recent_transition')
                 db.set_meta(c,'q:recent_generation',str(int(db.get_meta(c,'q:recent_generation'))+1));c.commit()

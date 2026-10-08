@@ -31,13 +31,110 @@ ROOT = Path('/data/git/atproto-nutrition/portfolio-private/campaigns/labelwatch-
 RESERVE = 64424509440
 
 
-def owned(root):
-    root = Path(root).resolve()
-    horizon = ROOT.parent.parent / 'labelwatch-segmented-horizon-capacity-20261005' / 'runtime'
-    repair = ROOT.parent.parent / 'labelwatch-global-lifetime-custody-20261005' / 'runtime'
-    if ROOT not in root.parents and horizon not in root.parents and repair not in root.parents:
-        raise ValueError('only new campaign-owned child fixtures are admitted')
+ADMITTED_ENV = 'LABELWATCH_RECENT_ADMITTED_ROOT'
+RESERVES_ENV = 'LABELWATCH_RECENT_RESERVES'
+RESERVES_FILE_ENV = 'LABELWATCH_RECENT_RESERVES_FILE'
+INODES_ENV = 'LABELWATCH_RECENT_MIN_FREE_INODES'
+OVERRIDE_ENV = 'LABELWATCH_RECENT_RESERVES_OVERRIDE_ACK'
+RESERVES_KEY = 'q:recent_reserves'
+RESERVES_SCHEMA = 'labelwatch.recent-reserves.v1'
+MIN_FREE_INODES = 1000000
+
+
+def campaign_roots():
+    base = ROOT.parent.parent
+    return (ROOT, base / 'labelwatch-segmented-horizon-capacity-20261005' / 'runtime',
+            base / 'labelwatch-global-lifetime-custody-20261005' / 'runtime')
+
+
+def _unlinked(path):
+    """Absolute path with no symlinked component (realpath is a no-op)."""
+    path = str(path)
+    if not os.path.isabs(path): raise ValueError('admitted root must be absolute')
+    if os.path.realpath(path) != os.path.normpath(path): raise ValueError('admitted path has a symlinked component')
+    return Path(os.path.normpath(path))
+
+
+def admitted_root():
+    """One operator-configured root, disjoint from every campaign root."""
+    value = os.environ.get(ADMITTED_ENV)
+    if not value: return None
+    root = _unlinked(value)
+    if root == Path('/') or not root.is_dir(): raise ValueError('admitted root must be an existing non-/ directory')
+    for campaign in campaign_roots():
+        campaign = campaign.resolve()
+        if root == campaign or root in campaign.parents or campaign in root.parents:
+            raise ValueError('admitted root overlaps a campaign root')
     return root
+
+
+def in_campaign(root):
+    root = Path(root).resolve()
+    return any(c in root.parents for c in campaign_roots())
+
+
+def owned(root):
+    if in_campaign(root): return Path(root).resolve()
+    admitted = admitted_root()
+    if admitted is not None:
+        root = _unlinked(os.path.abspath(root))
+        if admitted in root.parents: return root
+    raise ValueError('only new campaign-owned child fixtures are admitted')
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'))
+
+
+def reserve_policy(root):
+    """Running per-filesystem reserve policy; never assumes /data exists.
+
+    Unconfigured is a refusal except for campaign fixtures, which keep the
+    qualified crow pair (/ and /data at 60 GiB each).
+    """
+    raw = os.environ.get(RESERVES_ENV)
+    if not raw and os.environ.get(RESERVES_FILE_ENV):
+        raw = Path(os.environ[RESERVES_FILE_ENV]).read_text()
+    if raw:
+        try: entries = json.loads(raw)
+        except ValueError as exc: raise RuntimeError('reserve_policy_malformed') from exc
+    elif in_campaign(root):
+        entries = [{'mount': '/', 'bytes': RESERVE}, {'mount': '/data', 'bytes': RESERVE}]
+    else:
+        raise RuntimeError('reserve_policy_unconfigured')
+    if not isinstance(entries, list) or not entries: raise RuntimeError('reserve_policy_malformed')
+    seen = {}
+    for e in entries:
+        if not isinstance(e, dict) or set(e) != {'mount', 'bytes'} or not isinstance(e['mount'], str) \
+                or type(e['bytes']) is not int or e['bytes'] <= 0 or not os.path.isabs(e['mount']) \
+                or os.path.normpath(e['mount']) != e['mount'] or e['mount'] in seen:
+            raise RuntimeError('reserve_policy_malformed')
+        if not os.path.isdir(e['mount']): raise RuntimeError('reserve_policy_mount_missing: ' + e['mount'])
+        seen[e['mount']] = e['bytes']
+    try: inodes = int(os.environ.get(INODES_ENV) or MIN_FREE_INODES)
+    except ValueError as exc: raise RuntimeError('reserve_policy_malformed') from exc
+    if inodes < 0: raise RuntimeError('reserve_policy_malformed')
+    return {'schema': RESERVES_SCHEMA, 'min_free_inodes': inodes,
+            'reserves': [{'mount': m, 'bytes': seen[m]} for m in sorted(seen)]}
+
+
+def weaker(running, recorded):
+    have = {e['mount']: e['bytes'] for e in running['reserves']}
+    return running['min_free_inodes'] < recorded['min_free_inodes'] or any(
+        have.get(e['mount'], -1) < e['bytes'] for e in recorded['reserves'])
+
+
+def admit_reserves(policy, need=0, paths=(), message='shared_reserve_unavailable'):
+    """Every reserve holds after `need` bytes land on the filesystems of `paths`."""
+    devices = {os.stat(p).st_dev for p in paths}
+    covered = set()
+    for e in policy['reserves']:
+        device = os.stat(e['mount']).st_dev; covered.add(device)
+        s = os.statvfs(e['mount'])
+        if s.f_bavail * s.f_frsize - (need if device in devices else 0) < e['bytes'] \
+                or s.f_favail < policy['min_free_inodes']:
+            raise RuntimeError(message)
+    if devices - covered: raise RuntimeError(message + ': filesystem without configured reserve')
 
 
 def atomic(path, value):
@@ -142,10 +239,28 @@ class Store:
     def __init__(self, root):
         self.root = owned(root)
         self.state = self.root / 'state.sqlite'
+        if self.state.exists(): self.reserve_policy()
+
+    def reserve_policy(self):
+        """Running policy, refused when weaker than the one recorded at init."""
+        policy = reserve_policy(self.root)
+        with contextlib.closing(sqlite3.connect(f'file:{self.state}?mode=ro', uri=True, timeout=2)) as c:
+            row = c.execute('SELECT value FROM meta WHERE key=?', (RESERVES_KEY,)).fetchone()
+        if row is None:
+            # Pre-existing campaign fixtures predate the record; nothing else does.
+            if in_campaign(self.root): return policy
+            raise RuntimeError('reserve_policy_record_missing')
+        recorded = json.loads(row[0])
+        if weaker(policy, recorded) and os.environ.get(OVERRIDE_ENV) != hashlib.sha256(row[0].encode()).hexdigest():
+            raise RuntimeError('reserve_policy_weaker_than_recorded')
+        return policy
+
+    def admit_reserves(self, need=0, paths=(), message='shared_reserve_unavailable'):
+        admit_reserves(self.reserve_policy(), need, paths, message)
 
     @classmethod
     def create(cls, root, period='2026-09-28', floor='2026-08-15T00:00:00Z'):
-        root = owned(root); root.mkdir()
+        root = owned(root); policy = canonical(reserve_policy(root)); root.mkdir()
         c = connect(root / 'state.sqlite'); db.init_db(c)
         c.executescript('''
         CREATE TABLE q_segments(identity TEXT PRIMARY KEY, status TEXT NOT NULL, schema_generation INTEGER NOT NULL);
@@ -156,6 +271,7 @@ class Store:
         ''')
         custody.initialize(c, str(root))
         db.set_meta(c, retention.RETENTION_FLOOR_KEY, floor)
+        db.set_meta(c, RESERVES_KEY, policy)
         db.set_meta(c, 'q:max_pending', '10000'); db.set_meta(c, 'q:max_local_segments', '2')
         db.set_meta(c, 'q:active', period)
         c.execute('INSERT INTO q_segments VALUES (?, ?, 23)', (period, 'ACTIVE'))
@@ -165,9 +281,7 @@ class Store:
 
     def check_local(self, injected=None):
         if injected == 'root_low': raise RuntimeError('local_capacity_below_required_bound')
-        for fs in ('/', '/data'):
-            s = os.statvfs(fs)
-            if s.f_bavail * s.f_frsize < RESERVE: raise RuntimeError('shared_reserve_unavailable')
+        self.admit_reserves(paths=(self.root,), message='shared_reserve_unavailable')
         # Finite fixture limits. Adoption limits must be derived from the
         # measured envelope; none of these changes a production gate.
         if self.state.exists():

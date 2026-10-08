@@ -1,0 +1,43 @@
+# Example only; not installed. Daily UTC rotation, archive, retirement and
+# window expiry (recent_maintain.py -> RecentStore.advance_day). Idempotent:
+# a second run on the same UTC day finds the owner already rotated and the
+# expiry journal empty; an interrupted run resumes its journal.
+[Unit]
+Description=Labelwatch recent observatory: daily rotation and window maintenance
+ConditionPathExists=!/etc/labelwatch-operator-safe-hold
+ConditionPathExists=/etc/labelwatch-recent-qualified-activation
+
+[Service]
+Type=oneshot
+User=labelwatch
+Group=labelwatch
+EnvironmentFile=/etc/labelwatch-recent.env
+WorkingDirectory=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source/src:/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source
+# Waits for an in-flight collection round (<=45 s) to finish, then holds the
+# unit lock so no round observes a clock older than the maintenance clock.
+ExecStart=/usr/bin/flock -w 120 ${LABELWATCH_RECENT_ADMITTED_ROOT}/units.lock /opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/venv/bin/python tools/segmented_qualification/recent_maintain.py --store ${LABELWATCH_RECENT_STORE}
+TimeoutStartSec=2h
+TimeoutStopSec=30
+KillMode=control-group
+SendSIGKILL=yes
+Restart=no
+MemoryMax=4G
+CPUQuota=100%
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0027
+ReadWritePaths=/REPLACE_WITH_ADMITTED_RECENT_ROOT
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=20
