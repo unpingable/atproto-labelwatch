@@ -19,11 +19,18 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not args.network:
         parser.error('network collection requires explicit --network')
-    with HTTPTransport() as transport:
-        collector=Collector(RecentStore(args.store),transport)
-        result=collector.run_round(discover=args.discover)
-        print(json.dumps(result,sort_keys=True),flush=True)
-    return 1 if (result['discovery'] and result['discovery']['status']=='refused') or any(row['status']!='accepted' for row in result['collection']['results']) else 0
+    # Exit 0 when the round ran, even if single sources were refused (they are
+    # per-source state, listed in the JSON). Exit 1 only for whole-round failure:
+    # the store refused (open, reserve, maintenance hold) or nothing was attempted.
+    try:
+        with HTTPTransport() as transport:
+            collector=Collector(RecentStore(args.store),transport)
+            result=collector.run_round(discover=args.discover)
+    except Exception as exc:
+        print(json.dumps({'round':{'status':'refused','reason':(str(exc) or type(exc).__name__)[:160]}},sort_keys=True),flush=True)
+        return 1
+    print(json.dumps(result,sort_keys=True),flush=True)
+    return 1 if result['collection'].get('round',{}).get('status')=='refused' else 0
 
 
 if __name__ == '__main__':

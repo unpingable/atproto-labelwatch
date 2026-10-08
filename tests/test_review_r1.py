@@ -30,7 +30,6 @@ def meta(store, key):
         return db.get_meta(c, key)
 
 
-@pytest.mark.xfail(strict=True, reason='storage maintain lane (recent_storage.py gap expiry, outside reserve call sites)')
 def test_gap_overflow_is_cleared_once_its_gaps_expire(store):
     """129 gaps on day one overflow the 128-row table; after they all leave the
     30-day window the store still discloses the whole window as unknown forever."""
@@ -51,7 +50,6 @@ class Transport:
                                        'cts': '2026-09-01T23:59:00Z'}]}).encode()
 
 
-@pytest.mark.xfail(strict=True, reason='collector lane')
 def test_pre_maintenance_refusal_is_not_recorded_as_source_unavailable(store):
     """Between 00:00 and the 00:05 maintenance run the store refuses ingestion;
     the collector records that local refusal as a source outage."""

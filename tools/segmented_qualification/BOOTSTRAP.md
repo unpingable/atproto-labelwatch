@@ -104,6 +104,24 @@ and `coverage: unknown` while any source is unstarted, probing or refused.
 the summary as `bootstrap`. Re-arming a refused source needs an explicit operator
 rule; none exists yet.
 
+## Failure and gap policy (review r1, 2026-10-08)
+
+* A single source's failed attempt (transport, invalid page, bootstrap probe) is
+  per-source state: `unavailable_since` (first failed attempt start, cleared by the
+  next success), `last_failure_at`, `last_failure_reason`, `failures`. It never
+  writes `q_recent_gaps`. The summary reports `unavailable` and `unavailable_sources`
+  and `coverage: unknown` while any source is unavailable.
+* Store-wide gaps mean collection as a whole was not observing: discovery outage,
+  lost process (pending attempt), maintenance. The daily-owner hold (00:00 UTC until
+  rotation) is checked before any claim; it records one `maintenance` gap from
+  midnight to now and stops the round. Overlapping same-reason gaps merge.
+* Gap overflow remembers the dropped interval; when expiry brings the table under
+  128 rows the flag resets and the interval is re-recorded once as `unknown` if it is
+  still in the window.
+* `recent_collect.py` exits 0 when the round ran (per-source refusals are listed in
+  `collection.refused_sources`), and 1 only when the round was refused (store hold,
+  deadline before any attempt, store open/reserve refusal).
+
 ## Unknown / not guaranteed
 
 * Per-source coverage starts at `boot_at` (established time). Labels issued between
