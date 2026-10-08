@@ -67,7 +67,7 @@ def test_envelope_schema_counts_and_top_labelers(store):
                             'reason': 'source_unavailable'}]
     assert cov['sources'] == {'seeded': 3, 'unstarted': 3, 'probing': 0, 'established': 0, 'refused': 0,
                               'pre_epoch_skipped': 0, 'undated_skipped': 0}
-    assert cov['observed_through'] == '2026-09-02T12:00:00.000000Z'
+    assert cov['observed_through'] is None  # ingest() fixtures accept no collector page
     assert stats['last_maintenance']['generation'] == 1
 
 
@@ -124,7 +124,7 @@ def test_refuses_untraversable_directory_without_partial_publish(tmp_path, store
     recent_overview.publish(pubdir, recent_overview.held(NOW), ancestors=False)
     before = (pubdir / 'overview.json').read_bytes()
     os.chmod(pubdir, 0o700)
-    with pytest.raises(recent_overview.OverviewRefused, match='world-traversable'):
+    with pytest.raises(recent_overview.OverviewRefused, match='writable'):
         recent_overview.publish(pubdir, recent_overview.held(NOW), ancestors=False)
     code = recent_publish.main(['--store', str(store.root), '--pubdir', str(pubdir), '--now', NOW.isoformat()])
     assert code == 2 and '"published": false' in capsys.readouterr().out
@@ -209,3 +209,37 @@ def test_refused_source_is_counted_publicly_and_its_reason_kept_private(store):
     landing = get(h, '/')[2].decode()
     assert 'opaque_cursor' not in landing
     assert 'Refused (could not be safely initialised)</th><td>1</td>' in landing
+
+
+def test_observed_through_is_the_latest_accepted_page(store):
+    store.accept_page([], source=B, request_cursor=None, next_cursor='7', observed_at='2026-09-02T12:00:00Z',
+                      skipped={'pre_epoch': 2})
+    env = recent_overview.overview(recent_publish.read_store(store, NOW), NOW, signature='x')
+    assert env['coverage']['observed_through'] == '2026-09-02T12:00:00.000000Z'
+    assert env['coverage']['sources']['pre_epoch_skipped'] == 2
+
+
+def test_group_or_world_writable_directory_is_refused(tmp_path):
+    for mode in (0o777, 0o775, 0o757):
+        pubdir = tmp_path / ('pub-%o' % mode); pubdir.mkdir(); os.chmod(pubdir, mode)
+        with pytest.raises(recent_overview.OverviewRefused, match='writable'):
+            recent_overview.publish(pubdir, recent_overview.held(NOW), ancestors=False)
+        assert not (pubdir / 'overview.json').exists()
+    ok = tmp_path / 'pub-750'; ok.mkdir(); os.chmod(ok, 0o751)
+    with pytest.raises(recent_overview.OverviewRefused):
+        recent_overview.publish(ok, recent_overview.held(NOW), ancestors=False)  # o+x without o+r
+
+
+def test_stale_temporaries_are_swept(tmp_path):
+    pubdir = tmp_path / 'pub'
+    recent_overview.publish(pubdir, recent_overview.held(NOW), ancestors=False)
+    (pubdir / '.overview.tmp-99999').write_text('partial')
+    recent_overview.publish(pubdir, recent_overview.held(NOW), ancestors=False)
+    assert sorted(p.name for p in pubdir.iterdir()) == ['overview.json']
+
+
+def test_status_read_does_not_take_the_writer_lock(store):
+    from storage import lock
+    with lock(store.root):  # a collector round holding the writer lease
+        stats = recent_publish.read_store(store, NOW, timeout=0.5, budget=5)
+    assert stats['counts']['events_7d'] == 4

@@ -5,10 +5,10 @@
   PYTHONPATH=src:. python tools/segmented_qualification/recent_publish.py --pubdir DIR --hold
   ... --hold-marker /etc/labelwatch-operator-safe-hold --activation-marker /etc/labelwatch-recent-qualified-activation
 
-Reads one admitted RecentStore under the same writer/reader lease order as the
-account provider, releases the writer lease after the state snapshot, and keeps
-a shared reader lease (which fences retirement and maintenance) while counting
-retained event payloads. Publication is an atomic replace of <pubdir>/overview.json
+Reads one admitted RecentStore without the writer lease: one read-only WAL
+transaction snapshots the state (so collection is never stalled), and a shared
+reader lease (which fences retirement and maintenance) is held while counting
+retained event payloads. Every scan runs under a progress-handler deadline. Publication is an atomic replace of <pubdir>/overview.json
 and refuses, with a non-zero exit and no replacement, when the directory or file
 would not be readable by another service account.
 """
@@ -16,13 +16,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 import time
-from contextlib import ExitStack, closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 from recent_storage import RecentStore, clock, iso, micros, day_number, day_name  # noqa: E402
 from storage import connect, lock, db, custody  # noqa: E402
 from labelwatch import recent_overview  # noqa: E402
@@ -51,10 +53,12 @@ def _count_since(c, cut, upper):
     return whole + edge
 
 
-def snapshot_state(store, now, *, timeout=10.0, labelers=True):
-    """Read every state-owned figure in one read transaction under the writer lease."""
+def snapshot_state(store, now, *, deadline, labelers=True):
+    """Read every state-owned figure in one read-only WAL transaction (no writer lease)."""
     c = connect(store.state, readonly=True)
     try:
+        c.execute('PRAGMA query_only=ON')
+        c.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
         c.execute('BEGIN')
         store.require(c)
         if c.execute('SELECT 1 FROM q_recent_transition').fetchone():
@@ -62,6 +66,9 @@ def snapshot_state(store, now, *, timeout=10.0, labelers=True):
         meta = {key: db.get_meta(c, 'q:recent_' + key) for key in ('start', 'end', 'clock', 'generation', 'gap_overflow')}
         acquisition = store.acquisition(c)
         upper = c.execute('SELECT COALESCE(MAX(event_id),0) FROM q_recent_seen').fetchone()[0]
+        # Latest accepted collector page, not the store clock (which init sets
+        # to the epoch start): null until a page has actually been accepted.
+        observed_through = c.execute('SELECT MAX(last_observed) FROM q_recent_sources').fetchone()[0]
         cuts = {'events_24h': now - timedelta(hours=24), 'events_7d': now - timedelta(days=7),
                 'events_window': now - timedelta(days=recent_overview.WINDOW_DAYS)}
         counts = {key: _count_since(c, cut, upper) for key, cut in cuts.items()}
@@ -88,15 +95,17 @@ def snapshot_state(store, now, *, timeout=10.0, labelers=True):
                                        (day, upper)).fetchone()
                 if not n:
                     continue
-                pending = dict(c.execute('SELECT e.labeler_did,COUNT(*) FROM label_events e JOIN q_pending p ON p.id=e.id '
-                                         'WHERE p.segment=? AND e.id>=? AND e.id<=? GROUP BY e.labeler_did', (owner, low, upper)).fetchall())
+                # Not yet flushed at the snapshot; a flush may move them into the
+                # segment before it is read, so they are counted exactly once.
+                pending = dict(c.execute('SELECT e.id,e.labeler_did FROM label_events e JOIN q_pending p ON p.id=e.id '
+                                         'WHERE p.segment=? AND e.id>=? AND e.id<=?', (owner, low, upper)).fetchall())
                 plan.append({'owner': owner, 'low': low, 'expected': n, 'status': segments.get(owner),
                              'receipt': receipts.get(owner), 'pending': pending})
         c.rollback()
     finally:
         c.close()
     return {'acquisition': acquisition, 'meta': meta, 'upper': upper, 'counts': counts, 'gaps': gaps,
-            'gap_overflow': meta['gap_overflow'] == '1', 'observed_through': meta['clock'],
+            'gap_overflow': meta['gap_overflow'] == '1', 'observed_through': observed_through,
             'sources': None, 'refused_sources': [], 'plan': plan}
 
 
@@ -111,7 +120,10 @@ def _labeler_counts(store, plan, upper, deadline):
             if time.monotonic() > deadline:
                 raise TimeoutError('overview deadline exceeded')
             owner, low = item['owner'], item['low']
-            found = dict(item['pending'])
+            pending = item['pending']
+            found = {}
+            for did in pending.values():
+                found[did] = found.get(did, 0) + 1
             source = store.root / (owner + '.sqlite')
             if source.exists():
                 seg = connect(source, readonly=True)
@@ -119,6 +131,11 @@ def _labeler_counts(store, plan, upper, deadline):
                     seg.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
                     rows = seg.execute('SELECT labeler_did,COUNT(*) FROM label_events WHERE id>=? AND id<=? GROUP BY labeler_did',
                                        (low, upper)).fetchall()
+                    ids = list(pending)
+                    for offset in range(0, len(ids), 500):
+                        part = ids[offset:offset + 500]
+                        for (did,) in seg.execute('SELECT labeler_did FROM label_events WHERE id IN (' + ','.join('?' * len(part)) + ')', part):
+                            found[did] -= 1  # flushed after the snapshot; already counted as pending
                 finally:
                     seg.close()
             elif item['receipt'] is not None:
@@ -146,15 +163,9 @@ def read_store(store, now, *, timeout=10.0, budget=120.0, labelers=True):
     store = store if isinstance(store, RecentStore) else RecentStore(store)
     now = clock(now.isoformat() if isinstance(now, datetime) else now)
     deadline = time.monotonic() + budget
-    with ExitStack() as reader:
-        writer = ExitStack()
-        try:
-            writer.enter_context(lock(store.root, timeout=timeout))
-            reader.enter_context(lock(store.root, 'reader.lock', shared=True, timeout=timeout))
-            stats = snapshot_state(store, now, labelers=labelers)
-            stats['sources'], stats['refused_sources'] = _sources(store)
-        finally:
-            writer.close()  # The shared reader lease alone fences retirement/maintenance.
+    with lock(store.root, 'reader.lock', shared=True, timeout=timeout):
+        stats = snapshot_state(store, now, deadline=deadline, labelers=labelers)
+        stats['sources'], stats['refused_sources'] = _sources(store)
         top = []
         if labelers:
             totals = _labeler_counts(store, stats['plan'], stats['upper'], deadline)
@@ -194,7 +205,7 @@ def main(argv=None):
             stats = read_store(args.store, now, budget=args.budget_seconds)
             envelope = recent_overview.overview(stats, now)
         target = recent_overview.publish(args.pubdir, envelope)
-    except (recent_overview.OverviewRefused, RuntimeError, TimeoutError, OSError, ValueError) as exc:
+    except (recent_overview.OverviewRefused, RuntimeError, TimeoutError, OSError, ValueError, sqlite3.Error) as exc:
         print(json.dumps({'published': False, 'error': type(exc).__name__, 'reason': str(exc)[:240]}, sort_keys=True))
         return 2
     print(json.dumps({'published': True, 'path': str(target), 'hold': envelope['hold'],
