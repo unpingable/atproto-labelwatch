@@ -40,12 +40,13 @@ def _sources(store):
     summary = store.collector_bootstrap_summary()
     counts = {key: int(summary[key]) for key in ('unstarted', 'probing', 'established', 'refused',
                                                   'pre_epoch_skipped', 'undated_skipped', 'late_skipped',
-                                                  'cursor_order_unverified', 'undated_only', 'provider_rejects')}
+                                                  'cursor_order_unverified', 'undated_only', 'provider_rejects',
+                                                  'unavailable')}
     counts['seeded'] = counts['unstarted'] + counts['probing'] + counts['established'] + counts['refused']
     refused = [{'did': row['did'], 'reason': row['reason']} for row in summary['refused_sources']]
     # Operator detail only (DIDs and evidence); never part of the public overview.
     operator = {key: summary[key] for key in ('cursor_order_unverified_sources', 'undated_only_sources',
-                                              'provider_rejects_sources')}
+                                              'provider_rejects_sources', 'unavailable_sources')}
     return counts, refused, operator
 
 
