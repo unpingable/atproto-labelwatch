@@ -455,11 +455,11 @@ def test_overlapping_cursor_pages_mark_order_unverified_with_evidence(store):
     assert row['accepted_rows'] >= 100 and row['bootstrap'] == 'established'   # rows still accepted, never refused
 
 
-def test_v6_store_refused_without_conversion(store):
+def test_v7_store_refused_without_conversion(store):
     from storage import connect as sconnect, db as sdb
     with sconnect(store.state) as c:
-        sdb.set_meta(c, 'q:recent_version', '6')
-    with pytest.raises(RuntimeError, match='recent schema v7 required; no implicit conversion'):
+        sdb.set_meta(c, 'q:recent_version', '7')
+    with pytest.raises(RuntimeError, match='recent schema v8 required; no implicit conversion'):
         store.collector_sources(10)
 
 
@@ -587,3 +587,27 @@ def test_seeded_and_discovered_are_counted_apart(store):
     store.remember_sources([{'did': B, 'endpoint': None}, {'did': A, 'endpoint': None}], request_cursor=None, next_cursor=None)
     summary = store.collector_bootstrap_summary()
     assert (summary['seeded'], summary['discovered']) == (1, 1)
+
+
+# Review r4.
+
+def test_pinned_wal_is_a_store_level_condition_not_a_source_failure(store):
+    clock = Clock(); t = Transport(clock, [Labeler(A, 3, recent=3)]); enroll(store, A)
+    def pinned(*args, **kwargs):
+        raise RuntimeError('wal_budget_pinned; ingestion refused before acceptance')
+    store.accept_page = pinned
+    out = run(store, t, clock)[0]
+    del store.accept_page
+    assert out['round']['store_hold'] == 'wal_budget_pinned'
+    assert [g[2] for g in gaps(store)] == ['maintenance']
+    row = status(store, A)
+    assert row['unavailable_since'] is None and row['failures'] == 0
+
+
+@pytest.mark.parametrize('host,ok', [('labeler.example', True), ('localhost', False), ('x.localhost', False),
+                                     ('printer.local', False), ('metadata.google.internal', False),
+                                     ('172.16.0.1', False), ('fd00::1', False), ('fe80::1', False),
+                                     ('[::ffff:127.0.0.1]', False), ('8.8.8.8', True)])
+def test_public_host_rule(host, ok):
+    from labelwatch.recent_collector import public_host
+    assert public_host(host) is ok

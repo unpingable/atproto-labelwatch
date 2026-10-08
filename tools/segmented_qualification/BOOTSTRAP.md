@@ -84,8 +84,9 @@ an `unknown` gap (existing semantics) and repeats only that probe.
 * Requests per source: <= 1 + ceil(53/4) + 53 = 68 successful probes (one of which is
   the first collected page); the store refuses beyond `BOOTSTRAP_POLICY.total_probes`
   (72) as `bootstrap_refused:probe_budget_exhausted`. Failed requests (transport
-  errors, invalid pages) do not consume probes; they record a `source_unavailable`
-  gap and use the existing failure backoff (30 s doubling to 900 s).
+  errors, invalid pages) do not consume probes; they are per-source state
+  (`unavailable_since`, `last_failure_reason`; never a store-wide gap, review r1) and
+  use the existing failure backoff (30 s doubling to 900 s).
 * Per tick: at most `Limits.bootstrap_probes` (default 8, max 16) probes per source;
   probes share `Limits.pages` and the tick deadline with ready sources. A capped
   source yields its slot; the tick breaks after `len(roster)+1` consecutive capped
@@ -106,8 +107,9 @@ an `unknown` gap (existing semantics) and repeats only that probe.
 per phase, refused sources with reasons, total `pre_epoch_skipped`/`undated_skipped`,
 and `coverage: unknown` while any source is unstarted, probing or refused.
 `collector_source_status(limit)` returns the per-source rows. `Collector.tick()` includes
-the summary as `bootstrap`. Re-arming a refused source needs an explicit operator
-rule; none exists yet.
+the summary as `bootstrap`. Only `provider_rejects` refusals re-arm automatically
+(bounded: once per 24 h, at most 3 times, then `bootstrap_refused_final`, review r3 F6);
+every other refusal needs an explicit operator rule, which does not exist.
 
 ## Failure and gap policy (review r1, 2026-10-08)
 
@@ -156,8 +158,7 @@ rule; none exists yet.
   on 6 consecutive attempts refuse the source as
   `bootstrap_refused:provider_rejects:<status>`; transient errors (5xx, timeouts, TLS)
   reset the count and keep the backoff.
-* Schema `q:recent_version` = 7; a v6 store is refused ("recent schema v7 required; no
-  implicit conversion"). Probe bound: 68 proven, 72 enforced by the store.
+* Schema: see review r4 (now v8). Probe bound: 68 proven, 72 enforced by the store.
 
 ## Review r3 rulings (2026-10-08)
 
@@ -202,19 +203,11 @@ rule; none exists yet.
   as well as `next_due <= now`. When nothing is due, a round with `sleep` (the service
   passes `time.sleep`) waits for the next due source inside its own deadline, without
   spending a page slot; otherwise the round ends.
-* Bootstrap throughput: a source mid-search is kept "sticky" for the tick and is
-  stepped again in the next reserved probing slot (>= 1/3 of attempts) as soon as its
-  spacing allows, up to the 8-probe per-tick cap. A probing source that is merely not
-  yet due does not close the reserved share.
+* Bootstrap throughput: superseded by review r4 below.
 * Round deadline: `LABELWATCH_RECENT_ROUND_SECONDS` (default 10, max 30) in the unit
   environment. Longer rounds give more spaced probes per round at the cost of a longer
-  run; the unit stop deadline (45 s) must stay above it plus grace. Estimate for 584
-  sources at ~45 attempts per 10 s and a 2-minute cadence: 30 s rounds (128-attempt
-  cap) clear the first pass of ~880 bootstrap attempts in about 7 rounds and a busy
-  source needs about 3 rounds once reached (8 spaced probes per round), so about
-  15-20 minutes; 10 s rounds take about 20 + 3 rounds, about 45 minutes. The previous
-  rotation needed about 10 hours for mod.bsky.app. Tested: 150 probing sources
-  including one needing about 22 probes establish within 10 rounds of 30 s.
+  run; the unit stop deadline (45 s) must stay above it plus grace. The time estimate
+  is in review r4 below (the earlier 15-20 minute figure did not hold).
 * Lost attempts: at round start attempts older than `LABELWATCH_RECENT_STALE_SECONDS`
   (default 60 = 45 s stop deadline + grace) are cleared and disclosed once as a merged
   store-wide `unknown` gap (process loss). The summary reports `pending_attempts`.
@@ -222,6 +215,47 @@ rule; none exists yet.
   failed labels request still keeps our own resolved endpoint (1 GET afterwards).
 * Origin: a source's first enrollment fixes `origin`: discovery pages are `discovered`,
   explicit enrollment (init seed) is `seeded`; the summary reports both.
+
+## Review r4 (2026-10-08)
+
+* Reserved share: only claims made through the reserved probing share count toward
+  it (at least ceil(attempts/3)). The share claim orders in-progress sources first
+  (`probing`, most probes used), then never-failed `unstarted` sources, then failing
+  ones, so a source mid-search keeps priority across ticks (persisted phase and probe
+  count; no in-memory sticky list). Per tick a source is excluded after its 8th probe
+  or after any failure (backoff applies; never re-claimed in the same tick). The cold
+  rotation also takes sources without a failure streak before backed-off ones.
+* Measured on the r4 first-day fixture (584 cursorless sources: 400 unreachable, 149
+  small, 34 growing, one busy source needing about 22 probes; 0.22 s per reachable
+  request, 30 s rounds every 2 minutes): with 0.05 s connect failures the busy source
+  is established in round 3 (8, 8, 4 probes; about 6 minutes). With 1 s timeouts for
+  the unreachable sources it is still established in round 3, but the first pass over
+  the 400 unreachable sources (about 1.2 s each, about 25 per round) occupies rounds
+  4-16; growing sources get their first pages in round 18 (about 36 minutes) and all
+  reachable sources are established by round 27 (about 54 minutes). After that the
+  backed-off unreachable sources take about 19 requests per round.
+* `cursor_jump` applies to any accepted page with at least 10 rows (forward collection
+  and the bootstrap's first collected page), whatever the provider's page cap: more
+  than 2 ids per row discloses `cursor_order_unverified`. Probe pages that are not
+  accepted are not checked (sparse old history would raise it falsely).
+* Short-page confirmation: a short page is the head only if its continuation returns
+  fewer rows (or none); otherwise the larger size is adopted as the provider page cap
+  and probing continues.
+* Schema `q:recent_version` = 8. A store with another version, or missing any column
+  the collector uses, is refused: "recent schema v8 required; no implicit conversion;
+  old evidence preserved". Nothing is deployed; there is no migration.
+* Non-public endpoints: `source()` and the did:web authority check refuse literal IPs
+  in loopback, private, link-local, unique-local, reserved, multicast or unspecified
+  ranges and the names `localhost`, `*.localhost`, `*.local`, `*.internal`. On the real
+  network (no test transport) every request's hostname is also resolved first and
+  refused if any address is non-public. DNS rebinding between that check and the
+  connect remains possible; the unit's `IPAddressDeny` (storage lane) is the second
+  layer.
+* WAL: before ingestion the store runs a PASSIVE checkpoint when `state.sqlite-wal`
+  exceeds half its budget. If lease-free readers still pin it over budget, the base
+  check refuses `wal_budget_pinned`; the collector records that as a store-level
+  `maintenance` gap and stops the round, never as a per-source failure.
+* Roster size on day one is 580 seeded sources (C1 live), not 584.
 
 ## Unknown / not guaranteed
 

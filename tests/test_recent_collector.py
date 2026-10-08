@@ -27,7 +27,7 @@ class Store:
     def collector_sources(self, limit):
         return self.sources[:limit]
 
-    def collector_claim_source(self, limit,observed_at=None, probing=False):
+    def collector_claim_source(self, limit,observed_at=None, probing=False, exclude=()):
         if probing:
             return None      # fixture sources are positioned; no bootstrap share
         rows = sorted(self.sources, key=lambda row: row['did'])
