@@ -100,3 +100,22 @@ def test_syscall_capability_and_address_family_sandbox(name, families):
 
 def test_maintain_has_no_network():
     assert parse('labelwatch-recent-maintain.service')['Service']['IPAddressDeny'] == ['any']
+
+
+def _env():
+    return dict(line.split('=', 1) for line in (DEPLOY / 'labelwatch-recent.env.example').read_text().splitlines()
+                if line and not line.startswith('#'))
+
+
+def _seconds(value):
+    return int(value[:-1]) if value.endswith('s') else int(value)
+
+
+def test_round_deadline_fits_collect_timeout_and_stale_exceeds_it():
+    env = _env()
+    service = parse('labelwatch-recent-collect.service')['Service']
+    start, stop = _seconds(service['TimeoutStartSec'][0]), _seconds(service['TimeoutStopSec'][0])
+    round_s, stale = int(env['LABELWATCH_RECENT_ROUND_SECONDS']), int(env['LABELWATCH_RECENT_STALE_SECONDS'])
+    assert (start, stop) == (45, 5)
+    assert 0 < round_s <= 30 and start >= round_s + 10
+    assert stale > start
