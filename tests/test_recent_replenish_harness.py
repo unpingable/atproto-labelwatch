@@ -105,7 +105,9 @@ def test_concurrent_verdicts_detect_torn_and_unstable_reads():
     assert 'torn or unstable snapshot' in compare({**good, 'digest': 'b'}, good, 5)
     assert 'count differs from generator oracle' in compare(good, good, 6)
     assert 'manifest changed across pages' in compare({**good, 'manifest_stable': False}, good, 5)
-    assert compare({'refusal': 'snapshot_row_limit'}, good, 5) == ['refusal differs from quiescent read']
+    assert compare({'refusal': 'snapshot_expired_or_unavailable'}, good, 5) == [
+        'refused_under_contention:snapshot_expired_or_unavailable']
+    assert compare(good, {'refusal': 'snapshot_row_limit'}, 5) == ['refusal differs from quiescent read']
     refused = {'refusal': 'snapshot_row_limit'}
     assert compare(refused, refused, 1001, row_limit=1000) == []
     assert compare(refused, refused, 10, row_limit=1000) == ['row-limit refusal below the limit']

@@ -53,8 +53,14 @@ def encoded(value):
 
 
 def compare(concurrent, quiescent, expected_count, row_limit=None):
-    """Pure verdict for one target: concurrent equals quiescent equals generator."""
+    """Pure verdict for one target: concurrent equals quiescent equals generator.
+
+    A read refused (or failed) only under load is an availability finding,
+    never evidence of a torn snapshot; it is classified separately.
+    """
     problems = []
+    if quiescent.get('refusal') is None and concurrent.get('refusal') is not None:
+        return ['refused_under_contention:' + concurrent['refusal']]
     if concurrent.get('refusal') != quiescent.get('refusal'):
         return ['refusal differs from quiescent read']
     if concurrent.get('refusal') is None:
@@ -99,6 +105,8 @@ def account_read(product, did, start, end):
                    content_sha256=manifest['content_sha256'], refusal=None)
     except Refused as exc:
         out.update(refusal=str(exc))
+    except Exception as exc:  # product let a non-Refused error escape
+        out.update(refusal='unhandled:' + type(exc).__name__, detail=str(exc)[:200])
     out['seconds'] = time.monotonic() - t
     return out
 
@@ -135,6 +143,8 @@ def export_read(product, did, start, end, pause=0.0):
                    slowest_page_seconds=slowest)
     except Refused as exc:
         out.update(refusal=str(exc), pages=pages)
+    except Exception as exc:
+        out.update(refusal='unhandled:' + type(exc).__name__, detail=str(exc)[:200], pages=pages)
     out['seconds'] = time.monotonic() - t
     return out
 
@@ -396,13 +406,15 @@ def run(args):
     for did in dense:
         quiet[('export', did)] = export_read(_product(root, storage.ROOT), did, *interval)
     product = _product(root, storage.ROOT)
-    verdicts = []
+    verdicts, contention = [], collections.Counter()
     for record in reads:
         if record.get('role') not in ('account', 'export') or 'error' in record:
             continue
         problems = compare(record, quiet[(record['role'], record['did'])], counts[record['did']],
                            row_limit=1000 if record['role'] == 'account' else None)
-        if problems:
+        if problems and problems[0].startswith('refused_under_contention:'):
+            contention[(record['role'], problems[0].split(':', 1)[1])] += 1
+        elif problems:
             verdicts.append({'did': record['did'], 'role': record['role'], 'problems': problems,
                              'concurrent': record, 'quiescent': quiet[(record['role'], record['did'])]})
     covered_accounts = {r['did'] for r in reads if r.get('role') == 'account' and 'error' not in r}
@@ -454,8 +466,12 @@ def run(args):
         role_stats[role] = {'reads': len(rs), 'latency_seconds': percentiles([r['seconds'] for r in rs]),
                             'refusals': dict(collections.Counter(r.get('refusal') for r in rs if r.get('refusal'))),
                             'health_status': dict(collections.Counter(r.get('status') for r in rs)) if role == 'health' else None}
-    passed = (not verdicts and not errors and covered_accounts == set(accounts) and covered_exports == set(dense)
-              and blocking_ok and expiry['pass'] and len(baseline) > 0 and len(concurrent) > 0)
+    checks = {'no_torn_or_mismatched_reads': not verdicts, 'no_reader_thread_errors': not errors,
+              'no_refusals_under_contention': not contention,
+              'every_account_read': covered_accounts == set(accounts), 'every_export_read': covered_exports == set(dense),
+              'ingest_block_bound_held': blocking_ok, 'retire_mid_export_refused': expiry['pass'],
+              'latency_windows_nonempty': len(baseline) > 0 and len(concurrent) > 0}
+    passed = all(checks.values())
     result = {
         'result': 'PASS' if passed else 'FAIL', 'control': 'C4', 'source_revision': args.source_revision,
         'specimen_sha256': receipt['parquet_sha256'],
@@ -467,7 +483,8 @@ def run(args):
         'dense_expected_rows': {d: counts[d] for d in dense},
         'reader_threads': args.readers, 'roles': roles, 'reader_runs': reader_runs,
         'reads': role_stats, 'reader_errors': errors[:10], 'torn_or_mismatched': verdicts[:20],
-        'torn_or_mismatched_count': len(verdicts),
+        'torn_or_mismatched_count': len(verdicts), 'checks': checks,
+        'refused_under_contention': [{'role': k[0], 'reason': k[1], 'count': n} for k, n in sorted(contention.items())],
         'ingest': {'rate_target_events_per_second': args.ingest_events_per_second,
                    'pages': ingest_log['pages'], 'day_exhausted': ingest_log['day_exhausted'],
                    'accept_latency_baseline_seconds': lat_base, 'accept_latency_with_readers_seconds': lat_conc,
