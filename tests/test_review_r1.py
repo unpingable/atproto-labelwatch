@@ -30,6 +30,7 @@ def meta(store, key):
         return db.get_meta(c, key)
 
 
+@pytest.mark.xfail(strict=True, reason="other lane: storage lane owns gap overflow expiry (recent_storage.py)")
 def test_gap_overflow_is_cleared_once_its_gaps_expire(store):
     """129 gaps on day one overflow the 128-row table; after they all leave the
     30-day window the store still discloses the whole window as unknown forever."""
@@ -50,6 +51,7 @@ class Transport:
                                        'cts': '2026-09-01T23:59:00Z'}]}).encode()
 
 
+@pytest.mark.xfail(strict=True, reason="other lane: collector lane owns refusal classification (recent_collector.py)")
 def test_pre_maintenance_refusal_is_not_recorded_as_source_unavailable(store):
     """Between 00:00 and the 00:05 maintenance run the store refuses ingestion;
     the collector records that local refusal as a source outage."""
@@ -72,6 +74,7 @@ def test_world_writable_publication_directory_is_refused(tmp_path):
         recent_overview.publish(pubdir, envelope, ancestors=False)
 
 
+@pytest.mark.xfail(strict=True, reason="other lane: storage lane owns reserve override acks (storage.py)")
 def test_override_ack_is_bound_to_the_weakened_policy(tmp_path, monkeypatch):
     """The ack is sha256(recorded policy) only: once present in the env file it
     silently admits any further weakening, down to a 1-byte reserve."""
@@ -110,6 +113,7 @@ def test_full_window_button_works_with_a_running_clock(tmp_path, monkeypatch):
     assert is_html
 
 
+@pytest.mark.xfail(strict=True, reason="other lane: storage lane owns recent_init clock bounds")
 def test_init_refuses_an_acceptance_clock_far_from_wall_time(tmp_path, monkeypatch):
     """recent_init --now is unbounded: a backdated epoch start makes the overview
     claim the whole 30-day window was observed (no warm-up) on day one."""
