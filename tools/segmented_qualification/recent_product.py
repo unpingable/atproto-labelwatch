@@ -106,7 +106,10 @@ class SiteStatus:
             self._cached = (tick, result)
             return result
 
-    def health(self):
+    HEALTH_LIST_CAP = 50
+
+    def health(self, full=False):
+        """Operator JSON. Per-source lists are capped at 50 (+ totals) unless full."""
         status = self.read()
         view = status["view"]
         if view is None:
@@ -122,12 +125,25 @@ class SiteStatus:
                      "coverage": {"status": cov["status"], "observed_days": cov["observed_days"], "warmup": cov["warmup"],
                                   "gaps_count": len(cov["gaps"]), "gap_overflow": cov["gap_overflow"], "sources": cov["sources"],
                                   # Operator detail only; never in the public overview artifact.
-                                  "refused_sources": status["refused_sources"],
-                                  **status["operator_sources"]},
+                                  **self._operator_lists(status, full)},
                      "last_maintenance": status["maintenance"],
                      "freshness": {"state": state, "basis": "last_accepted_observation", "observed_through": through,
                                    "age_seconds": None if age is None else round(age, 3), "stale_after_seconds": self.stale_after},
                      "generated_at": view["generated_at"]}
+
+
+    def _operator_lists(self, status, full):
+        lists = {"refused_sources": status["refused_sources"], **status["operator_sources"]}
+        if not full:
+            lists.pop("source_status", None)  # the per-source table only with ?full=1
+        out = {}
+        for key, rows in lists.items():
+            rows = list(rows or [])
+            out[key] = rows if full else rows[:self.HEALTH_LIST_CAP]
+            out[key + "_total"] = len(rows)
+        out["lists_truncated"] = not full and any(out[k + "_total"] > len(out[k]) for k in lists)
+        out["full_lists"] = "/health?full=1"
+        return out
 
 
 def handler(product, *, resolver=None, status=None):
@@ -238,7 +254,9 @@ def handler(product, *, resolver=None, status=None):
                     raise Refused("duplicate_parameter")
                 args = {key: value[0] for key, value in query.items()}
                 if request.path == "/health":
-                    code, body = site.health()
+                    if args not in ({}, {"full": "1"}):
+                        raise Refused("unknown_parameter")
+                    code, body = site.health(full=args == {"full": "1"})
                     self.respond(code, body)
                     return
                 if request.path.startswith("/instruments/fonts/"):
