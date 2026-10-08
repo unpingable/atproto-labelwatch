@@ -38,6 +38,15 @@ literally (systemd does not expand environment variables there).
 - `LABELWATCH_RECENT_ADMITTED_ROOT`: absolute, existing, resolved directory, no
   symlinked component, not `/`, and neither inside nor containing a
   qualification campaign root. Stores must be strict children of it.
+  System prefixes are refused: `/etc`, `/usr`, `/bin`, `/sbin`, `/lib*`,
+  `/boot`, `/proc`, `/sys`, `/dev`, `/run`, `/root`, `/srv`, `/var/www`,
+  `/var/lib/labelwatch/generations`, `/var/lib/labelwatch/cold` and
+  `/home/*/.config` (and anything below them).
+- Contents rule, checked on every open: the admitted root may contain only
+  epoch stores (directories holding `ACTIVE.json` or `state.sqlite`), empty
+  directories (a pending or interrupted init) and the regular file
+  `units.lock`. Any other entry, including symlinks and receipts, refuses
+  every store under it. Keep init receipts in the evidence directory.
 - `LABELWATCH_RECENT_RESERVES` (or `LABELWATCH_RECENT_RESERVES_FILE`): JSON
   `[{"mount":"/","bytes":N}, ...]`. Each mount must exist; the store's
   filesystem must be one of them. Unset, empty or malformed refuses every
@@ -47,8 +56,12 @@ literally (systemd does not expand environment variables there).
 - At init the policy is recorded in the store meta as `q:recent_reserves`
   (canonical JSON). Every later open refuses a running policy that is weaker
   (a recorded mount missing or lower, or a lower inode floor) unless
-  `LABELWATCH_RECENT_RESERVES_OVERRIDE_ACK` equals the sha256 of the recorded
-  value. The acknowledgement never rewrites the record.
+  `LABELWATCH_RECENT_RESERVES_OVERRIDE_ACK` equals
+  `sha256(recorded_canonical + "\n" + running_canonical)`, where both are
+  canonical JSON (`sort_keys`, separators `,` and `:`) of the policy object
+  `{"schema","min_free_inodes","reserves"}`. The ack binds one reviewed
+  weakening: any further change to the running policy voids it. It never
+  rewrites the record.
 
 ## Initialisation (operator, once)
 
@@ -60,12 +73,18 @@ systemd-run --wait --pipe --uid=labelwatch --gid=labelwatch \
   /opt/labelwatch/releases/<sha>/source/tools/segmented_qualification/recent_init.py \
   --root <admitted root>/epoch-2 --now <UTC Z> \
   --roster /opt/labelwatch/releases/<sha>/source/deploy/roster-epoch2-seed.json \
-  --receipt <admitted root>/epoch-2-init-receipt.json
+  --receipt <evidence dir>/epoch-2-init-receipt.json
 ```
 
 Running under `EnvironmentFile=` keeps the reserves JSON intact (shell
 sourcing would strip its quotes). Paths are passed literally.
-It refuses a non-empty root, records the acquisition generation and reserves,
+It refuses a non-empty root, and refuses `--now` more than 300 s from the
+wall clock in either direction: a backdated start would erase warm-up and
+claim a fully observed window. `--allow-clock-skew-seconds N` admits up to N s
+explicitly; the receipt's `acceptance_clock` records the requested clock, the
+wall clock, the skew, the bound and whether it was explicit. Before any effect
+it also requires the reserve policy to hold now (not merely parse). The
+receipt's `source.dirty` counts untracked files. It records the acquisition generation and reserves,
 and seeds the roster as DIDs only: no endpoint, no cursor. A seeded DID has
 unknown coverage until the collector bootstraps it. No history is imported.
 
@@ -91,9 +110,15 @@ touch either file.
 
 The store refuses ingestion whose UTC day differs from the active owner
 (`recent_storage.py` "rotate daily observation owner before ingestion"), so
-between 00:00 and the 00:05 maintenance run each collection round refuses
-without advancing any cursor; the next round after rotation resumes from the
-persisted cursors at a later acceptance clock. Maintenance takes
+between 00:00 and the 00:05 maintenance run (plus timer accuracy) every
+collection round is refused by the store, not by any source. No event is
+accepted and no cursor advances; the next round after rotation resumes from
+the persisted cursors at a later acceptance clock, so labels issued in that
+interval are accepted late, never dropped or backdated. The collector records
+the interval as a store-wide gap labelled `maintenance` (a local refusal, not
+`source_unavailable`), and per-source failures do not consume the store-wide
+gap table. Readers therefore see roughly five minutes after each UTC midnight
+disclosed as a maintenance gap. Maintenance takes
 `units.lock` (waiting up to 120 s for an in-flight round); a collection round
 that finds the lock held exits 75, treated as success, and is not queued.
 `advance_day` is idempotent per UTC day: rotation to an already active owner

@@ -55,16 +55,40 @@ def _unlinked(path):
     return Path(os.path.normpath(path))
 
 
+SYSTEM_PREFIXES = tuple(Path(p) for p in (
+    '/etc', '/usr', '/bin', '/sbin', '/boot', '/proc', '/sys', '/dev', '/run', '/root', '/srv', '/var/www',
+    '/var/lib/labelwatch/generations', '/var/lib/labelwatch/cold'))
+ADMITTED_LOOSE = {'units.lock'}
+
+
+def _system(root):
+    parts = root.parts
+    if len(parts) > 1 and parts[1].startswith('lib'): return True  # /lib, /lib32, /lib64, /libx32
+    if len(parts) > 3 and parts[1] == 'home' and parts[3] == '.config': return True
+    return any(root == p or p in root.parents for p in SYSTEM_PREFIXES)
+
+
 def admitted_root():
-    """One operator-configured root, disjoint from every campaign root."""
+    """One operator-configured root, disjoint from every campaign root.
+
+    It holds only epoch stores (directories with ACTIVE.json or state.sqlite),
+    empty directories (an interrupted or pending init) and the unit lock.
+    """
     value = os.environ.get(ADMITTED_ENV)
     if not value: return None
     root = _unlinked(value)
     if root == Path('/') or not root.is_dir(): raise ValueError('admitted root must be an existing non-/ directory')
+    if _system(root): raise ValueError('admitted root is under a system prefix')
     for campaign in campaign_roots():
         campaign = campaign.resolve()
         if root == campaign or root in campaign.parents or campaign in root.parents:
             raise ValueError('admitted root overlaps a campaign root')
+    for entry in root.iterdir():
+        if entry.name in ADMITTED_LOOSE and entry.is_file() and not entry.is_symlink(): continue
+        if entry.is_dir() and not entry.is_symlink() and (
+                (entry / 'ACTIVE.json').exists() or (entry / 'state.sqlite').exists() or not any(entry.iterdir())):
+            continue
+        raise ValueError('admitted root holds a foreign entry: ' + entry.name)
     return root
 
 
@@ -116,6 +140,11 @@ def reserve_policy(root):
     if inodes < 0: raise RuntimeError('reserve_policy_malformed')
     return {'schema': RESERVES_SCHEMA, 'min_free_inodes': inodes,
             'reserves': [{'mount': m, 'bytes': seen[m]} for m in sorted(seen)]}
+
+
+def override_ack(recorded_canonical, running):
+    """Binds one reviewed weakening: any later change to the running policy voids it."""
+    return hashlib.sha256((recorded_canonical + '\n' + canonical(running)).encode()).hexdigest()
 
 
 def weaker(running, recorded):
@@ -251,7 +280,7 @@ class Store:
             if in_campaign(self.root): return policy
             raise RuntimeError('reserve_policy_record_missing')
         recorded = json.loads(row[0])
-        if weaker(policy, recorded) and os.environ.get(OVERRIDE_ENV) != hashlib.sha256(row[0].encode()).hexdigest():
+        if weaker(policy, recorded) and os.environ.get(OVERRIDE_ENV) != override_ack(row[0], policy):
             raise RuntimeError('reserve_policy_weaker_than_recorded')
         return policy
 
