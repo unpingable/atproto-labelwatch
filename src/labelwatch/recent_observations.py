@@ -543,6 +543,11 @@ def coverage_statement(started_at=None, window_days=30):
             'Requests outside the window are refused explicitly.')
 
 
+def _epoch_day(elapsed_days, window):
+    """Elapsed-day ordinal since epoch start (not observed coverage)."""
+    return min(int(elapsed_days) + 1, int(window))
+
+
 def _number(value):
     return 'unknown' if value is None else f'{value:,}'
 
@@ -594,7 +599,7 @@ def landing_html(view, interval=None, error=None):
         window = view['window_days']
         rail = [('Epoch began', _when(acq['started_at'])),
                 ('Window', f'{window} days, rolling'),
-                ('Observed', f"{cov['observed_days']} of {window} days"),
+                ('Day', f"{_epoch_day(cov['observed_days'], window)} of {window} since epoch start"),
                 ('Recorded gaps', 'overflow' if cov['gap_overflow'] else str(len(cov['gaps'])))]
         body.append('<div class="nz-status-rail">' + ''.join('<span>' + _esc(k) + ' <strong>' + _esc(v) + '</strong></span>' for k, v in rail) + '</div>')
         cards = [('Events observed, last 24 hours', counts.get('events_24h')),
@@ -608,8 +613,8 @@ def landing_html(view, interval=None, error=None):
         coverage = ['<section class="nz-panel"><h2>Coverage of this epoch</h2>',
                     '<p>Local acquisition began ' + _esc(_when(acq['started_at'])) + '. Earlier source-authored dates are not historical observation times.</p>']
         if cov['warmup']:
-            coverage.append('<p><strong>' + _esc(cov['observed_days']) + ' of ' + _esc(window) + ' days observed since '
-                            + _esc(_when(acq['started_at'])) + '.</strong> Warm-up: ' + _esc(_when(cov['warmup']['start'])) + ' to '
+            coverage.append('<p><strong>Day ' + _esc(_epoch_day(cov['observed_days'], window)) + ' of ' + _esc(window)
+                            + ' since epoch start (' + _esc(_when(acq['started_at'])) + ').</strong> Warm-up: ' + _esc(_when(cov['warmup']['start'])) + ' to '
                             + _esc(_when(cov['warmup']['end'])) + ' was not observed by this acquisition generation.</p>')
         else:
             coverage.append('<p>The full ' + _esc(window) + '-day window lies inside this epoch.</p>')
@@ -667,3 +672,19 @@ def previous_epoch_html():
 def lookup_refusal_html(reason):
     return page_html('Account lookup', '<h1>Account lookup</h1><section class="nz-panel"><p>' + _esc(reason) + '</p>'
                      '<p>Enter the account DID (for example <code>did:plc:…</code>).</p></section>' + _account_form())
+
+
+REFUSAL_TEXT = {
+    'out_of_window': 'That interval is outside the rolling 30-day window. Older observations expire and are not served.',
+    'invalid_account_did': 'That is not an account DID.',
+    'snapshot_expired_or_unavailable': 'This view or export has expired or is no longer available. Start it again.',
+    'observation_window_unavailable': 'No observation window is available yet.',
+}
+
+
+def refusal_html(code):
+    """Small browser page for an explicit refusal; the JSON form is unchanged."""
+    text = REFUSAL_TEXT.get(code, 'This request was refused.')
+    return page_html('Request refused', '<h1>Request refused</h1><section class="nz-panel"><p>' + _esc(text) + '</p>'
+                     '<p class="nz-muted">Refusal: <code>' + _esc(code) + '</code></p></section>'
+                     '<p><a href="/">Return to the rolling observatory</a></p>')
