@@ -11,7 +11,9 @@ import hashlib
 import hmac
 import html
 import json
+import math
 import secrets
+import sqlite3
 import threading
 import time
 import uuid
@@ -22,6 +24,14 @@ from urllib.parse import urlencode
 
 class Refused(ValueError):
     """Explicit public refusal, never a successful empty result."""
+
+
+BUSY_MESSAGES = ('store lease deadline exceeded', 'recent query deadline', 'interrupted', 'database is locked')
+
+
+def busy(exc):
+    """A lease or deadline failure under contention: retryable store_busy, not data."""
+    return isinstance(exc, (TimeoutError, sqlite3.OperationalError)) and any(m in str(exc) for m in BUSY_MESSAGES)
 
 
 def timestamp(value):
@@ -53,11 +63,16 @@ class Limits:
     page_rows: int = 100
     ttl_seconds: int = 120
     page_requests: int = 64
+    # Fixed export deadline sized from the export's page count at its frontier.
+    export_base_seconds: float = 30.0
+    export_page_seconds: float = 0.5
+    export_cap_seconds: float = 600.0
 
     def __post_init__(self):
         if not 30 <= self.days <= 45 or any(
             value <= 0 for value in (self.snapshots, self.rows, self.snapshot_bytes,
-                                     self.page_rows, self.ttl_seconds, self.page_requests)
+                                     self.page_rows, self.ttl_seconds, self.page_requests,
+                                     self.export_base_seconds, self.export_page_seconds, self.export_cap_seconds)
         ):
             raise ValueError("invalid finite product limits")
 
@@ -201,41 +216,46 @@ class RecentObservations:
             deadline = created_tick + self.limits.ttl_seconds
             rows, row_bytes, examined = [], 0, 0
             # No lease survives exit from this provider context.
-            with self.provider.snapshot(did, iso(lo), iso(hi), self.limits.rows + 1,
-                                        timeout_seconds=min(10, self.limits.ttl_seconds),
-                                        max_bytes=self.limits.snapshot_bytes) as source:
-                coverage = self._coverage(source["coverage"], lo, hi)
-                frontier = source["frontier"]
-                if not isinstance(frontier, str) or not frontier or len(frontier) > 256:
-                    raise Refused("frontier_unavailable")
-                for raw in source["rows"]:
-                    examined += 1
-                    if examined > self.limits.rows:
-                        raise Refused("snapshot_row_limit")
-                    if self.monotonic() >= deadline:
-                        raise Refused("snapshot_expired")
-                    # Bound serialization of each public value before building
-                    # a duplicate JSON buffer; internal fields are never copied.
-                    for field in ("labeler_did", "uri", "val", "ts", "observed_at", "src", "cid", "exp", "sig"):
-                        text = raw.get(field)
-                        if isinstance(text, str) and len(text) > self.limits.snapshot_bytes:
+            try:
+                with self.provider.snapshot(did, iso(lo), iso(hi), self.limits.rows + 1,
+                                            timeout_seconds=min(10, self.limits.ttl_seconds),
+                                            max_bytes=self.limits.snapshot_bytes) as source:
+                    coverage = self._coverage(source["coverage"], lo, hi)
+                    frontier = source["frontier"]
+                    if not isinstance(frontier, str) or not frontier or len(frontier) > 256:
+                        raise Refused("frontier_unavailable")
+                    for raw in source["rows"]:
+                        examined += 1
+                        if examined > self.limits.rows:
+                            raise Refused("snapshot_row_limit")
+                        if self.monotonic() >= deadline:
+                            raise Refused("snapshot_expired")
+                        # Bound serialization of each public value before building
+                        # a duplicate JSON buffer; internal fields are never copied.
+                        for field in ("labeler_did", "uri", "val", "ts", "observed_at", "src", "cid", "exp", "sig"):
+                            text = raw.get(field)
+                            if isinstance(text, str) and len(text) > self.limits.snapshot_bytes:
+                                raise Refused("snapshot_byte_limit")
+                        public = self._row(raw, did, lo, hi)
+                        if labeler is not None and public["labeler_did"] != labeler:
+                            continue
+                        if value is not None and public["value"] != value:
+                            continue
+                        if action is not None and public["action"] != action:
+                            continue
+                        if target_kind == "account" and public["uri"] != did:
+                            continue
+                        if target_kind == "post" and not public["uri"].startswith("at://" + did + "/app.bsky.feed.post/"):
+                            continue
+                        blob = encoded(public)
+                        row_bytes += len(blob)
+                        if row_bytes > self.limits.snapshot_bytes:
                             raise Refused("snapshot_byte_limit")
-                    public = self._row(raw, did, lo, hi)
-                    if labeler is not None and public["labeler_did"] != labeler:
-                        continue
-                    if value is not None and public["value"] != value:
-                        continue
-                    if action is not None and public["action"] != action:
-                        continue
-                    if target_kind == "account" and public["uri"] != did:
-                        continue
-                    if target_kind == "post" and not public["uri"].startswith("at://" + did + "/app.bsky.feed.post/"):
-                        continue
-                    blob = encoded(public)
-                    row_bytes += len(blob)
-                    if row_bytes > self.limits.snapshot_bytes:
-                        raise Refused("snapshot_byte_limit")
-                    rows.append(blob)
+                        rows.append(blob)
+            except Exception as exc:
+                if busy(exc):
+                    raise Refused('store_busy') from exc
+                raise
             rows.sort(key=lambda blob: (json.loads(blob)["observed_at"], blob))
             manifest = {"schema": "labelwatch.public-observations.v1", "account": did,
                         "interval": {"start": iso(lo), "end": iso(hi), "end_exclusive": True},
@@ -269,11 +289,24 @@ class RecentObservations:
             if not now-timedelta(days=self.limits.days)<=lo<hi<=now:raise Refused('out_of_window')
             if len(self._snapshots)+len(self._exports)>=self.limits.snapshots:raise Refused('snapshot_concurrency_limit')
             identity=secrets.token_hex(16)
-            state={'deadline':self.monotonic()+self.limits.ttl_seconds,'query':(did,iso(lo),iso(hi)),
+            created=self.monotonic()
+            state={'deadline':created+self.limits.ttl_seconds,'created':created,'query':(did,iso(lo),iso(hi)),
                    'filters':{'labeler':labeler,'value':value,'action':action,'target_kind':target_kind},
                    'after':0,'upper':None,'next_index':0,'cache_index':-1,'cache':None,'retries':0,'count':0}
             prepared=self._export_read(state)
             state['upper']=prepared['upper_id']
+            sizing=None
+            total=prepared.get('total')
+            if type(total) is int:
+                pages=max(1,math.ceil(total/self.limits.page_rows))
+                seconds=self.limits.export_base_seconds+self.limits.export_page_seconds*pages
+                if seconds>self.limits.export_cap_seconds:
+                    raise Refused('export_too_large')
+                seconds=max(self.limits.ttl_seconds,seconds)
+                state['deadline']=state['created']+seconds
+                sizing={'seconds':seconds,'cap_seconds':self.limits.export_cap_seconds,
+                        'pages_estimate':pages,'rows_estimate':total,
+                        'rule':'base %gs + %gs per page, capped; fixed at creation' % (self.limits.export_base_seconds,self.limits.export_page_seconds)}
             coverage=self._coverage(prepared['coverage'],lo,hi)
             state['acquisition']=coverage['acquisition']
             manifest={'schema':'labelwatch.public-observations.v1','account':did,
@@ -282,7 +315,8 @@ class RecentObservations:
                       'filters':state['filters'],'count':None,'current_state':'unknown',
                       'completeness':'fixed acquisition frontier; complete only after terminal page; gaps disclosed',
                       'pagination':'stable event-ID keyset; no source lease between pages',
-                      'expires_at':iso(now+timedelta(seconds=self.limits.ttl_seconds))}
+                      'expires_at':iso(now+timedelta(seconds=sizing['seconds'] if sizing else self.limits.ttl_seconds))}
+            if sizing:manifest['deadline']=sizing
             state['manifest']=encoded(manifest);state['digest']=hashlib.sha256(state['manifest'])
             state['prepared']=prepared
             if self.monotonic()>=state['deadline']:raise Refused('snapshot_expired_or_unavailable')
@@ -310,6 +344,8 @@ class RecentObservations:
         except Refused:
             raise
         except Exception as exc:
+            if busy(exc):
+                raise Refused('store_busy') from exc
             raise Refused('snapshot_expired_or_unavailable') from exc
         coverage=self._coverage(result['coverage'],timestamp(start),timestamp(end))
         if state.get('acquisition') is not None and coverage['acquisition']!=state['acquisition']:
@@ -358,6 +394,10 @@ class RecentObservations:
             state.update(after=source['next_after_id'],cache_index=index,next_index=index+1,cache=blob,
                          digest=digest,count=state['count']+len(rows))
             return response
+        except Refused as exc:
+            if str(exc) != 'store_busy':  # busy is retryable: the page is not consumed
+                del self._exports[identity]
+            raise
         except Exception:
             del self._exports[identity]
             raise
@@ -700,6 +740,8 @@ REFUSAL_TEXT = {
     'invalid_account_did': 'That is not an account DID.',
     'snapshot_expired_or_unavailable': 'This view or export has expired or is no longer available. Start it again.',
     'observation_window_unavailable': 'No observation window is available yet.',
+    'store_busy': 'The observation store is busy. Retry in a few seconds.',
+    'export_too_large': 'This export is too large to finish within its deadline. Request a narrower interval.',
 }
 
 

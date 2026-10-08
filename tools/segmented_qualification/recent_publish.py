@@ -44,23 +44,29 @@ def _sources(store):
                                                   'unavailable')}
     counts['enrolled'] = counts['unstarted'] + counts['probing'] + counts['established'] + counts['refused']
     # seeded (init roster) vs discovered: read defensively; unknown until the collector exposes discovered.
-    discovered = summary.get('discovered')
+    seeded, discovered = summary.get('seeded'), summary.get('discovered')
     if type(discovered) is int and 0 <= discovered <= counts['enrolled']:
-        counts['discovered'], counts['seeded'] = discovered, counts['enrolled'] - discovered
+        counts['discovered'] = discovered
+        counts['seeded'] = seeded if type(seeded) is int and seeded >= 0 else counts['enrolled'] - discovered
     else:
         counts['discovered'] = counts['seeded'] = None
+    counts['pending_attempts'] = int(summary['pending_attempts']) if type(summary.get('pending_attempts')) is int else None
     # Read defensively: newer collector disclosures render when present, unknown otherwise.
     counts['future_skipped'] = int(summary['future_skipped']) if type(summary.get('future_skipped')) is int else None
     counts['coverage'] = summary.get('coverage') or 'unknown'
     refused = [{'did': row['did'], 'reason': row['reason']} for row in summary['refused_sources']]
     # Operator detail only (DIDs and evidence); never part of the public overview.
     operator = {key: summary[key] for key in ('cursor_order_unverified_sources', 'undated_only_sources',
-                                              'provider_rejects_sources', 'unavailable_sources') if key in summary}
+                                              'provider_rejects_sources', 'unavailable_sources',
+                                              'pending_attempts_sources') if key in summary}
     keep = ('did', 'bootstrap', 'bootstrap_established_at', 'established_at', 'rearm_at', 'positioned',
             'accepted_rows', 'cursor_order_unverified', 'provider_rejects', 'undated_only', 'late_skipped',
             'future_skipped', 'endpoint_resolved_at')
     operator['source_status'] = [{key: row[key] for key in keep if key in row}
                                  for row in store.collector_source_status(2048)]
+    established = summary.get('established_at')
+    if isinstance(established, dict):  # operator-only: first/last source establishment times
+        operator['established_at'] = {'earliest': established.get('earliest'), 'latest': established.get('latest')}
     return counts, refused, operator
 
 

@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlsplit, urlencode
 
 from labelwatch.recent_observations import (Limits, RecentObservations, Refused, account_html, timestamp, iso,
                                             landing_html, about_html, previous_epoch_html, lookup_refusal_html,
-                                            refusal_html)
+                                            refusal_html, busy)
 
 _HERE = str(Path(__file__).resolve().parent)
 if _HERE not in sys.path:
@@ -134,6 +134,7 @@ class SiteStatus:
 
     def _operator_lists(self, status, full):
         lists = {"refused_sources": status["refused_sources"], **status["operator_sources"]}
+        established = lists.pop("established_at", None)
         if not full:
             lists.pop("source_status", None)  # the per-source table only with ?full=1
         out = {}
@@ -143,6 +144,7 @@ class SiteStatus:
             out[key + "_total"] = len(rows)
         out["lists_truncated"] = not full and any(out[k + "_total"] > len(out[k]) for k in lists)
         out["full_lists"] = "/health?full=1"
+        out["established_at"] = established or {"earliest": None, "latest": None}
         return out
 
 
@@ -156,7 +158,7 @@ def handler(product, *, resolver=None, status=None):
         def log_message(self, *args):
             pass  # No account/cursor values in ordinary request logs.
 
-        def respond(self, status, body, content_type="application/json", attachment=False):
+        def respond(self, status, body, content_type="application/json", attachment=False, retry_after=None):
             data = body.encode() if isinstance(body, str) else json.dumps(body,ensure_ascii=False,sort_keys=True,separators=(",",":")).encode()
             self.send_response(status)
             self.send_header("Content-Type", content_type + "; charset=utf-8")
@@ -164,6 +166,8 @@ def handler(product, *, resolver=None, status=None):
             if attachment:
                 self.send_header("Content-Disposition", 'attachment; filename="labelwatch-observations.json"')
             self.send_header("Cache-Control", "no-store")
+            if retry_after is not None:
+                self.send_header("Retry-After", str(retry_after))
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
             self.end_headers()
@@ -177,6 +181,14 @@ def handler(product, *, resolver=None, status=None):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(data)
+
+        def busy(self):
+            """Explicit, retryable refusal when the store lease or a query deadline is exhausted."""
+            body = {"error": "store_busy", "complete": False, "retry_after_seconds": 5}
+            if self.wants_html():
+                self.respond(503, refusal_html("store_busy"), "text/html", retry_after=5)
+            else:
+                self.respond(503, body, retry_after=5)
 
         def wants_html(self):
             """Browsers get a small HTML refusal; API clients (Accept: application/json) keep JSON."""
@@ -276,7 +288,12 @@ def handler(product, *, resolver=None, status=None):
                 else:
                     self.respond(200, result, "text/html" if is_html else "application/json")
             except Refused as exc:
+                if str(exc) == "store_busy":
+                    self.busy()
+                    return
                 body = {"error": str(exc), "complete": False}
+                if str(exc) == "export_too_large":
+                    body["next_action"] = "Request a narrower interval; a bounded export must finish within its stated deadline cap."
                 if str(exc) in ("snapshot_row_limit", "snapshot_byte_limit"):
                     body["next_action"] = "Use the bounded paginated export for this period; reducing time may not separate equal-timestamp observations."
                     body["export_url"] = '/exports?'+urlencode(args)
@@ -290,9 +307,13 @@ def handler(product, *, resolver=None, status=None):
                 self.respond(code, body)
             except (KeyError, ValueError):
                 self.respond(400, {"error": "invalid_request", "complete": False})
-            except (BrokenPipeError, ConnectionResetError, TimeoutError):
-                pass
+            except (BrokenPipeError, ConnectionResetError, TimeoutError) as exc:
+                if busy(exc):  # a lease/deadline error, not the client socket
+                    self.busy()
             except Exception as exc:
+                if busy(exc):
+                    self.busy()
+                    return
                 if request.path == '/account' and str(exc) == 'recent query byte ceiling':
                     self.respond(409,dense_account_html(args),'text/html')
                     return

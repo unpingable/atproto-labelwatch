@@ -322,7 +322,11 @@ class Store:
         finally: c.close()
         if wal_budget <= 0: raise RuntimeError('invalid owned WAL budget')
         for path in self.root.glob('*.sqlite-wal'):
-            if path.stat().st_size > wal_budget:
+            # Lease-free readers (reader catalogs) open and close WAL files
+            # concurrently; one that vanished after the listing has no budget.
+            try: size = path.stat().st_size
+            except FileNotFoundError: continue
+            if size > wal_budget:
                 c = connect(Path(str(path)[:-4])); r = c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone(); c.close()
                 if r[0] != 0: raise RuntimeError('wal_budget_pinned; ingestion refused before acceptance')
 
