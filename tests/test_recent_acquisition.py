@@ -86,7 +86,7 @@ def test_unknown_acquisition_metadata_refuses_before_public_empty_answer(store,k
 
 def test_v5_has_no_implicit_identity_upgrade(store):
     with connect(store.state) as c:db.set_meta(c,'q:recent_version','5')
-    with pytest.raises(RuntimeError,match='schema v7'):store.frontier()
+    with pytest.raises(RuntimeError,match='schema v8'):store.frontier()
     with connect(store.state) as c:assert db.get_meta(c,'q:recent_version')=='5'
 
 def test_missing_public_acquisition_metadata_refuses():

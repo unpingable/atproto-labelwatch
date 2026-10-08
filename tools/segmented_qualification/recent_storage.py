@@ -23,6 +23,11 @@ from storage import Store, owned, connect, lock, db, custody, ingest, sha, syncd
 BOOTSTRAP_POLICY={'total_probes':72,'cursor_max':2**53,'history_pages':16,'reject_attempts':6,'endpoint_seconds':86400,
                   'rearm_seconds':86400,'rearms':3}
 BOOTSTRAP_PHASES=('unstarted','probing','established','refused')
+# Columns v8 collector code relies on; a store missing any is refused, never queried raw.
+SOURCE_COLUMNS={'boot_phase','boot_probes','boot_confirm','pre_epoch_skipped','undated_skipped','late_skipped',
+                'future_skipped','accepted_rows','history_streak','cursor_order_unverified','cursor_order_evidence',
+                'provider_rejects','endpoint_resolved_at','rearm_at','rearms','origin','last_request',
+                'unavailable_since','last_failure_at','last_failure_reason'}
 # Per-source request spacing (seconds), enforced by every claim, probes included.
 SOURCE_MIN_INTERVAL=1
 SCHEDULER_POLICY={'warm_seconds':1,'quiet_seconds':30,'failure_base_seconds':30,'failure_max_seconds':900,'failure_counter_max':6,'hot_streak_max':4}
@@ -113,7 +118,7 @@ class RecentStore(Store):
                 boot_confirm TEXT,rearm_at TEXT,rearms INTEGER NOT NULL DEFAULT 0 CHECK(rearms BETWEEN 0 AND 3),
                 origin TEXT NOT NULL DEFAULT 'seeded' CHECK(origin IN ('seeded','discovered')),last_request TEXT);
             ''')
-            for key, value in {'version':'7','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
+            for key, value in {'version':'8','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
                                'end':iso(stamp),'generation':'0','clock':iso(stamp),'events':'0'}.items():
                 db.set_meta(c, 'q:recent_'+key, value)
             db.set_meta(c,'q:recent_start',iso(stamp-dt.timedelta(days=30)))
@@ -133,8 +138,8 @@ class RecentStore(Store):
         return cls(root)
 
     def require(self, c):
-        if db.get_meta(c,'q:recent_version') != '7':
-            raise RuntimeError('recent schema v7 required; no implicit conversion; old evidence preserved')
+        if db.get_meta(c,'q:recent_version') != '8' or not SOURCE_COLUMNS <= {r[1] for r in c.execute('PRAGMA table_info(q_recent_sources)')}:
+            raise RuntimeError('recent schema v8 required; no implicit conversion; old evidence preserved')
         self.acquisition(c)
 
     @staticmethod
@@ -240,6 +245,23 @@ class RecentStore(Store):
                 self.flush(c)
                 return {'inserted':len(accepted),'accepted_ids':[x[0] for x in accepted], 'duplicate_ids':duplicates,'cursor':cursor}
             finally:c.close()
+
+    def check_local(self, injected=None):
+        """Passive checkpoint before the WAL budget bites (lease-free readers pin it).
+
+        Above half the budget a PASSIVE checkpoint copies what readers allow; the
+        base check then refuses wal_budget_pinned, which the collector records as a
+        store-level maintenance condition, never a per-source failure.
+        """
+        wal=Path(str(self.state)+'-wal')
+        try:size=wal.stat().st_size
+        except FileNotFoundError:size=0
+        if size:
+            with closing(connect(self.state,readonly=True)) as c:
+                budget=int(db.get_meta(c,'q:wal_budget_bytes') or '268435456')
+            if size>budget//2:
+                with closing(connect(self.state)) as c:c.execute('PRAGMA wal_checkpoint(PASSIVE)').fetchone()
+        return super().check_local(injected)
 
     def remember_sources(self,rows,limit=2048,request_cursor=_UNSET,next_cursor=_UNSET):
         discovery=request_cursor is not _UNSET or next_cursor is not _UNSET
@@ -515,9 +537,15 @@ class RecentStore(Store):
             return row[0]
         finally:c.close()
 
-    def collector_claim_source(self,limit=2048,observed_at=None,probing=False,did=None):
-        """Claim the next due source; probing=True claims only a cursorless bootstrapping
-        source (round-robin among them), or None. Due re-arms are restored first."""
+    def collector_claim_source(self,limit=2048,observed_at=None,probing=False,exclude=()):
+        """Claim the next due source, or None. Due re-arms are restored first.
+
+        probing=True claims only a cursorless bootstrapping source: in-progress
+        ('probing', most probes used first) before 'unstarted' (round-robin), so a
+        source mid-search keeps priority across ticks. exclude: dids this tick has
+        capped or seen fail (bounded by the roster)."""
+        exclude=sorted(set(exclude))
+        if len(exclude)>limit or any(not isinstance(d,str) or len(d.encode())>1024 for d in exclude):raise ValueError('claim exclusion bound')
         if not 0<limit<=2048:raise ValueError('source claim bound')
         with lock(self.root):
             c=connect(self.state)
@@ -533,16 +561,18 @@ class RecentStore(Store):
                     WHERE boot_phase='refused' AND rearm_at IS NOT NULL AND rearm_at<=?""",
                     (BOOTSTRAP_POLICY['reject_attempts']-1,stamp,stamp))
                 spaced=iso(clock(stamp)-dt.timedelta(seconds=SOURCE_MIN_INTERVAL))
-                due=' AND (next_due IS NULL OR next_due<=?) AND (last_request IS NULL OR last_request<=?)'
+                due=' AND (next_due IS NULL OR next_due<=?) AND (last_request IS NULL OR last_request<=?) AND did NOT IN (SELECT value FROM json_each(?))'
+                skip=json.dumps(exclude)
                 if probing:
-                    sql="SELECT did,endpoint FROM q_recent_sources WHERE provider_cursor IS NULL AND boot_phase IN ('unstarted','probing')"+due
-                    if did is not None:
-                        # Continue a source mid-search (consecutive probes, still spaced).
-                        row=c.execute(sql+' AND did=?',(stamp,spaced,did)).fetchone()
-                        if row is None:c.commit();return None
-                        self.caps(c,scan=False);c.commit();return dict(row)
+                    base="SELECT did,endpoint FROM q_recent_sources WHERE provider_cursor IS NULL"+due
+                    row=c.execute(base+" AND boot_phase='probing' ORDER BY boot_probes DESC,did LIMIT 1",(stamp,spaced,skip)).fetchone()
                     previous=db.get_meta(c,'q:recent_last_probe') or ''
-                    row=c.execute(sql+' AND did>? ORDER BY did LIMIT 1',(stamp,spaced,previous)).fetchone() or c.execute(sql+' ORDER BY did LIMIT 1',(stamp,spaced)).fetchone()
+                    # Never-failed unstarted sources before failing ones: unreachable
+                    # labelers cannot consume the share ahead of reachable ones.
+                    for healthy in ('failures=0','failures>0'):
+                        if row is not None:break
+                        sql=base+" AND boot_phase='unstarted' AND "+healthy
+                        row=c.execute(sql+' AND did>? ORDER BY did LIMIT 1',(stamp,spaced,skip,previous)).fetchone() or c.execute(sql+' ORDER BY did LIMIT 1',(stamp,spaced,skip)).fetchone()
                     if row is None:c.commit();return None
                     db.set_meta(c,'q:recent_last_probe',row['did'])
                     self.caps(c,scan=False);c.commit();return dict(row)
@@ -551,9 +581,14 @@ class RecentStore(Store):
                 def candidate(hot):
                     key='q:recent_last_hot' if hot else 'q:recent_last_cold'
                     previous=db.get_meta(c,key) or ''
-                    sql='SELECT did,endpoint FROM q_recent_sources WHERE '+('hot>0' if hot else 'hot=0')+" AND boot_phase!='refused'"+due
-                    row=c.execute(sql+' AND did>? ORDER BY did LIMIT 1',(stamp,spaced,previous)).fetchone()
-                    if row is None:row=c.execute(sql+' ORDER BY did LIMIT 1',(stamp,spaced)).fetchone()
+                    row=None
+                    # Sources without a current failure streak rotate first; failing
+                    # (backed-off, then due) sources only take the remaining slots.
+                    for healthy in ('failures=0','failures>0'):
+                        sql='SELECT did,endpoint FROM q_recent_sources WHERE '+('hot>0' if hot else 'hot=0')+" AND boot_phase!='refused' AND "+healthy+due
+                        row=c.execute(sql+' AND did>? ORDER BY did LIMIT 1',(stamp,spaced,skip,previous)).fetchone()
+                        if row is None:row=c.execute(sql+' ORDER BY did LIMIT 1',(stamp,spaced,skip)).fetchone()
+                        if row is not None:break
                     return row,key
                 cold,cold_key=candidate(0);hot,hot_key=candidate(1)
                 choose_hot=hot is not None and (streak<SCHEDULER_POLICY['hot_streak_max'] or cold is None)
