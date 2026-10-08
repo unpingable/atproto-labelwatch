@@ -232,8 +232,9 @@ def test_pre_epoch_rows_skipped_counted_and_observed_time_is_acceptance(store):
     cts = {1: '2026-10-01T00:00:00Z', 2: '2026-10-06T13:00:00Z', 3: 'not-a-time', 4: '2026-10-08T11:00:00Z',
            5: '2026-10-06T11:59:59Z'}
     clock = Clock(); t = Transport(clock, [Labeler(A, 5, cts=cts.get)]); enroll(store, A)
-    result = run(store, t, clock)[0]['results'][0]
-    assert result['bootstrap'] == 'established'
+    # Probe (short page), confirmation (empty: head), then the first collected page.
+    result = next(r for r in run(store, t, clock)[0]['results'] if r['status'] == 'accepted')
+    assert status(store, A)['bootstrap'] == 'established'
     assert (result['rows'], result['pre_epoch_skipped'], result['undated_skipped']) == (2, 2, 1)
     row = status(store, A)
     assert (row['pre_epoch_skipped'], row['undated_skipped']) == (2, 1)
@@ -249,7 +250,7 @@ def test_ready_sources_are_not_starved_by_probing(store):
     clock = Clock()
     big = Labeler(A, 1_000_000); small = Labeler(B, 10, recent=10, growth=2)
     t = Transport(clock, [big, small]); enroll(store, A, B)
-    run(store, t, clock, pages=2)       # B establishes from one short page
+    run(store, t, clock, ticks=2, pages=4)   # B establishes from a short page and its confirmation
     assert store.collector_source_state(B)['phase'] == 'established'
     for _ in range(3):
         before = len([c for c in t.calls if c[0] == B])
@@ -368,7 +369,7 @@ def test_collect_command_exit_reflects_whole_round_only(store, monkeypatch, caps
     out = json.loads(capsys.readouterr().out)
     assert out['collection']['refused_sources'] == [A]
     clock.t = 12*3600+60
-    assert recent_collect.main(['--store', str(store.root), '--network']) == 1
+    assert recent_collect.main(['--store', str(store.root), '--network']) == 75   # expected midnight owner hold (SuccessExitStatus=75)
     assert json.loads(capsys.readouterr().out)['collection']['round']['status'] == 'refused'
 
 
@@ -381,7 +382,7 @@ def test_late_rows_are_bounded_at_acceptance_time_and_counted_apart_from_pre_epo
     clock = Clock(); clock.t = 9*86400
     t = Transport(clock, [Labeler(A, 3, cts=cts.get)]); enroll(store, A)
     store.rotate('2026-10-17')
-    result = run(store, t, clock)[0]['results'][0]
+    result = next(r for r in run(store, t, clock)[0]['results'] if r['status'] == 'accepted')
     assert (result['rows'], result['pre_epoch_skipped'], result['late_skipped']) == (1, 1, 1)
     row = status(store, A)
     assert (row['pre_epoch_skipped'], row['late_skipped'], row['accepted_rows']) == (1, 1, 1)
@@ -455,3 +456,51 @@ def test_v6_store_refused_without_conversion(store):
         sdb.set_meta(c, 'q:recent_version', '6')
     with pytest.raises(RuntimeError, match='recent schema v7 required; no implicit conversion'):
         store.collector_sources(10)
+
+
+# Review r3.
+
+def test_provider_rejects_refusal_clears_unavailability_and_rearms_bounded(store, monkeypatch):
+    import recent_storage
+    monkeypatch.setitem(recent_storage.BOOTSTRAP_POLICY, 'rearm_seconds', 3600)   # 24 h in production
+    clock = Clock(); t = Rejecting(clock, 404); enroll(store, A)
+    for _ in range(8):
+        run(store, t, clock); clock.t += 900
+    row = status(store, A)
+    assert t.calls == 6 and row['unavailable_since'] is None and row['rearm_at'] is not None
+    for day, expected in ((1, 'bootstrap_refused:'), (2, 'bootstrap_refused:'), (3, 'bootstrap_refused_final:')):
+        clock.t = 5000+day*4000              # past each re-arm, same UTC day
+        before = t.calls
+        run(store, t, clock, ticks=3)
+        row = status(store, A)
+        assert t.calls == before+1 and row['bootstrap_reason'] == expected+'provider_rejects:404'
+        assert row['rearms'] == day and row['unavailable_since'] is None
+    assert row['rearm_at'] is None
+    clock.t = 5000+5*4000
+    run(store, t, clock, ticks=2)
+    assert t.calls == 9 and store.collector_bootstrap_summary()['unavailable'] == 0
+
+
+def test_cursor_jump_on_full_page_is_disclosed_as_order_unverified(store):
+    class Jumping(Labeler):
+        def query(self, cursor, limit):
+            body = super().query(cursor, limit)
+            if cursor is not None and len(body['labels']) == limit:
+                body['cursor'] = str(int(cursor)+limit*5)   # ids skipped by the provider
+            return body
+    clock = Clock(); t = Transport(clock, [Jumping(A, 10, recent=10, growth=120)]); enroll(store, A)
+    run(store, t, clock, ticks=3)
+    row = status(store, A)
+    assert row['cursor_order_unverified'] == 1 and json.loads(row['cursor_order_evidence'])['kind'] == 'cursor_jump'
+    assert store.collector_bootstrap_summary()['coverage'] == 'unknown'
+
+
+def test_future_rows_counted_and_established_at_exposed(store):
+    cts = {1: '2026-10-08T12:10:00Z', 2: '2026-10-08T11:00:00Z'}
+    clock = Clock(); t = Transport(clock, [Labeler(A, 2, cts=cts.get)]); enroll(store, A)
+    run(store, t, clock)
+    row = status(store, A)
+    assert (row['future_skipped'], row['accepted_rows']) == (1, 1)
+    summary = store.collector_bootstrap_summary()
+    assert summary['future_skipped'] == 1
+    assert summary['established_at']['earliest'] == row['established_at'] is not None
