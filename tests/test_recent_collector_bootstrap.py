@@ -37,6 +37,10 @@ class Clock:
     def now(self):
         return NOW+timedelta(seconds=self.t)
 
+    def sleep(self, seconds):
+        # Virtual wait for per-source spacing inside a round's deadline.
+        self.t += seconds
+
 
 class Labeler:
     """History of `size` labels; ids 1..size; old ids are source-dated long before the epoch."""
@@ -92,7 +96,8 @@ def enroll(store, *dids):
 def run(store, transport, clock, ticks=1, **limits):
     out = []
     for _ in range(ticks):
-        out.append(Collector(store, transport, limits=Limits(**limits), monotonic=clock.monotonic, now=clock.now).tick())
+        out.append(Collector(store, transport, limits=Limits(**limits), monotonic=clock.monotonic, now=clock.now,
+                             sleep=clock.sleep).tick())
         clock.t += 31        # past the quiet interval
     return out
 
@@ -232,8 +237,9 @@ def test_pre_epoch_rows_skipped_counted_and_observed_time_is_acceptance(store):
     cts = {1: '2026-10-01T00:00:00Z', 2: '2026-10-06T13:00:00Z', 3: 'not-a-time', 4: '2026-10-08T11:00:00Z',
            5: '2026-10-06T11:59:59Z'}
     clock = Clock(); t = Transport(clock, [Labeler(A, 5, cts=cts.get)]); enroll(store, A)
-    result = run(store, t, clock)[0]['results'][0]
-    assert result['bootstrap'] == 'established'
+    # Probe (short page), confirmation (empty: head), then the first collected page.
+    result = next(r for r in run(store, t, clock)[0]['results'] if r['status'] == 'accepted')
+    assert status(store, A)['bootstrap'] == 'established'
     assert (result['rows'], result['pre_epoch_skipped'], result['undated_skipped']) == (2, 2, 1)
     row = status(store, A)
     assert (row['pre_epoch_skipped'], row['undated_skipped']) == (2, 1)
@@ -241,7 +247,7 @@ def test_pre_epoch_rows_skipped_counted_and_observed_time_is_acceptance(store):
         observed = {r[0] for r in c.execute('SELECT observed_us FROM q_recent_seen')}
     assert len(observed) == 1
     stamp = observed.pop()
-    assert micros(NOW) < stamp <= micros(NOW+timedelta(seconds=1))   # acceptance clock, not cts
+    assert micros(NOW) < stamp <= micros(NOW+timedelta(seconds=5))   # acceptance clock (after spaced probes), not cts
     assert store.collector_bootstrap_summary()['pre_epoch_skipped'] == 2
 
 
@@ -249,7 +255,7 @@ def test_ready_sources_are_not_starved_by_probing(store):
     clock = Clock()
     big = Labeler(A, 1_000_000); small = Labeler(B, 10, recent=10, growth=2)
     t = Transport(clock, [big, small]); enroll(store, A, B)
-    run(store, t, clock, pages=2)       # B establishes from one short page
+    run(store, t, clock, ticks=2, pages=4)   # B establishes from a short page and its confirmation
     assert store.collector_source_state(B)['phase'] == 'established'
     for _ in range(3):
         before = len([c for c in t.calls if c[0] == B])
@@ -363,12 +369,12 @@ def test_collect_command_exit_reflects_whole_round_only(store, monkeypatch, caps
         def __enter__(self): return self.inner
         def __exit__(self, *exc): return False
     monkeypatch.setattr(recent_collect, 'HTTPTransport', Fixed)
-    monkeypatch.setattr(recent_collect, 'Collector', lambda s, tr: Collector(s, tr, monotonic=clock.monotonic, now=clock.now))
+    monkeypatch.setattr(recent_collect, 'Collector', lambda s, tr, **kw: Collector(s, tr, monotonic=clock.monotonic, now=clock.now))
     assert recent_collect.main(['--store', str(store.root), '--network']) == 0
     out = json.loads(capsys.readouterr().out)
     assert out['collection']['refused_sources'] == [A]
     clock.t = 12*3600+60
-    assert recent_collect.main(['--store', str(store.root), '--network']) == 1
+    assert recent_collect.main(['--store', str(store.root), '--network']) == 75   # expected midnight owner hold (SuccessExitStatus=75)
     assert json.loads(capsys.readouterr().out)['collection']['round']['status'] == 'refused'
 
 
@@ -381,7 +387,7 @@ def test_late_rows_are_bounded_at_acceptance_time_and_counted_apart_from_pre_epo
     clock = Clock(); clock.t = 9*86400
     t = Transport(clock, [Labeler(A, 3, cts=cts.get)]); enroll(store, A)
     store.rotate('2026-10-17')
-    result = run(store, t, clock)[0]['results'][0]
+    result = next(r for r in run(store, t, clock)[0]['results'] if r['status'] == 'accepted')
     assert (result['rows'], result['pre_epoch_skipped'], result['late_skipped']) == (1, 1, 1)
     row = status(store, A)
     assert (row['pre_epoch_skipped'], row['late_skipped'], row['accepted_rows']) == (1, 1, 1)
@@ -446,7 +452,7 @@ def test_overlapping_cursor_pages_mark_order_unverified_with_evidence(store):
     assert row['cursor_order_unverified'] == 1 and json.loads(row['cursor_order_evidence'])['overlap'] == 3
     summary = store.collector_bootstrap_summary()
     assert summary['cursor_order_unverified'] == 1 and summary['coverage'] == 'unknown'
-    assert row['accepted_rows'] >= 200 and row['bootstrap'] == 'established'   # rows still accepted, never refused
+    assert row['accepted_rows'] >= 100 and row['bootstrap'] == 'established'   # rows still accepted, never refused
 
 
 def test_v6_store_refused_without_conversion(store):
@@ -455,3 +461,129 @@ def test_v6_store_refused_without_conversion(store):
         sdb.set_meta(c, 'q:recent_version', '6')
     with pytest.raises(RuntimeError, match='recent schema v7 required; no implicit conversion'):
         store.collector_sources(10)
+
+
+# Review r3.
+
+def test_provider_rejects_refusal_clears_unavailability_and_rearms_bounded(store, monkeypatch):
+    import recent_storage
+    monkeypatch.setitem(recent_storage.BOOTSTRAP_POLICY, 'rearm_seconds', 3600)   # 24 h in production
+    clock = Clock(); t = Rejecting(clock, 404); enroll(store, A)
+    for _ in range(8):
+        run(store, t, clock); clock.t += 900
+    row = status(store, A)
+    assert t.calls == 6 and row['unavailable_since'] is None and row['rearm_at'] is not None
+    for day, expected in ((1, 'bootstrap_refused:'), (2, 'bootstrap_refused:'), (3, 'bootstrap_refused_final:')):
+        clock.t = 5000+day*4000              # past each re-arm, same UTC day
+        before = t.calls
+        run(store, t, clock, ticks=3)
+        row = status(store, A)
+        assert t.calls == before+1 and row['bootstrap_reason'] == expected+'provider_rejects:404'
+        assert row['rearms'] == day and row['unavailable_since'] is None
+    assert row['rearm_at'] is None
+    clock.t = 5000+5*4000
+    run(store, t, clock, ticks=2)
+    assert t.calls == 9 and store.collector_bootstrap_summary()['unavailable'] == 0
+
+
+def test_cursor_jump_on_full_page_is_disclosed_as_order_unverified(store):
+    class Jumping(Labeler):
+        def query(self, cursor, limit):
+            body = super().query(cursor, limit)
+            if cursor is not None and len(body['labels']) == limit:
+                body['cursor'] = str(int(cursor)+limit*5)   # ids skipped by the provider
+            return body
+    clock = Clock(); t = Transport(clock, [Jumping(A, 10, recent=10, growth=120)]); enroll(store, A)
+    run(store, t, clock, ticks=3)
+    row = status(store, A)
+    assert row['cursor_order_unverified'] == 1 and json.loads(row['cursor_order_evidence'])['kind'] == 'cursor_jump'
+    assert store.collector_bootstrap_summary()['coverage'] == 'unknown'
+
+
+def test_future_rows_counted_and_established_at_exposed(store):
+    cts = {1: '2026-10-08T12:10:00Z', 2: '2026-10-08T11:00:00Z'}
+    clock = Clock(); t = Transport(clock, [Labeler(A, 2, cts=cts.get)]); enroll(store, A)
+    run(store, t, clock)
+    row = status(store, A)
+    assert (row['future_skipped'], row['accepted_rows']) == (1, 1)
+    summary = store.collector_bootstrap_summary()
+    assert summary['future_skipped'] == 1
+    assert summary['established_at']['earliest'] == row['established_at'] is not None
+
+
+# C1 live-run addendum (D1, D2, D4, D5, seeded/discovered).
+
+class Latent(Transport):
+    """~45 attempts per 10 s as measured live: 0.22 s per request; quiet sources empty."""
+    def request(self, operation, params, max_bytes, timeout_seconds):
+        self.clock.t += .21
+        if params['did'] not in self.labelers:
+            self.calls.append((params['did'], params['cursor'], params['limit']))
+            self.clock.t += .01
+            return json.dumps({'labels': []}).encode()
+        return super().request(operation, params, max_bytes, timeout_seconds)
+
+
+def test_busy_source_establishes_within_ten_30s_rounds_among_150_probing(store):
+    quiet = [f'did:plc:q{i:03d}' for i in range(149)]
+    clock = Clock(); big = Labeler(A, 1_000_000, recent=30, growth=1)
+    t = Latent(clock, [big]); enroll(store, A, *quiet)
+    for round_ in range(1, 11):
+        run(store, t, clock, seconds=30)
+        clock.t += 90          # 2-minute cadence
+        if status(store, A)['bootstrap'] == 'established':
+            break
+    assert status(store, A)['bootstrap'] == 'established', status(store, A)
+    assert round_ <= 10 and len(probes(t)) and status(store, A)['bootstrap_probes'] <= 68
+
+
+def test_requests_to_one_source_are_spaced_at_least_one_second(store):
+    clock = Clock(); lab = Labeler(A, 30, recent=30, growth=150)
+    times = []
+    class Timed(Transport):
+        def request(self, operation, params, max_bytes, timeout_seconds):
+            times.append(self.clock.t)
+            return super().request(operation, params, max_bytes, timeout_seconds)
+    t = Timed(clock, [lab]); enroll(store, A)
+    run(store, t, clock, ticks=2)
+    assert len(times) >= 8
+    assert min(b-a for a, b in zip(times, times[1:]) if b-a < 30) >= 1 - 1e-6
+
+
+def test_killed_round_attempt_is_swept_and_disclosed_once(store):
+    clock = Clock(); enroll(store, A, B)
+    for did in (A, B):
+        store.begin_source_attempt(did, clock.now().isoformat())   # process killed mid-request
+    assert store.collector_bootstrap_summary()['pending_attempts'] == 2
+    clock.t = 120
+    result = run(store, Transport(clock, [Labeler(A, 0), Labeler(B, 0)]), clock)[0]
+    assert result['round']['lost_attempts'] == 2
+    with sqlite3.connect(store.state) as c:
+        gaps = list(c.execute("SELECT start,end FROM q_recent_gaps WHERE reason='unknown'"))
+    assert gaps == [('2026-10-08T12:00:00.000000Z', '2026-10-08T12:02:00.000000Z')]
+    assert store.collector_bootstrap_summary()['pending_attempts'] == 0
+
+
+def test_resolution_persists_even_when_labels_request_fails(store):
+    import httpx
+    from labelwatch.recent_collector import HTTPTransport
+    hosts = []
+    def handler(request):
+        hosts.append(request.url.host)
+        if request.url.host == 'plc.directory':
+            return httpx.Response(200, json={'id': A, 'service': [{'id': '#atproto_labeler', 'serviceEndpoint': 'https://labeler.test'}]})
+        return httpx.Response(503)
+    store.remember_sources([{'did': A, 'endpoint': None}])
+    clock = Clock()
+    with HTTPTransport(httpx.MockTransport(handler)) as transport:
+        for _ in range(3):
+            Collector(store, transport, monotonic=clock.monotonic, now=clock.now).tick(); clock.t += 1000
+    assert hosts.count('plc.directory') == 1 and hosts.count('labeler.test') == 3
+    assert store.collector_sources(10) == [{'did': A, 'endpoint': 'https://labeler.test'}]
+
+
+def test_seeded_and_discovered_are_counted_apart(store):
+    store.remember_sources([{'did': A, 'endpoint': None}])
+    store.remember_sources([{'did': B, 'endpoint': None}, {'did': A, 'endpoint': None}], request_cursor=None, next_cursor=None)
+    summary = store.collector_bootstrap_summary()
+    assert (summary['seeded'], summary['discovered']) == (1, 1)

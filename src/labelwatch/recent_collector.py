@@ -30,6 +30,10 @@ CURSOR_MAX = 2**53
 LATE_ALLOWANCE = timedelta(hours=48)
 STORE_HOLD = 'rotate daily observation owner before ingestion'
 ENDPOINT_TTL = timedelta(hours=24)
+FUTURE_ALLOWANCE = timedelta(seconds=300)
+# Verified id-ordered providers advance about one id per row (mod.bsky.app 50-61 ids
+# per 50 rows, skyware 50 per 50); urbanism.plus jumped 1728 ids for 50 rows.
+CURSOR_JUMP = 2
 REJECT_STATUSES = {'400', '401', '403', '404', '410'}
 
 
@@ -104,11 +108,19 @@ def source(value):
 
 class Collector:
     def __init__(self, store, transport, limits=Limits(), monotonic=time.monotonic,
-                 now=lambda: datetime.now(timezone.utc)):
+                 now=lambda: datetime.now(timezone.utc), sleep=None, stale_seconds=60):
         self.store, self.transport, self.limits = store, transport, limits
-        self.monotonic, self.now = monotonic, now
+        # sleep=None: a round ends when nothing is due; the service passes time.sleep
+        # so a round can wait for per-source spacing inside its own deadline.
+        self.monotonic, self.now, self.sleep = monotonic, now, sleep
+        # Attempts older than the unit's stop deadline (45 s + grace) were lost
+        # with a killed process; they are disclosed and cleared at round start.
+        self.stale_seconds = stale_seconds
 
     def _request(self, operation, params, deadline):
+        resolutions = getattr(self.transport, 'resolutions', None)
+        if isinstance(resolutions, dict):
+            resolutions.clear()
         started=self.monotonic()
         remaining = deadline-started
         if remaining <= 0:
@@ -192,8 +204,17 @@ class Collector:
             raise Refused('acquisition epoch unavailable')
         floor -= LATE_ALLOWANCE
         deadline = self.monotonic()+self.limits.seconds
+        sweep = getattr(self.store, 'collector_sweep_attempts', None)
+        lost = sweep(self.now().isoformat(), self.stale_seconds) if sweep else []
         results, probes, capped, held = [], {}, 0, None
-        for _ in range(self.limits.pages):
+        sticky = []      # sources mid-search this tick: stepped again as soon as spacing allows
+        # Reserved share: at least ceil(attempts/3) of a tick's attempts go to
+        # bootstrapping sources (round-robin among them) while any are due.
+        attempts, probe_attempts = 0, 0
+        slots, waits = self.limits.pages, 0
+        while slots > 0:
+            # A wait for spacing does not use a page slot; waits are bounded too.
+            slots -= 1
             if self.monotonic() >= deadline:
                 if not results:
                     held = 'collector deadline exceeded before any attempt'
@@ -206,9 +227,32 @@ class Collector:
             if held:
                 self._maintenance_gap(stamp, reason=held)
                 break
-            item = self.store.collector_claim_source(limit=self.limits.sources,observed_at=stamp.isoformat())
+            item = None
+            if probe_attempts*3 < attempts+1:
+                for did in list(sticky):
+                    item = self.store.collector_claim_source(limit=self.limits.sources, observed_at=stamp.isoformat(),
+                                                             probing=True, did=did)
+                    if item is not None:
+                        break
+                if item is None:
+                    item = self.store.collector_claim_source(limit=self.limits.sources, observed_at=stamp.isoformat(), probing=True)
+                if item is not None and probes.get(item['did'], 0) >= self.limits.bootstrap_probes:
+                    item = None       # its per-tick share is spent; fall back to rotation
+                # A probing source that is merely not yet due (spacing) keeps the share open.
             if item is None:
-                break
+                item = self.store.collector_claim_source(limit=self.limits.sources,observed_at=stamp.isoformat())
+            if item is None:
+                # Nothing due (per-source spacing, quiet backoff): wait for the next
+                # due source if it falls inside this round's deadline, else stop.
+                next_due = getattr(self.store, 'collector_next_due', None)
+                due = _source_time(next_due()) if next_due else None
+                wait = (due-stamp).total_seconds() if due is not None else None
+                if self.sleep is None or wait is None or wait <= 0 or self.monotonic()+wait >= deadline \
+                        or waits >= self.limits.pages:
+                    break
+                self.sleep(wait)
+                slots, waits = slots+1, waits+1
+                continue
             item = source(item)
             state = self.store.collector_source_state(item['did'])
             resolved = _source_time(state.get('endpoint_resolved_at'))
@@ -221,17 +265,26 @@ class Collector:
                     break
                 continue
             capped = 0
+            attempts += 1
             if booting:
+                probe_attempts += 1
                 probes[item['did']] = probes.get(item['did'], 0)+1
             attempt = self.store.begin_source_attempt(item['did'], stamp.isoformat())
             try:
                 if booting:
-                    results.append(self._bootstrap(item, state, attempt, stamp, deadline, floor))
+                    outcome = self._bootstrap(item, state, attempt, stamp, deadline, floor)
+                    results.append(outcome)
+                    still = outcome.get('status') == 'bootstrap' and outcome.get('phase') == 'probing'
+                    if still and probes[item['did']] < self.limits.bootstrap_probes:
+                        if item['did'] not in sticky:
+                            sticky.append(item['did'])
+                    elif item['did'] in sticky:
+                        sticky.remove(item['did'])
                     continue
                 position = cursor(state['cursor'])
                 page = self._request('labels', {**item, 'cursor': position, 'limit': self.limits.page_rows}, deadline)
                 normalized, next_cursor = self._page(item, page, self.limits.page_rows)
-                if self._endpoint_changed(item, page):
+                if self._endpoint_changed(item):
                     self.store.finish_source_attempt(item['did'], attempt, observed_at=self.now().isoformat(), failure=False)
                     results.append({'source': item['did'], 'status': 'endpoint_changed'})
                     continue
@@ -247,6 +300,10 @@ class Collector:
                     held = STORE_HOLD
                     break
                 # One source's failure is per-source state, never a store-wide gap.
+                # Our own resolution is kept even when the labels request failed.
+                self._endpoint_changed(item)
+                if item['did'] in sticky:
+                    sticky.remove(item['did'])
                 rejected = _deterministic(reason)
                 extra = {'rejected': rejected} if rejected else {}
                 self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat(), reason=reason, **extra)
@@ -257,12 +314,17 @@ class Collector:
         attempted = [row for row in results if row['source'] is not None]
         round_status = 'refused' if held and not attempted else 'ran'
         return {'attempted': len(attempted), 'deferred': len(rows)-len({row['source'] for row in attempted}), 'results': results,
-                'round': {'status': round_status, 'store_hold': held}, 'refused_sources': [row['source'] for row in attempted if row['status'] == 'refused'],
+                'round': {'status': round_status, 'store_hold': held, 'lost_attempts': len(lost)}, 'refused_sources': [row['source'] for row in attempted if row['status'] == 'refused'],
                 'bootstrap': summary() if summary else None, 'coverage': 'unknown'}
 
-    def _endpoint_changed(self, item, page):
-        """Persist a transport-resolved endpoint; True when the provider namespace changed."""
-        endpoint = page.get('_resolved_endpoint')
+    def _endpoint_changed(self, item):
+        """Persist our own DID resolution; True when the provider namespace changed.
+
+        The resolution arrives on the transport's side channel, never in a
+        provider-authored body: a page cannot redirect a source or reset its budget.
+        """
+        resolutions = getattr(self.transport, 'resolutions', None)
+        endpoint = resolutions.pop(item['did'], None) if isinstance(resolutions, dict) else None
         persist = getattr(self.store, 'collector_resolved_endpoint', None)
         if endpoint is None or persist is None:
             return False
@@ -319,7 +381,7 @@ class Collector:
         # Bounded late arrival: the allowance applies at acceptance time as well
         # as at the epoch, so a source first reached late never backfills history.
         late_floor = max(floor, accepted_at-LATE_ALLOWANCE)
-        kept, pre_epoch, late, undated = [], 0, 0, 0
+        kept, pre_epoch, late, undated, future = [], 0, 0, 0, 0
         for row in normalized:
             authored = None if row is None else _source_time(row[8])
             if authored is None:
@@ -328,34 +390,57 @@ class Collector:
                 pre_epoch += 1      # Epoch-only: never a silent historical backfill.
             elif authored < late_floor:
                 late += 1
+            elif authored > accepted_at+FUTURE_ALLOWANCE:
+                future += 1
             else:
                 kept.append(row)
-        skipped = {k: v for k, v in (('pre_epoch', pre_epoch), ('undated', undated), ('late', late)) if v}
+        skipped = {k: v for k, v in (('pre_epoch', pre_epoch), ('undated', undated), ('late', late), ('future', future)) if v}
         extra = {'skipped': skipped} if skipped else {}
-        if len(normalized) == limit and not kept and pre_epoch+late == len(normalized):
-            extra['history'] = True     # a full page of old rows: counts toward the re-probe cap
+        if normalized and not kept and next_cursor is not None:
+            # Any page (any size) with zero accepted rows and an advancing cursor
+            # counts toward the history cap; one undated row does not reset it.
+            extra['history'] = True
+        if len(normalized) == limit and before is not None and after is not None and after-before > CURSOR_JUMP*len(normalized):
+            # Disclosure heuristic, not a loss detector: ids skipped by the provider.
+            extra['order_evidence'] = {'kind': 'cursor_jump', 'request': position, 'next': next_cursor,
+                                       'rows': len(normalized)}
         result = self.store.accept_page(kept, source=item['did'], request_cursor=position,
                                         next_cursor=next_cursor, observed_at=accepted_at.isoformat(), attempt_token=attempt, **extra)
         return {'source': item['did'], 'status': 'accepted', 'rows': len(kept), 'pre_epoch_skipped': pre_epoch,
-                'late_skipped': late, 'undated_skipped': undated, 'terminal': next_cursor is None, 'result': result}
+                'late_skipped': late, 'undated_skipped': undated, 'future_skipped': future, 'terminal': next_cursor is None, 'result': result}
 
     def _bootstrap(self, item, state, attempt, stamp, deadline, floor):
-        """One probe: gallop x16 then bisect on the numeric cursor until a short page.
+        """One probe: gallop x16 then bisect on the numeric cursor until a confirmed short page.
 
         Invariant: lo is a provider cursor at or below the head when it was seen
         (a returned id, or a probe that still had a full page beyond it), so
         starting at lo never skips a record created later; hi had nothing beyond
         it when probed. Every outcome is persisted before the next request.
+
+        A short page is the head only once confirmed: the probe at its numeric
+        continuation must return fewer rows than it did (review r3). A
+        continuation that returns as many rows (>= 10) reveals a provider page
+        cap; that cap then defines a full page for the rest of the search.
         """
-        expect = {k: state[k] for k in ('phase', 'probes', 'lo', 'hi')}
+        expect = {k: state.get(k) for k in ('phase', 'probes', 'lo', 'hi', 'confirm')}
+        conf = json.loads(state['confirm']) if state.get('confirm') else {}
+        cap = conf.get('cap')
         lo = _decimal(state['lo']) if state['lo'] is not None else None
         hi = _decimal(state['hi']) if state['hi'] is not None else None
-        if state['phase'] == 'probing' and (lo is None or (state['hi'] is not None and hi is None)):
+        if state['phase'] == 'probing' and ((lo is None and 'next' not in conf) or (state['hi'] is not None and hi is None)):
             raise RuntimeError('persisted bootstrap bracket invalid')
         step = lambda **kw: self.store.bootstrap_step(item['did'], attempt, self.now().isoformat(), expect, **kw)
         report = lambda value, **kw: {'source': item['did'], 'status': 'bootstrap', 'phase': value['phase'],
                                       'probes': value['probes'], **kw}
-        if state['phase'] == 'unstarted':
+        keep = lambda extra=None: json.dumps({**({'cap': cap} if cap else {}), **(extra or {})}, sort_keys=True) \
+            if cap or extra else None
+        rows = min(PROBE_ROWS, self.limits.page_rows)
+        confirming = 'next' in conf
+        if confirming:
+            x = _decimal(conf['next'])
+            if x is None:
+                raise RuntimeError('persisted bootstrap confirmation invalid')
+        elif state['phase'] == 'unstarted':
             x = None
         elif hi is not None and hi-lo <= 1:
             # Restart after a persisted converged bracket: no request needed.
@@ -365,18 +450,35 @@ class Collector:
         else:
             x = min(max(lo*16, lo+1), CURSOR_MAX) if hi is None else (lo+hi)//2
         position = None if x is None else str(x)
-        page = self._request('labels', {**item, 'cursor': position, 'limit': min(PROBE_ROWS, self.limits.page_rows)}, deadline)
-        rows = min(PROBE_ROWS, self.limits.page_rows)
+        page = self._request('labels', {**item, 'cursor': position, 'limit': rows}, deadline)
         normalized, next_cursor = self._page(item, page, rows)
-        if self._endpoint_changed(item, page):
+        if self._endpoint_changed(item):
             raise Refused('resolved endpoint changed; bootstrap restarts')
+        lo_s, hi_s = state['lo'], state['hi']
+        if confirming:
+            served, before = len(normalized), conf['rows']
+            if not (served >= before >= 10):
+                # Fewer rows beyond the continuation: the short page was the head.
+                established = conf['at']
+                if established is not None and _decimal(established) is None:
+                    raise RuntimeError('persisted bootstrap confirmation invalid')
+                return report(step(phase='established', lo=lo_s, hi=hi_s, established=established, confirm=None),
+                              confirmed=True)
+            if served < rows:
+                cap = served      # the provider serves at most this many rows per page
+        full = cap or rows
         if not normalized and x is not None:
             hi = x
-        elif len(normalized) < rows or next_cursor is None:
-            # Short (or terminal) page: everything after `position` is in hand, so
-            # no cursor arithmetic is needed and an opaque continuation is kept as-is.
-            value = step(phase='established', lo=state['lo'], hi=state['hi'], established=position, finish=False)
-            return {**self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor, rows),
+        elif len(normalized) < full or next_cursor is None:
+            following = _decimal(next_cursor)
+            if following is not None and (x is None or following > x):
+                # Unconfirmed short page: confirm at its continuation before trusting it.
+                value = step(phase='probing', lo=lo_s, hi=hi_s,
+                             confirm=keep({'at': position, 'next': next_cursor, 'rows': len(normalized)}))
+                return report(value, probe=position, rows=len(normalized), confirming=True)
+            # Terminal or opaque continuation: everything after `position` is in hand.
+            value = step(phase='established', lo=lo_s, hi=hi_s, established=position, finish=False)
+            return {**self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor, full),
                     'bootstrap': value['phase'], 'probes': value['probes']}
         else:
             # Further probing needs a verified numeric, advancing cursor; anything
@@ -384,17 +486,20 @@ class Collector:
             following = _decimal(next_cursor)
             if following is None:
                 reason = 'cursor_out_of_range' if DECIMAL.fullmatch(next_cursor) else 'opaque_cursor'
-                return report(step(phase='refused', lo=state['lo'], hi=state['hi'], reason=reason))
+                return report(step(phase='refused', lo=lo_s, hi=hi_s, reason=reason))
             if x is not None and following <= x:
-                return report(step(phase='refused', lo=state['lo'], hi=state['hi'], reason='cursor_regression'))
+                return report(step(phase='refused', lo=lo_s, hi=hi_s, reason='cursor_regression'))
             lo = x if x is not None else following
+        if lo is None:
+            raise Refused('bootstrap bracket unavailable')
         if hi is not None and hi-lo <= 1:
             if x == lo:   # The full page for lo is in hand: it is the first collected page.
                 value = step(phase='established', lo=str(lo), hi=str(hi), established=str(lo), finish=False)
-                return {**self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor, rows),
+                return {**self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor, full),
                         'bootstrap': value['phase'], 'probes': value['probes']}
             return report(step(phase='established', lo=str(lo), hi=str(hi), established=str(lo)))
-        return report(step(phase='probing', lo=str(lo), hi=None if hi is None else str(hi)), probe=position, rows=len(normalized))
+        return report(step(phase='probing', lo=str(lo), hi=None if hi is None else str(hi), confirm=keep()),
+                      probe=position, rows=len(normalized))
 
 
 class HTTPTransport:
@@ -413,6 +518,7 @@ class HTTPTransport:
         self._loop=None
         self._executor=None
         self._client=None   # one client per invocation (tick), reused across requests
+        self.resolutions={}  # did -> endpoint from our own DID resolution (never from a body)
 
     def __enter__(self):
         import asyncio
@@ -505,14 +611,16 @@ class HTTPTransport:
                 if endpoint is None:
                     raise Refused('labeler endpoint unresolved')
                 resolved = endpoint
+                # Our own resolution is reported before the labels request, so it is
+                # kept even if that request fails (side channel, never the body).
+                self.resolutions[did] = resolved
             else:
                 resolved = None
             query = {'sources': did, 'uriPatterns': '*', 'limit': params['limit']}
             if params['cursor'] is not None:
                 query['cursor'] = params['cursor']
             result = await fetch(endpoint+'/xrpc/com.atproto.label.queryLabels', query)
-            if resolved is not None:
-                result['_resolved_endpoint'] = resolved   # persisted by the collector
+            result.pop('_resolved_endpoint', None)   # provider bodies never carry our state
         else:
             raise Refused('unknown transport operation')
         encoded = json.dumps(result, separators=(',', ':')).encode()
