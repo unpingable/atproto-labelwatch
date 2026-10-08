@@ -29,6 +29,8 @@ GAP_REASONS = ("not_observed", "source_unavailable", "ingest_paused", "cursor_re
 SOURCE_KEYS = ("seeded", "unstarted", "probing", "established", "refused", "pre_epoch_skipped",
                "undated_skipped", "late_skipped", "cursor_order_unverified", "undated_only",
                "provider_rejects", "unavailable")
+# Present when the collector exposes it; int or null (unknown).
+OPTIONAL_SOURCE_KEYS = ("future_skipped",)
 COUNT_KEYS = ("events_24h", "events_7d", "events_window", "labelers_active_7d",
               "labelers_active_window")
 TOP_KEYS = {"labeler_did", "count"}
@@ -96,8 +98,15 @@ def coverage(stats, now, window_days=WINDOW_DAYS):
         overflow = True
         gaps = [{"start": iso(window_start), "end": iso(now), "reason": "unknown"}]
     days = observed_days(started, now, window_days)
-    status = "warming_up" if warmup or days < window_days else "gapped" if gaps else "no_recorded_gaps"
-    sources = {key: stats.get("sources", {}).get(key) for key in SOURCE_KEYS}
+    roster = stats.get("sources", {})
+    # The collector's own coverage verdict wins: while any source is unstarted,
+    # probing, refused, unavailable, order-unverified or undated-only, window
+    # coverage is unknown (warm-up and gaps stay disclosed alongside).
+    if roster.get("coverage", "unknown") == "unknown":
+        status = "unknown"
+    else:
+        status = "warming_up" if warmup or days < window_days else "gapped" if gaps else "no_recorded_gaps"
+    sources = {key: roster.get(key) for key in SOURCE_KEYS + OPTIONAL_SOURCE_KEYS}
     return {"status": status, "observed_days": days, "observed_through": stats.get("observed_through"),
             "warmup": warmup, "gaps": gaps, "gap_overflow": overflow, "sources": sources}
 
@@ -136,7 +145,7 @@ def held(now, *, signature=None, window_days=WINDOW_DAYS):
         "acquisition": None,
         "coverage": {"status": "held", "observed_days": None, "observed_through": None,
                      "warmup": None, "gaps": [], "gap_overflow": False,
-                     "sources": {key: None for key in SOURCE_KEYS}},
+                     "sources": {key: None for key in SOURCE_KEYS + OPTIONAL_SOURCE_KEYS}},
         "counts": {},
         "top_labelers_7d": [],
         "state": {"current_label_state": "unknown"},
@@ -156,7 +165,7 @@ def validate(envelope):
         raise OverviewRefused("current label state must remain unknown")
     utc(envelope["generated_at"])
     cov = envelope["coverage"]
-    if not isinstance(cov, dict) or set(cov) != COVERAGE_KEYS or set(cov["sources"]) != set(SOURCE_KEYS):
+    if not isinstance(cov, dict) or set(cov) != COVERAGE_KEYS or set(cov["sources"]) != set(SOURCE_KEYS + OPTIONAL_SOURCE_KEYS):
         raise OverviewRefused("overview coverage fields")
     if len(cov["gaps"]) > MAX_GAPS or any(set(g) != {"start", "end", "reason"} or g["reason"] not in GAP_REASONS
                                           for g in cov["gaps"]):
@@ -175,7 +184,10 @@ def validate(envelope):
             raise OverviewRefused("overview counts")
         if any(type(cov["sources"][k]) is not int or cov["sources"][k] < 0 for k in SOURCE_KEYS):
             raise OverviewRefused("overview source roster counts")
-        if cov["warmup"] is not None and cov["status"] != "warming_up":
+        if any(cov["sources"][k] is not None and (type(cov["sources"][k]) is not int or cov["sources"][k] < 0)
+               for k in OPTIONAL_SOURCE_KEYS):
+            raise OverviewRefused("overview optional source counts")
+        if cov["warmup"] is not None and cov["status"] not in ("warming_up", "unknown"):
             raise OverviewRefused("warm-up must be disclosed as warming_up")
     else:
         raise OverviewRefused("overview hold flag")

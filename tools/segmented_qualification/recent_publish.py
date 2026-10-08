@@ -43,10 +43,18 @@ def _sources(store):
                                                   'cursor_order_unverified', 'undated_only', 'provider_rejects',
                                                   'unavailable')}
     counts['seeded'] = counts['unstarted'] + counts['probing'] + counts['established'] + counts['refused']
+    # Read defensively: newer collector disclosures render when present, unknown otherwise.
+    counts['future_skipped'] = int(summary['future_skipped']) if type(summary.get('future_skipped')) is int else None
+    counts['coverage'] = summary.get('coverage') or 'unknown'
     refused = [{'did': row['did'], 'reason': row['reason']} for row in summary['refused_sources']]
     # Operator detail only (DIDs and evidence); never part of the public overview.
     operator = {key: summary[key] for key in ('cursor_order_unverified_sources', 'undated_only_sources',
-                                              'provider_rejects_sources', 'unavailable_sources')}
+                                              'provider_rejects_sources', 'unavailable_sources') if key in summary}
+    keep = ('did', 'bootstrap', 'bootstrap_established_at', 'established_at', 'rearm_at', 'positioned',
+            'accepted_rows', 'cursor_order_unverified', 'provider_rejects', 'undated_only', 'late_skipped',
+            'future_skipped', 'endpoint_resolved_at')
+    operator['source_status'] = [{key: row[key] for key in keep if key in row}
+                                 for row in store.collector_source_status(2048)]
     return counts, refused, operator
 
 
