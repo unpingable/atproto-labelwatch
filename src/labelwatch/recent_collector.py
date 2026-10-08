@@ -108,8 +108,10 @@ def _private_address(text):
         return None          # not a literal IP
     if getattr(address, 'ipv4_mapped', None):
         address = address.ipv4_mapped
-    return (address.is_private or address.is_loopback or address.is_link_local or address.is_reserved
-            or address.is_multicast or address.is_unspecified)
+    # is_global is False for CGNAT (100.64/10), benchmarking and other non-public
+    # ranges that is_private does not cover on Python 3.12.
+    return (not address.is_global or address.is_private or address.is_loopback or address.is_link_local
+            or address.is_reserved or address.is_multicast or address.is_unspecified)
 
 
 def public_host(host):

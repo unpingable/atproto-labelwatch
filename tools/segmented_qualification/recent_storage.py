@@ -23,6 +23,8 @@ from storage import Store, owned, connect, lock, db, custody, ingest, sha, syncd
 BOOTSTRAP_POLICY={'total_probes':72,'cursor_max':2**53,'history_pages':16,'reject_attempts':6,'endpoint_seconds':86400,
                   'rearm_seconds':86400,'rearms':3}
 BOOTSTRAP_PHASES=('unstarted','probing','established','refused')
+# Every column create() declares on q_recent_sources; require() refuses a store missing any of them.
+SOURCE_SCHEMA_COLUMNS={'pre_epoch_skipped', 'provider_rejects', 'boot_started', 'last_failure_reason', 'last_page', 'boot_at', 'endpoint', 'endpoint_resolved_at', 'rearm_at', 'boot_probes', 'boot_reason', 'did', 'failures', 'boot_phase', 'provider_cursor', 'undated_skipped', 'last_failure_at', 'attempt_token', 'cursor_order_evidence', 'cursor_order_unverified', 'boot_hi', 'last_request', 'boot_confirm', 'boot_cursor', 'unavailable_since', 'future_skipped', 'hot', 'next_due', 'rearms', 'last_observed', 'boot_lo', 'origin', 'attempt_start', 'accepted_rows', 'history_streak', 'late_skipped'}
 # Columns v8 collector code relies on; a store missing any is refused, never queried raw.
 SOURCE_COLUMNS={'boot_phase','boot_probes','boot_confirm','pre_epoch_skipped','undated_skipped','late_skipped',
                 'future_skipped','accepted_rows','history_streak','cursor_order_unverified','cursor_order_evidence',
@@ -138,7 +140,8 @@ class RecentStore(Store):
         return cls(root)
 
     def require(self, c):
-        if db.get_meta(c,'q:recent_version') != '8' or not SOURCE_COLUMNS <= {r[1] for r in c.execute('PRAGMA table_info(q_recent_sources)')}:
+        present = {r[1] for r in c.execute('PRAGMA table_info(q_recent_sources)')}
+        if db.get_meta(c,'q:recent_version') != '8' or not (SOURCE_COLUMNS | SOURCE_SCHEMA_COLUMNS) <= present:
             raise RuntimeError('recent schema v8 required; no implicit conversion; old evidence preserved')
         self.acquisition(c)
 
