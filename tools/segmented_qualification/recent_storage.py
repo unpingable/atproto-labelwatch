@@ -93,7 +93,8 @@ class RecentStore(Store):
                 boot_probes INTEGER NOT NULL DEFAULT 0 CHECK(boot_probes BETWEEN 0 AND 72),
                 boot_lo TEXT,boot_hi TEXT,boot_cursor TEXT,boot_started TEXT,boot_at TEXT,boot_reason TEXT,
                 pre_epoch_skipped INTEGER NOT NULL DEFAULT 0 CHECK(pre_epoch_skipped>=0),
-                undated_skipped INTEGER NOT NULL DEFAULT 0 CHECK(undated_skipped>=0));
+                undated_skipped INTEGER NOT NULL DEFAULT 0 CHECK(undated_skipped>=0),
+                unavailable_since TEXT,last_failure_at TEXT,last_failure_reason TEXT CHECK(length(last_failure_reason)<=160));
             ''')
             for key, value in {'version':'6','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
                                'end':iso(stamp),'generation':'0','clock':iso(stamp),'events':'0'}.items():
@@ -269,7 +270,12 @@ class RecentStore(Store):
                 self.caps(c,scan=False);c.commit();return token
             finally:c.close()
 
-    def finish_source_attempt(self,did,attempt_token,observed_at=None,failure=True):
+    def finish_source_attempt(self,did,attempt_token,observed_at=None,failure=True,reason=None):
+        """A single source's failure is per-source state, never a store-wide gap.
+
+        unavailable_since keeps the first failed attempt start until a success.
+        """
+        if reason is not None and (not isinstance(reason,str) or len(reason)>160):raise ValueError('failure reason bound')
         with lock(self.root):
             c=connect(self.state)
             try:
@@ -281,7 +287,11 @@ class RecentStore(Store):
                 failures=min(SCHEDULER_POLICY['failure_counter_max'],row[2]+1) if failure else 0
                 delay=min(SCHEDULER_POLICY['failure_max_seconds'],SCHEDULER_POLICY['failure_base_seconds']*2**(failures-1)) if failure else SCHEDULER_POLICY['quiet_seconds']
                 due=iso(stamp+dt.timedelta(seconds=delay))
-                c.execute('UPDATE q_recent_sources SET attempt_token=NULL,attempt_start=NULL,hot=0,next_due=?,failures=? WHERE did=?',(due,failures,did));c.commit()
+                c.execute('UPDATE q_recent_sources SET attempt_token=NULL,attempt_start=NULL,hot=0,next_due=?,failures=? WHERE did=?',(due,failures,did))
+                if failure:
+                    c.execute('UPDATE q_recent_sources SET unavailable_since=COALESCE(unavailable_since,?),last_failure_at=?,last_failure_reason=? WHERE did=?',
+                              (row[1],iso(stamp),reason or 'unspecified',did))
+                c.commit()
             finally:c.close()
 
     def collector_sources(self,limit):
@@ -300,9 +310,19 @@ class RecentStore(Store):
             self.require(c)
             return [dict(r) for r in c.execute('''SELECT did,boot_phase AS bootstrap,boot_probes AS bootstrap_probes,
                 boot_started AS bootstrap_started_at,boot_at AS bootstrap_established_at,boot_cursor AS bootstrap_cursor,boot_reason AS bootstrap_reason,
-                pre_epoch_skipped,undated_skipped,provider_cursor IS NOT NULL AS positioned
+                pre_epoch_skipped,undated_skipped,provider_cursor IS NOT NULL AS positioned,
+                unavailable_since,last_failure_at,last_failure_reason,failures
                 FROM q_recent_sources ORDER BY did LIMIT ?''',(limit,))]
         finally:c.close()
+
+    def collector_admission(self,observed_at):
+        """None when ingestion at observed_at is admitted; else a store-wide reason."""
+        stamp=clock(observed_at)
+        with closing(connect(self.state,readonly=True)) as c:
+            self.require(c)
+            if c.execute('SELECT 1 FROM q_recent_transition').fetchone():return 'recent maintenance recovery required'
+            if db.get_meta(c,'q:active')!=stamp.date().isoformat():return 'rotate daily observation owner before ingestion'
+            return None
 
     def collector_epoch(self):
         """Acquisition start: the epoch floor for source-authored rows (minus the late allowance)."""
@@ -329,9 +349,12 @@ class RecentStore(Store):
             positioned=c.execute("SELECT COUNT(*) FROM q_recent_sources WHERE boot_phase IN ('unstarted','probing') AND provider_cursor IS NOT NULL").fetchone()[0]
             skipped=c.execute('SELECT COALESCE(SUM(pre_epoch_skipped),0),COALESCE(SUM(undated_skipped),0) FROM q_recent_sources').fetchone()
             refused=[{'did':r[0],'reason':r[1]} for r in c.execute("SELECT did,boot_reason FROM q_recent_sources WHERE boot_phase='refused' ORDER BY did LIMIT 2048")]
+            unavailable=[{'did':r[0],'since':r[1],'last_failure_at':r[2],'reason':r[3]} for r in c.execute(
+                'SELECT did,unavailable_since,last_failure_at,last_failure_reason FROM q_recent_sources WHERE unavailable_since IS NOT NULL ORDER BY did LIMIT 2048')]
             return {**phases,'positioned_without_bootstrap':positioned,'pre_epoch_skipped':skipped[0],
                     'undated_skipped':skipped[1],'refused_sources':refused,
-                    'coverage':'unknown' if phases['unstarted']+phases['probing']+phases['refused']-positioned>0 else 'established_sources_only'}
+                    'unavailable':len(unavailable),'unavailable_sources':unavailable,
+                    'coverage':'unknown' if phases['unstarted']+phases['probing']+phases['refused']-positioned>0 or unavailable else 'established_sources_only'}
         finally:c.close()
 
     def bootstrap_step(self,did,attempt_token,observed_at,expect,phase,lo=None,hi=None,established=None,reason=None,finish=True):
@@ -361,7 +384,7 @@ class RecentStore(Store):
                 if probes>BOOTSTRAP_POLICY['total_probes']:raise RuntimeError('bootstrap probe ceiling')
                 if phase=='probing' and probes>=BOOTSTRAP_POLICY['total_probes']:
                     phase,reason='refused','probe_budget_exhausted'
-                c.execute('UPDATE q_recent_sources SET boot_phase=?,boot_probes=?,boot_lo=?,boot_hi=?,boot_started=COALESCE(boot_started,?) WHERE did=?',
+                c.execute('UPDATE q_recent_sources SET boot_phase=?,boot_probes=?,boot_lo=?,boot_hi=?,boot_started=COALESCE(boot_started,?),unavailable_since=NULL WHERE did=?',
                           (phase,probes,lo,hi,stamp,did))
                 if phase=='established':
                     c.execute('UPDATE q_recent_sources SET provider_cursor=?,boot_cursor=?,boot_at=? WHERE did=?',(established,established,stamp,did))
@@ -451,7 +474,7 @@ class RecentStore(Store):
                 previous=json.loads(current[1]) if current[1] else None
                 if previous==page:
                     self._schedule_success(c,source,False,request_cursor,next_cursor,stamp,force_quiet=True)
-                    c.execute('UPDATE q_recent_sources SET attempt_token=NULL,attempt_start=NULL WHERE did=?',(source,))
+                    c.execute('UPDATE q_recent_sources SET attempt_token=NULL,attempt_start=NULL,unavailable_since=NULL WHERE did=?',(source,))
                     c.commit();return {'inserted':0,'cursor':current[0],'replayed_page':True}
                 if current[0]!=request_cursor:raise RuntimeError('provider continuation changed; page refused')
                 # Guard the full payload digest as well as canonical source hash.
@@ -463,7 +486,7 @@ class RecentStore(Store):
                 accepted,duplicates=self._stage_observations(c,fresh,stamp,death)
                 position=next_cursor if next_cursor is not None else request_cursor
                 self._schedule_success(c,source,bool(rows) or bool(pre_epoch+undated),request_cursor,next_cursor,stamp)
-                c.execute('UPDATE q_recent_sources SET provider_cursor=?,last_page=?,last_observed=?,attempt_token=NULL,attempt_start=NULL,pre_epoch_skipped=pre_epoch_skipped+?,undated_skipped=undated_skipped+? WHERE did=?',(position,json.dumps(page,sort_keys=True),iso(stamp),pre_epoch,undated,source))
+                c.execute('UPDATE q_recent_sources SET provider_cursor=?,last_page=?,last_observed=?,attempt_token=NULL,attempt_start=NULL,pre_epoch_skipped=pre_epoch_skipped+?,undated_skipped=undated_skipped+?,unavailable_since=NULL WHERE did=?',(position,json.dumps(page,sort_keys=True),iso(stamp),pre_epoch,undated,source))
                 self.caps(c,scan=False)
                 if death:death('before_recent_ingest_commit')
                 c.commit()
@@ -524,10 +547,26 @@ class RecentStore(Store):
         if start>=end or reason not in ('ingest_paused','source_unavailable','cursor_reset','maintenance','unknown','warmup'):raise ValueError('invalid bounded gap')
         start=max(start,db.get_meta(c,'q:recent_start'))
         if start>=end:return
-        if c.execute('SELECT 1 FROM q_recent_gaps WHERE start=? AND end=? AND reason=?',(start,end,reason)).fetchone():return
+        # Same-reason overlapping or touching intervals merge into one row.
+        for old_start,old_end in list(c.execute('SELECT start,end FROM q_recent_gaps WHERE reason=? AND start<=? AND end>=?',(reason,end,start))):
+            start,end=min(start,old_start),max(end,old_end)
+            c.execute('DELETE FROM q_recent_gaps WHERE start=? AND end=? AND reason=?',(old_start,old_end,reason))
         if c.execute('SELECT COUNT(*) FROM q_recent_gaps').fetchone()[0]>=128:
+            # Remember the dropped interval so overflow can be released later.
             db.set_meta(c,'q:recent_gap_overflow','1')
+            lo,hi=db.get_meta(c,'q:recent_gap_overflow_start'),db.get_meta(c,'q:recent_gap_overflow_end')
+            db.set_meta(c,'q:recent_gap_overflow_start',min(start,lo) if lo else start)
+            db.set_meta(c,'q:recent_gap_overflow_end',max(end,hi) if hi else end)
         else:c.execute('INSERT INTO q_recent_gaps VALUES(?,?,?)',(start,end,reason))
+
+    def _release_gap_overflow(self,c):
+        """After expiry, overflow becomes one merged in-window 'unknown' gap (or nothing)."""
+        if db.get_meta(c,'q:recent_gap_overflow')!='1':return
+        if c.execute('SELECT COUNT(*) FROM q_recent_gaps').fetchone()[0]>=128:return
+        lo,hi=db.get_meta(c,'q:recent_gap_overflow_start'),db.get_meta(c,'q:recent_gap_overflow_end')
+        c.execute("DELETE FROM meta WHERE key IN ('q:recent_gap_overflow_start','q:recent_gap_overflow_end')")
+        db.set_meta(c,'q:recent_gap_overflow','0')
+        if lo and hi:self._record_gap(c,lo,hi,'unknown')
 
     def record_gap(self,start,end,reason):
         with lock(self.root):
@@ -624,6 +663,7 @@ class RecentStore(Store):
                 for table,column in TIMED.items():c.execute(f'DELETE FROM {table} WHERE {column}<?',(plan['start'],))
                 c.execute('DELETE FROM q_recent_seen WHERE observed_us<?',(micros(plan['start']),))
                 c.execute('DELETE FROM q_recent_gaps WHERE end<=?',(plan['start'],))
+                db.set_meta(c,'q:recent_start',plan['start']);self._release_gap_overflow(c)
                 db.set_meta(c,'q:recent_events',str(c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]))
                 for table in DERIVED:c.execute(f'DELETE FROM {table}')
                 # Discovery and configured-source enrollment outlive observed
