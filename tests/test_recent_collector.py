@@ -8,8 +8,13 @@ DID = 'did:plc:one'
 NOW = datetime(2026, 10, 6, tzinfo=timezone.utc)
 
 
-def label(value='x'):
-    return {'src': DID, 'uri': 'did:plc:subject', 'val': value, 'cts': '2020-01-01T00:00:00Z'}
+def label(value='x', cts='2020-01-01T00:00:00Z'):
+    return {'src': DID, 'uri': 'did:plc:subject', 'val': value, 'cts': cts}
+
+
+def recent(value='x'):
+    """Source-dated inside the acquisition epoch (real stores refuse pre-epoch rows)."""
+    return label(value, cts='2026-10-05T23:00:00Z')
 
 
 class Store:
@@ -30,6 +35,13 @@ class Store:
 
     def collector_cursor(self, source):
         return self.cursors.get(source)
+
+    def collector_source_state(self, source):
+        # Fixture sources are positioned (pre-bootstrap semantics); bootstrap has its own tests.
+        return {'cursor': self.cursors.get(source), 'phase': 'established', 'probes': 0, 'lo': None, 'hi': None}
+
+    def collector_epoch(self):
+        return '2019-01-01T00:00:00+00:00'
 
     def collector_discovery_cursor(self):
         return self.discovery_cursor
@@ -249,7 +261,7 @@ def test_real_store_changed_terminal_page_and_restart_claim(tmp_path, monkeypatc
     from recent_storage import RecentStore
     s = RecentStore.create(tmp_path/'store', NOW.isoformat())
     s.remember_sources([{'did': DID, 'endpoint': None}])
-    c, _ = collector(s, [{'labels': [label()]}, {'labels': [label(), label('later')]}, {'labels': [label(), label('later')]}])
+    c, _ = collector(s, [{'labels': [recent()]}, {'labels': [recent(), recent('later')]}, {'labels': [recent(), recent('later')]}])
     from datetime import timedelta
     assert c.tick()['results'][0]['result']['inserted'] == 1
     c.now=lambda:NOW+timedelta(seconds=31)
@@ -276,7 +288,7 @@ def test_real_store_mock_http_discovery_and_collection(tmp_path, monkeypatch):
             return httpx.Response(200, json={'repos': [{'did': DID}]})
         if request.url.host == 'plc.directory':
             return httpx.Response(200, json={'id': DID, 'service': [{'id': '#atproto_labeler', 'serviceEndpoint': 'https://labeler.test'}]})
-        return httpx.Response(200, json={'labels': [label()], 'cursor': 'opaque/position'})
+        return httpx.Response(200, json={'labels': [recent()], 'cursor': 'opaque/position'})
     c = Collector(s, http_transport(handler), now=lambda: NOW)
     assert c.discover()['discovered'] == 1
     assert c.tick()['results'][0]['result']['inserted'] == 1
