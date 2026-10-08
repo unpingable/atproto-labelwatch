@@ -284,7 +284,9 @@ def test_landing_defaults_use_actual_frontier_and_offer_shorter_period(monkeypat
     assert module.interval(product, 7) == ("2026-09-29T00:00:00Z", START)
     request = module.handler(product).__new__(module.handler(product))
     rendered, is_html = request.dispatch("/", {})
-    assert is_html and "Last 7 days" in rendered and "warm-up gap" in rendered
+    assert is_html and "Last 7 days" in rendered and "Full 30-day window" in rendered
+    assert "value='2026-09-06T00:00:00Z'" in rendered.replace('"', "'")
+    assert "current label state is unknown" in rendered
     with pytest.raises(Refused, match="invalid_period"):
         module.interval(product, 45)
 

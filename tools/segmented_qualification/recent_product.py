@@ -1,21 +1,33 @@
 #!/usr/bin/env python3
-"""Explicit successor preview: loopback account HTML and bounded JSON exports.
+"""Rolling-observatory site: landing, about, account HTML, bounded JSON exports.
 
-Run only on an admitted off-production RecentStore:
+Run only on an admitted RecentStore:
   PYTHONPATH=src:. python tools/segmented_qualification/recent_product.py --store PATH
-No existing service, ingestion task or production configuration is changed.
+Routes: / (landing), /about, /previous-epoch, /health (operator JSON),
+/lookup (DID or handle -> /account), /account, /exports, /download,
+/instruments/fonts/<file>. Binds 127.0.0.1 only.
 """
 from __future__ import annotations
 
 import argparse
 import html
 import json
+import re
+import sys
+import threading
+import time
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit, urlencode
 
-from labelwatch.recent_observations import Limits, RecentObservations, Refused, account_html, timestamp, iso
+from labelwatch.recent_observations import (Limits, RecentObservations, Refused, account_html, timestamp, iso,
+                                            landing_html, about_html, previous_epoch_html, lookup_refusal_html)
+
+FONTS = Path(__file__).resolve().parents[2] / "src" / "labelwatch" / "_instruments" / "fonts"
+FONT_FILES = {"IBMPlexSans-Regular.woff2", "IBMPlexSans-SemiBold.woff2",
+              "IBMPlexMono-Regular.woff2", "SourceSerif4-Bold.woff2"}
+HANDLE = re.compile(r"^@?([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$")
 
 
 def dense_account_html(args):
@@ -39,7 +51,56 @@ def interval(product, days=30):
     return iso(start), iso(end)
 
 
-def handler(product):
+class SiteStatus:
+    """Short-lived cache of the cheap store summary (no payload reads).
+
+    The figures come from the same aggregate reader as the published overview,
+    so the landing page and overview.json cannot disagree in definition.
+    """
+    def __init__(self, product, ttl=15.0, stale_after=900):
+        self.product, self.ttl, self.stale_after = product, ttl, stale_after
+        self._lock = threading.Lock()
+        self._cached = None
+
+    def read(self):
+        with self._lock:
+            tick = time.monotonic()
+            if self._cached and tick - self._cached[0] < self.ttl:
+                return self._cached[1]
+            now = self.product.now()
+            try:
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                import recent_publish
+                from labelwatch import recent_overview
+                stats = recent_publish.read_store(self.product.provider.store, now, timeout=2.0, budget=5.0, labelers=False)
+                view = recent_overview.overview(stats, now)
+                result = {"view": view, "maintenance": stats["last_maintenance"], "error": None, "now": now}
+            except Exception as exc:  # summary absence is disclosed, never shown as zero
+                result = {"view": None, "maintenance": None, "error": type(exc).__name__, "now": now}
+            self._cached = (tick, result)
+            return result
+
+    def health(self):
+        status = self.read()
+        view = status["view"]
+        if view is None:
+            return 503, {"status": "unavailable", "reason": status["error"], "window_days": self.product.limits.days}
+        cov = view["coverage"]
+        through = cov["observed_through"]
+        age = (status["now"] - timestamp(through)).total_seconds() if through else None
+        state = "unavailable" if age is None else "fresh" if age <= self.stale_after else "stale"
+        return 200, {"status": "ok" if state == "fresh" else "degraded",
+                     "window_days": view["window_days"], "acquisition": view["acquisition"],
+                     "coverage": {"status": cov["status"], "observed_days": cov["observed_days"], "warmup": cov["warmup"],
+                                  "gaps_count": len(cov["gaps"]), "gap_overflow": cov["gap_overflow"], "sources": cov["sources"]},
+                     "last_maintenance": status["maintenance"],
+                     "freshness": {"state": state, "basis": "last_accepted_observation", "observed_through": through,
+                                   "age_seconds": None if age is None else round(age, 3), "stale_after_seconds": self.stale_after},
+                     "generated_at": view["generated_at"]}
+
+
+def handler(product, *, resolver=None, status=None):
+    site = status or SiteStatus(product)
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             super().setup()
@@ -57,25 +118,60 @@ def handler(product):
                 self.send_header("Content-Disposition", 'attachment; filename="labelwatch-observations.json"')
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
             self.end_headers()
             self.wfile.write(data)
 
+        def respond_bytes(self, data, content_type):
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def redirect(self, location):
+            self.send_response(303)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+
+        def lookup(self, args):
+            """DID or handle -> the unchanged /account route; handles resolve only when enabled."""
+            if set(args) - {"account", "days"} or "account" not in args or args.get("days", "30") not in ("7", "30"):
+                raise Refused("invalid_lookup_request")
+            account, days = args["account"].strip(), args.get("days", "30")
+            if len(account) > 512:
+                raise Refused("invalid_lookup_request")
+            if account.startswith("did:"):
+                return self.redirect("/account?" + urlencode({"did": account, "days": days}))
+            if not HANDLE.match(account):
+                return self.respond(409, lookup_refusal_html("That is not an account DID or handle."), "text/html")
+            if resolver is None:
+                return self.respond(409, lookup_refusal_html("Handle lookup is not enabled on this service."), "text/html")
+            try:
+                did = resolver(account.lstrip("@"))
+            except Exception:
+                did = None
+            if not isinstance(did, str) or not did.startswith("did:") or len(did) > 512 or any(c in did for c in "/?#\r\n"):
+                return self.respond(409, lookup_refusal_html("That handle could not be resolved to an account DID."), "text/html")
+            return self.redirect("/account?" + urlencode({"did": did, "days": days}))
+
         def dispatch(self, path, args):
             if path == "/":
-                start, end = interval(product)
-                return ("<!doctype html><meta charset='utf-8'><title>Recent account observations</title>"
-                        "<h1>Recent account observations</h1><p>Explore recorded public labels for an account. "
-                        "The candidate window is 30 days. A new store has a warm-up gap before acquisition began; "
-                        "no observations does not mean no labels. Current label state is unknown.</p>"
-                        "<form action='/account'><label>Account DID <input name='did' required></label>"
-                        "<label>Start (UTC ISO timestamp) <input name='start' value='" + html.escape(start, quote=True) + "' required></label>"
-                        "<label>End, exclusive (UTC ISO timestamp) <input name='end' value='" + html.escape(end, quote=True) + "' required></label>"
-                        "<button>View this period</button><button name='days' value='7'>Last 7 days</button>"
-                        "<button name='days' value='30'>Full candidate window</button></form>"
-                        "<p>Interval ends at the available source frontier, which may be earlier than now. "
-                        "Exports are finite consistent snapshots. "
-                        "Exports use bounded pages even when many observations share one timestamp. Account previews have a finite row budget; no truncated result is published.</p>"), True
+                try:
+                    window = interval(product)
+                except Exception:
+                    window = None
+                current = site.read()
+                return landing_html(current["view"], window, current["error"]), True
+            if path in ("/about", "/previous-epoch"):
+                if path == "/previous-epoch":
+                    return previous_epoch_html(), True
+                view = site.read()["view"]
+                return about_html(view["acquisition"]["started_at"] if view else None, product.limits.days), True
             if path == "/download":
                 if set(args)!={"cursor"}:raise Refused("invalid_download_request")
                 return product.download(args["cursor"]),False
@@ -104,6 +200,19 @@ def handler(product):
                 if any(len(values) != 1 for values in query.values()):
                     raise Refused("duplicate_parameter")
                 args = {key: value[0] for key, value in query.items()}
+                if request.path == "/health":
+                    code, body = site.health()
+                    self.respond(code, body)
+                    return
+                if request.path.startswith("/instruments/fonts/"):
+                    name = request.path.rsplit("/", 1)[1]
+                    if name not in FONT_FILES or args:
+                        raise Refused("unknown_route")
+                    self.respond_bytes((FONTS / name).read_bytes(), "font/woff2")
+                    return
+                if request.path == "/lookup":
+                    self.lookup(args)
+                    return
                 if set(args) - {"did", "start", "end", "labeler", "value", "cursor", "action", "target_kind", "days"}:
                     raise Refused("unknown_parameter")
                 result, is_html = self.dispatch(request.path, args)
@@ -138,13 +247,22 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=8431)
     parser.add_argument("--window-days", type=int, default=30, choices=(30,),
                         help="Only the 30-day candidate is implemented; longer guarantees require qualification.")
+    parser.add_argument("--resolve-handles", action="store_true",
+                        help="Resolve handles in /lookup via com.atproto.identity.resolveHandle (outbound HTTPS).")
+    parser.add_argument("--stale-after-seconds", type=int, default=900,
+                        help="/health reports collection as stale when the last accepted observation is older.")
     args = parser.parse_args(argv)
     # This adapter is deliberately explicit and separately qualified. No
     # fallback to live databases or fabricated observation timestamps.
     from recent_provider import RecentProvider
     provider = RecentProvider(args.store)
     product = RecentObservations(provider, Limits(days=args.window_days))
-    server = HTTPServer(("127.0.0.1", args.port), handler(product))
+    resolver = None
+    if args.resolve_handles:
+        from labelwatch.resolve import resolve_handle_to_did
+        resolver = lambda handle: resolve_handle_to_did(handle, timeout=3)  # noqa: E731
+    site = SiteStatus(product, stale_after=args.stale_after_seconds)
+    server = HTTPServer(("127.0.0.1", args.port), handler(product, resolver=resolver, status=site))
     try:
         server.serve_forever()
     finally:
