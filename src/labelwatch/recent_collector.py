@@ -9,6 +9,7 @@ contract, not a claim that legacy ingestion is wired to this collector.
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import json
+import re
 import time
 from urllib.parse import urlsplit
 
@@ -20,6 +21,35 @@ class Refused(ValueError):
     pass
 
 
+# Bounded head establishment for cursorless sources (tools/segmented_qualification/BOOTSTRAP.md).
+# Verified 2026-10-08 against Ozone and skyware-style labelers: decimal id cursors,
+# next > request on every non-empty page, empty page beyond the head.
+PROBE_ROWS = 50
+TOTAL_PROBES = 72          # >= 1 + ceil(53/4) gallop + 53 bisection steps over [1, 2**53]
+CURSOR_MAX = 2**53
+LATE_ALLOWANCE = timedelta(hours=48)
+DECIMAL = re.compile(r'(0|[1-9][0-9]{0,15})')
+
+
+def _decimal(value):
+    if value is None or not DECIMAL.fullmatch(value) or int(value) > CURSOR_MAX:
+        return None
+    return int(value)
+
+
+def _source_time(value):
+    """Source-authored time is used only to refuse pre-epoch rows, never as acquisition time."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class Limits:
     response_bytes: int = 1024 * 1024
@@ -28,10 +58,11 @@ class Limits:
     sources: int = 2048
     seconds: float = 10
     request_seconds: float = 1
+    bootstrap_probes: int = 8
 
     def __post_init__(self):
         for value, maximum in ((self.response_bytes, 1024*1024), (self.page_rows, 100),
-                               (self.pages, 128), (self.sources, 2048)):
+                               (self.pages, 128), (self.sources, 2048), (self.bootstrap_probes, 16)):
             if type(value) is not int or not 1 <= value <= maximum:
                 raise Refused('invalid finite collector limit')
         if not 0 < self.seconds <= 30 or not 0 < self.request_seconds <= min(10,self.seconds):
@@ -129,6 +160,11 @@ class Collector:
         It must permit later changed terminal pages and deduplicate event identity.
         No transport failure advances continuation. Gaps are conservative intervals,
         not a claim that records were known to be missing in that interval.
+
+        A cursorless source is never traversed from its history: it is first
+        bootstrapped (bounded probes, one request per claim, at most
+        Limits.bootstrap_probes per source per tick, TOTAL_PROBES ever).
+        Probes share the tick's page budget and deadline with ready sources.
         """
         rows = self.store.collector_sources(limit=self.limits.sources+1)
         if len(rows) > self.limits.sources:
@@ -138,8 +174,12 @@ class Collector:
             raise Refused('duplicate roster source')
         if not rows:
             return {'attempted': 0, 'results': [], 'coverage': 'unknown'}
+        floor = _source_time(self.store.collector_epoch())
+        if floor is None:
+            raise Refused('acquisition epoch unavailable')
+        floor -= LATE_ALLOWANCE
         deadline = self.monotonic()+self.limits.seconds
-        results = []
+        results, probes, capped = [], {}, 0
         for _ in range(self.limits.pages):
             if self.monotonic() >= deadline:
                 break
@@ -150,42 +190,137 @@ class Collector:
             if item is None:
                 break
             item = source(item)
+            state = self.store.collector_source_state(item['did'])
+            booting = state['cursor'] is None and state['phase'] in ('unstarted', 'probing')
+            if booting and probes.get(item['did'], 0) >= self.limits.bootstrap_probes:
+                capped += 1   # Per-tick probe share spent; yield the slot, never loop.
+                if capped > len(rows):
+                    break
+                continue
+            capped = 0
+            if booting:
+                probes[item['did']] = probes.get(item['did'], 0)+1
             attempt = self.store.begin_source_attempt(item['did'], stamp.isoformat())
             try:
-                position = cursor(self.store.collector_cursor(item['did']))
+                if booting:
+                    results.append(self._bootstrap(item, state, attempt, stamp, deadline, floor))
+                    continue
+                position = cursor(state['cursor'])
                 page = self._request('labels', {**item, 'cursor': position, 'limit': self.limits.page_rows}, deadline)
-                labels = page.get('labels')
-                if not isinstance(labels, list) or len(labels) > self.limits.page_rows:
-                    raise Refused('label page ceiling or missing labels')
-                next_cursor = cursor(page.get('cursor'))
-                if next_cursor is not None and next_cursor == position:
-                    raise Refused('label continuation did not advance')
-                normalized = []
-                for raw in labels:
-                    if not isinstance(raw, dict) or raw.get('src') != item['did'] or raw.get('labeler_did', item['did']) != item['did']:
-                        raise Refused('source attribution mismatch')
-                    if not isinstance(raw.get('uri'), str) or not isinstance(raw.get('val'), str):
-                        raise Refused('invalid label fields')
-                    if 'neg' in raw and type(raw['neg']) is not bool:
-                        raise Refused('invalid label action')
-                    r = normalize_label(raw, strict_identity=True)
-                    normalized.append((r.labeler_did,r.src,r.uri,r.cid,r.val,r.neg,r.exp,r.sig,r.ts,r.event_hash,parse_target_did(r.uri)))
-                if self.monotonic() >= deadline:
-                    raise Refused('collector deadline exceeded before commit')
-                accepted_at = self.now()
-                if accepted_at.tzinfo is None or accepted_at.utcoffset() != timedelta(0) or accepted_at < stamp:
-                    raise Refused('observation clock regression')
-                result = self.store.accept_page(normalized, source=item['did'], request_cursor=position,
-                                                next_cursor=next_cursor, observed_at=accepted_at.isoformat(), attempt_token=attempt)
-                results.append({'source': item['did'], 'status': 'accepted', 'rows': len(normalized),
-                                'terminal': next_cursor is None, 'result': result})
+                normalized, next_cursor = self._page(item, page, self.limits.page_rows)
+                results.append(self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor))
             except Exception as exc:
                 # Gap persistence failure is fatal: never report a recorded gap that was lost.
                 end = max(self.now(), stamp+timedelta(microseconds=1))
                 self.store.record_gap(stamp.isoformat(), end.isoformat(), 'source_unavailable')
                 self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat())
                 results.append({'source': item['did'], 'status': 'refused', 'reason': str(exc)[:160] if isinstance(exc, Refused) else type(exc).__name__})
-        return {'attempted': len(results), 'deferred': len(rows)-len({row['source'] for row in results}), 'results': results, 'coverage': 'unknown'}
+        summary = getattr(self.store, 'collector_bootstrap_summary', None)
+        return {'attempted': len(results), 'deferred': len(rows)-len({row['source'] for row in results}), 'results': results,
+                'bootstrap': summary() if summary else None, 'coverage': 'unknown'}
+
+    def _page(self, item, page, rows):
+        labels = page.get('labels')
+        if not isinstance(labels, list) or len(labels) > rows:
+            raise Refused('label page ceiling or missing labels')
+        next_cursor = cursor(page.get('cursor'))
+        if not labels:
+            # Verified: skyware-style labelers answer an empty page with cursor "0";
+            # following it would restart the whole history. An empty page never moves.
+            next_cursor = None
+        normalized = []
+        for raw in labels:
+            if not isinstance(raw, dict) or raw.get('src') != item['did'] or raw.get('labeler_did', item['did']) != item['did']:
+                raise Refused('source attribution mismatch')
+            if not isinstance(raw.get('uri'), str) or not isinstance(raw.get('val'), str):
+                raise Refused('invalid label fields')
+            if 'neg' in raw and type(raw['neg']) is not bool:
+                raise Refused('invalid label action')
+            r = normalize_label(raw, strict_identity=True)
+            normalized.append((r.labeler_did,r.src,r.uri,r.cid,r.val,r.neg,r.exp,r.sig,r.ts,r.event_hash,parse_target_did(r.uri)))
+        return normalized, next_cursor
+
+    def _accept(self, item, normalized, position, next_cursor, attempt, stamp, deadline, floor):
+        if next_cursor is not None and next_cursor == position:
+            raise Refused('label continuation did not advance')
+        before, after = _decimal(position), _decimal(next_cursor)
+        if before is not None and after is not None and after <= before:
+            raise Refused('label continuation regressed')
+        kept, pre_epoch, undated = [], 0, 0
+        for row in normalized:
+            authored = _source_time(row[8])
+            if authored is None:
+                undated += 1
+            elif authored < floor:
+                pre_epoch += 1      # Epoch-only: never a silent historical backfill.
+            else:
+                kept.append(row)
+        if self.monotonic() >= deadline:
+            raise Refused('collector deadline exceeded before commit')
+        accepted_at = self.now()
+        if accepted_at.tzinfo is None or accepted_at.utcoffset() != timedelta(0) or accepted_at < stamp:
+            raise Refused('observation clock regression')
+        skipped = {k: v for k, v in (('pre_epoch', pre_epoch), ('undated', undated)) if v}
+        extra = {'skipped': skipped} if skipped else {}
+        result = self.store.accept_page(kept, source=item['did'], request_cursor=position,
+                                        next_cursor=next_cursor, observed_at=accepted_at.isoformat(), attempt_token=attempt, **extra)
+        return {'source': item['did'], 'status': 'accepted', 'rows': len(kept), 'pre_epoch_skipped': pre_epoch,
+                'undated_skipped': undated, 'terminal': next_cursor is None, 'result': result}
+
+    def _bootstrap(self, item, state, attempt, stamp, deadline, floor):
+        """One probe: gallop x16 then bisect on the numeric cursor until a short page.
+
+        Invariant: lo is a provider cursor at or below the head when it was seen
+        (a returned id, or a probe that still had a full page beyond it), so
+        starting at lo never skips a record created later; hi had nothing beyond
+        it when probed. Every outcome is persisted before the next request.
+        """
+        expect = {k: state[k] for k in ('phase', 'probes', 'lo', 'hi')}
+        lo = _decimal(state['lo']) if state['lo'] is not None else None
+        hi = _decimal(state['hi']) if state['hi'] is not None else None
+        if state['phase'] == 'probing' and (lo is None or (state['hi'] is not None and hi is None)):
+            raise RuntimeError('persisted bootstrap bracket invalid')
+        step = lambda **kw: self.store.bootstrap_step(item['did'], attempt, self.now().isoformat(), expect, **kw)
+        report = lambda value, **kw: {'source': item['did'], 'status': 'bootstrap', 'phase': value['phase'],
+                                      'probes': value['probes'], **kw}
+        if state['phase'] == 'unstarted':
+            x = None
+        elif hi is not None and hi-lo <= 1:
+            # Restart after a persisted converged bracket: no request needed.
+            return report(step(phase='established', lo=str(lo), hi=str(hi), established=str(lo)))
+        elif lo >= CURSOR_MAX:
+            return report(step(phase='refused', lo=str(lo), reason='cursor_out_of_range'))
+        else:
+            x = min(max(lo*16, lo+1), CURSOR_MAX) if hi is None else (lo+hi)//2
+        position = None if x is None else str(x)
+        page = self._request('labels', {**item, 'cursor': position, 'limit': min(PROBE_ROWS, self.limits.page_rows)}, deadline)
+        rows = min(PROBE_ROWS, self.limits.page_rows)
+        normalized, next_cursor = self._page(item, page, rows)
+        if not normalized and x is not None:
+            hi = x
+        elif len(normalized) < rows or next_cursor is None:
+            # Short (or terminal) page: everything after `position` is in hand, so
+            # no cursor arithmetic is needed and an opaque continuation is kept as-is.
+            value = step(phase='established', lo=state['lo'], hi=state['hi'], established=position, finish=False)
+            return {**self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor),
+                    'bootstrap': value['phase'], 'probes': value['probes']}
+        else:
+            # Further probing needs a verified numeric, advancing cursor; anything
+            # else is a deterministic refusal (coverage unknown), never a traversal.
+            following = _decimal(next_cursor)
+            if following is None:
+                reason = 'cursor_out_of_range' if DECIMAL.fullmatch(next_cursor) else 'opaque_cursor'
+                return report(step(phase='refused', lo=state['lo'], hi=state['hi'], reason=reason))
+            if x is not None and following <= x:
+                return report(step(phase='refused', lo=state['lo'], hi=state['hi'], reason='cursor_regression'))
+            lo = x if x is not None else following
+        if hi is not None and hi-lo <= 1:
+            if x == lo:   # The full page for lo is in hand: it is the first collected page.
+                value = step(phase='established', lo=str(lo), hi=str(hi), established=str(lo), finish=False)
+                return {**self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor),
+                        'bootstrap': value['phase'], 'probes': value['probes']}
+            return report(step(phase='established', lo=str(lo), hi=str(hi), established=str(lo)))
+        return report(step(phase='probing', lo=str(lo), hi=None if hi is None else str(hi)), probe=position, rows=len(normalized))
 
 
 class HTTPTransport:

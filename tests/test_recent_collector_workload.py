@@ -30,12 +30,14 @@ class WorkloadTransport:
         self.clock.value += min(delay, timeout_seconds)
         if delay >= timeout_seconds: raise TimeoutError('finite fixture deadline')
         if not busy: return b'{"labels":[]}'
-        offset = self.served[did]
-        count = min(100, max(0, self.initial + int(self.rates[did]*self.clock.value)-offset))
-        rows = [{'src':did,'uri':'did:plc:subject','val':str(offset+n),
+        # Cursor-addressed numeric ids (verified provider shape, 2026-10-08):
+        # rows after the request cursor, honoring the requested limit.
+        offset = int(params['cursor'] or 0)
+        head = self.initial + int(self.rates[did]*self.clock.value)
+        count = min(params['limit'], max(0, head-offset))
+        rows = [{'src':did,'uri':'did:plc:subject','val':str(offset+n+1),
                  'cts':'2026-10-06T00:00:00Z'} for n in range(count)]
-        # Advance only when commit succeeds, in simulate's checked result loop.
-        return json.dumps({'labels':rows, **({'cursor':f'opaque-{offset+count}'} if count else {})}).encode()
+        return json.dumps({'labels':rows, **({'cursor':str(offset+count)} if count else {})}).encode()
 
 def simulate(root, *, count=584, busy_count=1, total_rate=20, fail=False,
              latency=.05, duration=120, idle=0, busy_last=False, initial=1000):
@@ -53,7 +55,9 @@ def simulate(root, *, count=584, busy_count=1, total_rate=20, fail=False,
     original=store.accept_page
     def accept(rows, **kwargs):
         result=original(rows, **kwargs)
-        if kwargs['source'] in rates: transport.served[kwargs['source']]+=result['inserted']
+        # served = committed provider position; bootstrap skips the pre-head backlog.
+        if kwargs['source'] in rates and result.get('cursor') is not None:
+            transport.served[kwargs['source']]=int(result['cursor'])
         return result
     store.accept_page=accept
     started=time.monotonic();ticks=0;refusals=0;peak=initial*busy_count
