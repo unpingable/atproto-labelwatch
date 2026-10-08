@@ -196,6 +196,33 @@ rule; none exists yet.
 * `recent_collect.py` exits 75 for the expected daily owner hold (unit
   `SuccessExitStatus=75`); other whole-round refusals stay 1.
 
+## Live C1 addendum (2026-10-08)
+
+* Per-source spacing: every claim (probes included) requires `last_request <= now - 1 s`
+  as well as `next_due <= now`. When nothing is due, a round with `sleep` (the service
+  passes `time.sleep`) waits for the next due source inside its own deadline, without
+  spending a page slot; otherwise the round ends.
+* Bootstrap throughput: a source mid-search is kept "sticky" for the tick and is
+  stepped again in the next reserved probing slot (>= 1/3 of attempts) as soon as its
+  spacing allows, up to the 8-probe per-tick cap. A probing source that is merely not
+  yet due does not close the reserved share.
+* Round deadline: `LABELWATCH_RECENT_ROUND_SECONDS` (default 10, max 30) in the unit
+  environment. Longer rounds give more spaced probes per round at the cost of a longer
+  run; the unit stop deadline (45 s) must stay above it plus grace. Estimate for 584
+  sources at ~45 attempts per 10 s and a 2-minute cadence: 30 s rounds (128-attempt
+  cap) clear the first pass of ~880 bootstrap attempts in about 7 rounds and a busy
+  source needs about 3 rounds once reached (8 spaced probes per round), so about
+  15-20 minutes; 10 s rounds take about 20 + 3 rounds, about 45 minutes. The previous
+  rotation needed about 10 hours for mod.bsky.app. Tested: 150 probing sources
+  including one needing about 22 probes establish within 10 rounds of 30 s.
+* Lost attempts: at round start attempts older than `LABELWATCH_RECENT_STALE_SECONDS`
+  (default 60 = 45 s stop deadline + grace) are cleared and disclosed once as a merged
+  store-wide `unknown` gap (process loss). The summary reports `pending_attempts`.
+* Endpoint resolution is reported on the side channel before the labels request, so a
+  failed labels request still keeps our own resolved endpoint (1 GET afterwards).
+* Origin: a source's first enrollment fixes `origin`: discovery pages are `discovered`,
+  explicit enrollment (init seed) is `seeded`; the summary reports both.
+
 ## Unknown / not guaranteed
 
 * Per-source coverage starts at `boot_at` (established time). Labels issued between
