@@ -50,14 +50,15 @@ def test_landing_discloses_activity_epoch_coverage_gaps_roster_and_state(store):
                      '7 of 30 days observed since Sep 01, 2026 at 00:00 UTC',
                      'was not observed by this acquisition generation',
                      'A source was unavailable during this interval.',
-                     'Labelers enrolled', 'Pre-epoch rows skipped',
+                     'Labelers enrolled', 'Rows skipped as authored before this epoch',
                      'Observations older than 30 days expire',
                      'Labelwatch records observed application/removal events; current label state is unknown.',
                      'action="/lookup"', '/exports?did=', 'href="/about"', 'href="/previous-epoch"',
                      '/instruments/fonts/IBMPlexSans-Regular.woff2'):
         assert expected in text, expected
     assert '<strong>4</strong><span>Events observed, last 7 days' in text
-    assert '<td>unknown</td>' in text  # probing/refused until the collector exposes them
+    assert 'Not yet started</th><td>3</td>' in text and 'Refused (could not be safely initialised)</th><td>0</td>' in text
+    assert 'Sources that could not be safely initialised are reported as unknown coverage, never as quiet.' in text
     assert SUBJECT not in text
 
 

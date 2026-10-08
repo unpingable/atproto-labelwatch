@@ -65,8 +65,8 @@ def test_envelope_schema_counts_and_top_labelers(store):
                              'reason': 'not_observed'}
     assert cov['gaps'] == [{'start': '2026-09-02T01:00:00.000000Z', 'end': '2026-09-02T02:00:00.000000Z',
                             'reason': 'source_unavailable'}]
-    assert cov['sources'] == {'seeded': 3, 'established': 0, 'probing': None, 'refused': None,
-                              'pre_epoch_skipped': None}
+    assert cov['sources'] == {'seeded': 3, 'unstarted': 3, 'probing': 0, 'established': 0, 'refused': 0,
+                              'pre_epoch_skipped': 0, 'undated_skipped': 0}
     assert cov['observed_through'] == '2026-09-02T12:00:00.000000Z'
     assert stats['last_maintenance']['generation'] == 1
 
@@ -89,7 +89,8 @@ def test_no_private_fields_or_subject_dids(store):
 def test_steady_state_has_no_warmup_and_reports_gaps():
     stats = {'acquisition': {'generation_id': '12345678-1234-4234-9234-123456789012',
                              'started_at': '2026-08-01T00:00:00Z', 'basis': 'local_acceptance_clock'},
-             'counts': dict.fromkeys(recent_overview.COUNT_KEYS, 0), 'gaps': [], 'sources': {},
+             'counts': dict.fromkeys(recent_overview.COUNT_KEYS, 0), 'gaps': [],
+             'sources': dict.fromkeys(recent_overview.SOURCE_KEYS, 0),
              'top_labelers_7d': [], 'observed_through': None}
     env = recent_overview.overview(stats, NOW, signature='x')
     assert env['coverage']['warmup'] is None and env['coverage']['observed_days'] == 30
@@ -183,3 +184,28 @@ def test_hold_and_activation_markers_publish_held_artifact(tmp_path, monkeypatch
     hold.touch()
     assert recent_publish.main(argv) == 0
     assert json.loads((pubdir / 'overview.json').read_text())['hold'] is True
+
+
+def refuse(store, did, reason='opaque_cursor', at='2026-09-02T12:30:00Z'):
+    token = store.begin_source_attempt(did, at)
+    return store.bootstrap_step(did, token, at, {'phase': 'unstarted', 'probes': 0, 'lo': None, 'hi': None},
+                                'refused', reason=reason)
+
+
+def test_refused_source_is_counted_publicly_and_its_reason_kept_private(store):
+    assert refuse(store, C)['reason'] == 'bootstrap_refused:opaque_cursor'
+    stats = recent_publish.read_store(store, NOW)
+    env = recent_overview.overview(stats, NOW, signature='x')
+    assert env['coverage']['sources'] == {'seeded': 3, 'unstarted': 2, 'probing': 0, 'established': 0,
+                                          'refused': 1, 'pre_epoch_skipped': 0, 'undated_skipped': 0}
+    body = json.dumps(env)
+    assert 'opaque_cursor' not in body and 'bootstrap_refused' not in body and 'reason": "bootstrap' not in body
+    assert stats['refused_sources'] == [{'did': C, 'reason': 'bootstrap_refused:opaque_cursor'}]
+    from test_recent_site import site, get
+    _, h = site(store)
+    health = json.loads(get(h, '/health')[2])
+    assert health['coverage']['refused_sources'] == [{'did': C, 'reason': 'bootstrap_refused:opaque_cursor'}]
+    assert health['coverage']['sources']['refused'] == 1
+    landing = get(h, '/')[2].decode()
+    assert 'opaque_cursor' not in landing
+    assert 'Refused (could not be safely initialised)</th><td>1</td>' in landing

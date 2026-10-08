@@ -26,7 +26,8 @@ MAX_TOP_LABELERS = 20
 OVERVIEW_NAME = "overview.json"
 GAP_REASONS = ("not_observed", "source_unavailable", "ingest_paused", "cursor_reset",
                "maintenance", "warmup", "unknown")
-SOURCE_KEYS = ("seeded", "established", "probing", "refused", "pre_epoch_skipped")
+SOURCE_KEYS = ("seeded", "unstarted", "probing", "established", "refused", "pre_epoch_skipped",
+               "undated_skipped")
 COUNT_KEYS = ("events_24h", "events_7d", "events_window", "labelers_active_7d",
               "labelers_active_window")
 TOP_KEYS = {"labeler_did", "count"}
@@ -171,6 +172,8 @@ def validate(envelope):
             raise OverviewRefused("overview acquisition identity")
         if set(envelope["counts"]) != set(COUNT_KEYS) or any(type(v) is not int or v < 0 for v in envelope["counts"].values()):
             raise OverviewRefused("overview counts")
+        if any(type(cov["sources"][k]) is not int or cov["sources"][k] < 0 for k in SOURCE_KEYS):
+            raise OverviewRefused("overview source roster counts")
         if cov["warmup"] is not None and cov["status"] != "warming_up":
             raise OverviewRefused("warm-up must be disclosed as warming_up")
     else:

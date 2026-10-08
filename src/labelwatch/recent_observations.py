@@ -624,8 +624,13 @@ def landing_html(view, interval=None, error=None):
         src = cov['sources']
         coverage.append('<h3>Source roster</h3><table><tbody>' + ''.join(
             '<tr><th>' + _esc(k) + '</th><td>' + _esc(_number(src.get(key))) + '</td></tr>' for k, key in (
-                ('Labelers enrolled', 'seeded'), ('Established (at least one page accepted)', 'established'),
-                ('Probing', 'probing'), ('Refused', 'refused'), ('Pre-epoch rows skipped', 'pre_epoch_skipped'))) + '</tbody></table>')
+                ('Labelers enrolled', 'seeded'), ('Not yet started', 'unstarted'), ('Probing for the current head', 'probing'),
+                ('Established (collecting from the epoch forward)', 'established'),
+                ('Refused (could not be safely initialised)', 'refused'),
+                ('Rows skipped as authored before this epoch', 'pre_epoch_skipped'),
+                ('Rows skipped without a usable authored date', 'undated_skipped'))) + '</tbody></table>'
+            '<p>Sources that could not be safely initialised are reported as unknown coverage, never as quiet. '
+            'Established means collection is positioned at the epoch, not that coverage is complete.</p>')
         coverage.append('<p class="nz-muted">Observations older than ' + _esc(window) + ' days expire. '
                         'Requests outside the window are refused explicitly.</p></section>')
         body.append(''.join(coverage))

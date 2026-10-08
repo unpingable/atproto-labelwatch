@@ -28,27 +28,18 @@ from storage import connect, lock, db, custody  # noqa: E402
 from labelwatch import recent_overview  # noqa: E402
 
 
-def _sources(c):
-    """Source roster counts from the sticky enrollment table.
+def _sources(store):
+    """Source roster from the collector's bootstrap disclosure.
 
-    seeded: enrolled sources; established: sources with at least one accepted page.
-    probing/refused/pre_epoch_skipped are read only if the collector exposes them.
+    Returns (public counts, operator-only refused sources with reasons).
+    established is not completeness; refused/unstarted/probing coverage is unknown.
     """
-    columns = {row[1] for row in c.execute('PRAGMA table_info(q_recent_sources)')}
-    seeded = c.execute('SELECT COUNT(*) FROM q_recent_sources').fetchone()[0]
-    established = c.execute('SELECT COUNT(*) FROM q_recent_sources WHERE last_observed IS NOT NULL').fetchone()[0]
-    result = {'seeded': seeded, 'established': established, 'probing': None, 'refused': None,
-              'pre_epoch_skipped': None}
-    # TODO(collector): expose per-source roster state as q_recent_sources.roster_state
-    # in {'established','probing','refused'}; until then probing/refused are unknown.
-    if 'roster_state' in columns:
-        states = dict(c.execute('SELECT roster_state,COUNT(*) FROM q_recent_sources GROUP BY roster_state').fetchall())
-        result.update(probing=states.get('probing', 0), refused=states.get('refused', 0))
-    # TODO(collector): expose skipped pre-epoch rows as q_recent_sources.pre_epoch_skipped
-    # (per-source integer); until then the total is unknown.
-    if 'pre_epoch_skipped' in columns:
-        result['pre_epoch_skipped'] = c.execute('SELECT COALESCE(SUM(pre_epoch_skipped),0) FROM q_recent_sources').fetchone()[0]
-    return result
+    summary = store.collector_bootstrap_summary()
+    counts = {key: int(summary[key]) for key in ('unstarted', 'probing', 'established', 'refused',
+                                                  'pre_epoch_skipped', 'undated_skipped')}
+    counts['seeded'] = counts['unstarted'] + counts['probing'] + counts['established'] + counts['refused']
+    refused = [{'did': row['did'], 'reason': row['reason']} for row in summary['refused_sources']]
+    return counts, refused
 
 
 def _count_since(c, cut, upper):
@@ -106,7 +97,7 @@ def snapshot_state(store, now, *, timeout=10.0, labelers=True):
         c.close()
     return {'acquisition': acquisition, 'meta': meta, 'upper': upper, 'counts': counts, 'gaps': gaps,
             'gap_overflow': meta['gap_overflow'] == '1', 'observed_through': meta['clock'],
-            'sources': None, 'plan': plan}
+            'sources': None, 'refused_sources': [], 'plan': plan}
 
 
 def _labeler_counts(store, plan, upper, deadline):
@@ -161,8 +152,7 @@ def read_store(store, now, *, timeout=10.0, budget=120.0, labelers=True):
             writer.enter_context(lock(store.root, timeout=timeout))
             reader.enter_context(lock(store.root, 'reader.lock', shared=True, timeout=timeout))
             stats = snapshot_state(store, now, labelers=labelers)
-            with closing(connect(store.state, readonly=True)) as c:
-                stats['sources'] = _sources(c)
+            stats['sources'], stats['refused_sources'] = _sources(store)
         finally:
             writer.close()  # The shared reader lease alone fences retirement/maintenance.
         top = []
