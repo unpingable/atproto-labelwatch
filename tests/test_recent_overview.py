@@ -66,7 +66,7 @@ def test_envelope_schema_counts_and_top_labelers(store):
     assert cov['gaps'] == [{'start': '2026-09-02T01:00:00.000000Z', 'end': '2026-09-02T02:00:00.000000Z',
                             'reason': 'source_unavailable'}]
     assert cov['sources'] == {'seeded': 3, 'unstarted': 3, 'probing': 0, 'established': 0, 'refused': 0,
-                              'pre_epoch_skipped': 0, 'undated_skipped': 0, 'late_skipped': 0, 'cursor_order_unverified': 0, 'undated_only': 0, 'provider_rejects': 0}
+                              'pre_epoch_skipped': 0, 'undated_skipped': 0, 'late_skipped': 0, 'cursor_order_unverified': 0, 'undated_only': 0, 'provider_rejects': 0, 'unavailable': 0}
     assert cov['observed_through'] is None  # ingest() fixtures accept no collector page
     assert stats['last_maintenance']['generation'] == 1
 
@@ -197,7 +197,7 @@ def test_refused_source_is_counted_publicly_and_its_reason_kept_private(store):
     stats = recent_publish.read_store(store, NOW)
     env = recent_overview.overview(stats, NOW, signature='x')
     assert env['coverage']['sources'] == {'seeded': 3, 'unstarted': 2, 'probing': 0, 'established': 0,
-                                          'refused': 1, 'pre_epoch_skipped': 0, 'undated_skipped': 0, 'late_skipped': 0, 'cursor_order_unverified': 0, 'undated_only': 0, 'provider_rejects': 0}
+                                          'refused': 1, 'pre_epoch_skipped': 0, 'undated_skipped': 0, 'late_skipped': 0, 'cursor_order_unverified': 0, 'undated_only': 0, 'provider_rejects': 0, 'unavailable': 0}
     body = json.dumps(env)
     assert 'opaque_cursor' not in body and 'bootstrap_refused' not in body and 'reason": "bootstrap' not in body
     assert stats['refused_sources'] == [{'did': C, 'reason': 'bootstrap_refused:opaque_cursor'}]
@@ -271,3 +271,22 @@ def test_order_lateness_and_reject_disclosures_are_counts_publicly_and_detail_pr
     assert 'secret-evidence' not in landing
     about = get(h, '/about')[2].decode()
     assert '<code>late_skipped</code>' in about and '<code>cursor_order_unverified</code>' in about
+
+
+def test_unavailable_sources_counted_publicly_and_detailed_for_operators(store):
+    from storage import connect
+    with connect(store.state) as c:
+        c.execute("UPDATE q_recent_sources SET unavailable_since=?, last_failure_at=?, last_failure_reason=? WHERE did=?",
+                  ('2026-09-02T10:00:00.000000Z', '2026-09-02T11:00:00.000000Z', 'transport_timeout-secret', C))
+    env = recent_overview.overview(recent_publish.read_store(store, NOW), NOW, signature='x')
+    assert env['coverage']['sources']['unavailable'] == 1
+    assert 'transport_timeout-secret' not in json.dumps(env)
+    from test_recent_site import site, get
+    _, h = site(store)
+    health = json.loads(get(h, '/health')[2])['coverage']
+    assert health['unavailable_sources'] == [{'did': C, 'since': '2026-09-02T10:00:00.000000Z',
+                                              'last_failure_at': '2026-09-02T11:00:00.000000Z',
+                                              'reason': 'transport_timeout-secret'}]
+    landing = get(h, '/')[2].decode()
+    assert 'Sources currently unavailable (transient failures, retried with backoff): 1' in landing
+    assert 'transport_timeout-secret' not in landing

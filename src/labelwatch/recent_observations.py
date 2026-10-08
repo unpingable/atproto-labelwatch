@@ -638,6 +638,8 @@ def landing_html(view, interval=None, error=None):
                 ('Rows skipped without a usable authored date', 'undated_skipped'))) + '</tbody></table>'
             '<p>Sources whose page order could not be verified: ' + _esc(_number(src.get('cursor_order_unverified')))
             + ' (their coverage is reported as unknown)</p>'
+            '<p>Sources currently unavailable (transient failures, retried with backoff): '
+            + _esc(_number(src.get('unavailable'))) + '</p>'
             '<p>Rows skipped as late (older than 48 h at acceptance): ' + _esc(_number(src.get('late_skipped'))) + '</p>'
             '<p>Sources that could not be safely initialised are reported as unknown coverage, never as quiet. '
             'Established means collection is positioned at the epoch, not that coverage is complete.</p>')
