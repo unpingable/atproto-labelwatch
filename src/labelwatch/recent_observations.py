@@ -489,7 +489,9 @@ def account_html(account):
 # ---------------------------------------------------------------------------
 
 PREVIOUS_EPOCH_END = '2026-10-06'
-EPOCH_GAP_NOTES = {'pre_epoch': 'Source-authored before this epoch began (beyond the late allowance); skipped, not stored, and counted per source.'}
+EPOCH_GAP_NOTES = {'pre_epoch': 'Source-authored before this epoch began (beyond the late allowance); skipped, not stored, and counted per source.',
+                   'late_skipped': 'Source-authored more than 48 hours before acceptance; skipped as late, not stored, and counted per source.',
+                   'cursor_order_unverified': 'The source\'s page order could not be verified; its coverage is reported as unknown, never as quiet.'}
 
 
 def _neutral_css():
@@ -634,6 +636,9 @@ def landing_html(view, interval=None, error=None):
                 ('Refused (could not be safely initialised)', 'refused'),
                 ('Rows skipped as authored before this epoch', 'pre_epoch_skipped'),
                 ('Rows skipped without a usable authored date', 'undated_skipped'))) + '</tbody></table>'
+            '<p>Sources whose page order could not be verified: ' + _esc(_number(src.get('cursor_order_unverified')))
+            + ' (their coverage is reported as unknown)</p>'
+            '<p>Rows skipped as late (older than 48 h at acceptance): ' + _esc(_number(src.get('late_skipped'))) + '</p>'
             '<p>Sources that could not be safely initialised are reported as unknown coverage, never as quiet. '
             'Established means collection is positioned at the epoch, not that coverage is complete.</p>')
         coverage.append('<p class="nz-muted">Observations older than ' + _esc(window) + ' days expire. '
