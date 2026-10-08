@@ -108,9 +108,14 @@ def source(value):
 
 class Collector:
     def __init__(self, store, transport, limits=Limits(), monotonic=time.monotonic,
-                 now=lambda: datetime.now(timezone.utc)):
+                 now=lambda: datetime.now(timezone.utc), sleep=None, stale_seconds=60):
         self.store, self.transport, self.limits = store, transport, limits
-        self.monotonic, self.now = monotonic, now
+        # sleep=None: a round ends when nothing is due; the service passes time.sleep
+        # so a round can wait for per-source spacing inside its own deadline.
+        self.monotonic, self.now, self.sleep = monotonic, now, sleep
+        # Attempts older than the unit's stop deadline (45 s + grace) were lost
+        # with a killed process; they are disclosed and cleared at round start.
+        self.stale_seconds = stale_seconds
 
     def _request(self, operation, params, deadline):
         resolutions = getattr(self.transport, 'resolutions', None)
@@ -199,11 +204,17 @@ class Collector:
             raise Refused('acquisition epoch unavailable')
         floor -= LATE_ALLOWANCE
         deadline = self.monotonic()+self.limits.seconds
+        sweep = getattr(self.store, 'collector_sweep_attempts', None)
+        lost = sweep(self.now().isoformat(), self.stale_seconds) if sweep else []
         results, probes, capped, held = [], {}, 0, None
+        sticky = []      # sources mid-search this tick: stepped again as soon as spacing allows
         # Reserved share: at least ceil(attempts/3) of a tick's attempts go to
         # bootstrapping sources (round-robin among them) while any are due.
-        attempts, probe_attempts, probing_open = 0, 0, True
-        for _ in range(self.limits.pages):
+        attempts, probe_attempts = 0, 0
+        slots, waits = self.limits.pages, 0
+        while slots > 0:
+            # A wait for spacing does not use a page slot; waits are bounded too.
+            slots -= 1
             if self.monotonic() >= deadline:
                 if not results:
                     held = 'collector deadline exceeded before any attempt'
@@ -217,16 +228,31 @@ class Collector:
                 self._maintenance_gap(stamp, reason=held)
                 break
             item = None
-            if probing_open and probe_attempts*3 < attempts+1:
-                item = self.store.collector_claim_source(limit=self.limits.sources, observed_at=stamp.isoformat(), probing=True)
+            if probe_attempts*3 < attempts+1:
+                for did in list(sticky):
+                    item = self.store.collector_claim_source(limit=self.limits.sources, observed_at=stamp.isoformat(),
+                                                             probing=True, did=did)
+                    if item is not None:
+                        break
+                if item is None:
+                    item = self.store.collector_claim_source(limit=self.limits.sources, observed_at=stamp.isoformat(), probing=True)
                 if item is not None and probes.get(item['did'], 0) >= self.limits.bootstrap_probes:
                     item = None       # its per-tick share is spent; fall back to rotation
-                if item is None:
-                    probing_open = False
+                # A probing source that is merely not yet due (spacing) keeps the share open.
             if item is None:
                 item = self.store.collector_claim_source(limit=self.limits.sources,observed_at=stamp.isoformat())
             if item is None:
-                break
+                # Nothing due (per-source spacing, quiet backoff): wait for the next
+                # due source if it falls inside this round's deadline, else stop.
+                next_due = getattr(self.store, 'collector_next_due', None)
+                due = _source_time(next_due()) if next_due else None
+                wait = (due-stamp).total_seconds() if due is not None else None
+                if self.sleep is None or wait is None or wait <= 0 or self.monotonic()+wait >= deadline \
+                        or waits >= self.limits.pages:
+                    break
+                self.sleep(wait)
+                slots, waits = slots+1, waits+1
+                continue
             item = source(item)
             state = self.store.collector_source_state(item['did'])
             resolved = _source_time(state.get('endpoint_resolved_at'))
@@ -246,7 +272,14 @@ class Collector:
             attempt = self.store.begin_source_attempt(item['did'], stamp.isoformat())
             try:
                 if booting:
-                    results.append(self._bootstrap(item, state, attempt, stamp, deadline, floor))
+                    outcome = self._bootstrap(item, state, attempt, stamp, deadline, floor)
+                    results.append(outcome)
+                    still = outcome.get('status') == 'bootstrap' and outcome.get('phase') == 'probing'
+                    if still and probes[item['did']] < self.limits.bootstrap_probes:
+                        if item['did'] not in sticky:
+                            sticky.append(item['did'])
+                    elif item['did'] in sticky:
+                        sticky.remove(item['did'])
                     continue
                 position = cursor(state['cursor'])
                 page = self._request('labels', {**item, 'cursor': position, 'limit': self.limits.page_rows}, deadline)
@@ -267,6 +300,10 @@ class Collector:
                     held = STORE_HOLD
                     break
                 # One source's failure is per-source state, never a store-wide gap.
+                # Our own resolution is kept even when the labels request failed.
+                self._endpoint_changed(item)
+                if item['did'] in sticky:
+                    sticky.remove(item['did'])
                 rejected = _deterministic(reason)
                 extra = {'rejected': rejected} if rejected else {}
                 self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat(), reason=reason, **extra)
@@ -277,7 +314,7 @@ class Collector:
         attempted = [row for row in results if row['source'] is not None]
         round_status = 'refused' if held and not attempted else 'ran'
         return {'attempted': len(attempted), 'deferred': len(rows)-len({row['source'] for row in attempted}), 'results': results,
-                'round': {'status': round_status, 'store_hold': held}, 'refused_sources': [row['source'] for row in attempted if row['status'] == 'refused'],
+                'round': {'status': round_status, 'store_hold': held, 'lost_attempts': len(lost)}, 'refused_sources': [row['source'] for row in attempted if row['status'] == 'refused'],
                 'bootstrap': summary() if summary else None, 'coverage': 'unknown'}
 
     def _endpoint_changed(self, item):
@@ -574,6 +611,9 @@ class HTTPTransport:
                 if endpoint is None:
                     raise Refused('labeler endpoint unresolved')
                 resolved = endpoint
+                # Our own resolution is reported before the labels request, so it is
+                # kept even if that request fails (side channel, never the body).
+                self.resolutions[did] = resolved
             else:
                 resolved = None
             query = {'sources': did, 'uriPatterns': '*', 'limit': params['limit']}
@@ -581,8 +621,6 @@ class HTTPTransport:
                 query['cursor'] = params['cursor']
             result = await fetch(endpoint+'/xrpc/com.atproto.label.queryLabels', query)
             result.pop('_resolved_endpoint', None)   # provider bodies never carry our state
-            if resolved is not None:
-                self.resolutions[did] = resolved
         else:
             raise Refused('unknown transport operation')
         encoded = json.dumps(result, separators=(',', ':')).encode()
