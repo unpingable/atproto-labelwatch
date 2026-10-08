@@ -30,7 +30,7 @@ SOURCE_KEYS = ("enrolled", "unstarted", "probing", "established", "refused", "pr
                "undated_skipped", "late_skipped", "cursor_order_unverified", "undated_only",
                "provider_rejects", "unavailable")
 # Present when the collector exposes it; int or null (unknown).
-OPTIONAL_SOURCE_KEYS = ("future_skipped", "seeded", "discovered")
+OPTIONAL_SOURCE_KEYS = ("future_skipped", "seeded", "discovered", "pending_attempts")
 COUNT_KEYS = ("events_24h", "events_7d", "events_window", "labelers_active_7d",
               "labelers_active_window")
 TOP_KEYS = {"labeler_did", "count"}

@@ -134,6 +134,7 @@ class SiteStatus:
 
     def _operator_lists(self, status, full):
         lists = {"refused_sources": status["refused_sources"], **status["operator_sources"]}
+        established = lists.pop("established_at", None)
         if not full:
             lists.pop("source_status", None)  # the per-source table only with ?full=1
         out = {}
@@ -143,6 +144,7 @@ class SiteStatus:
             out[key + "_total"] = len(rows)
         out["lists_truncated"] = not full and any(out[k + "_total"] > len(out[k]) for k in lists)
         out["full_lists"] = "/health?full=1"
+        out["established_at"] = established or {"earliest": None, "latest": None}
         return out
 
 

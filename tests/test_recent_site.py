@@ -66,7 +66,8 @@ def test_landing_discloses_activity_epoch_coverage_gaps_roster_and_state(store):
                  'rows may have been skipped by the provider \u2014 a disclosure heuristic, not a loss detector'):
         assert html.escape(note) in text, note
     assert 'Only undated rows</th><td>0</td>' in text and 'Provider rejections</th><td>0</td>' in text
-    assert 'Rows skipped as authored in the future</th><td>unknown</td>' in text  # until the collector exposes it
+    assert 'Rows skipped as authored in the future</th><td>0</td>' in text
+    assert 'Enrolled 3 = seeded 3 + discovered 0' in text
     assert 'Sources that could not be safely initialised are reported as unknown coverage, never as quiet.' in text
     assert SUBJECT not in text
 

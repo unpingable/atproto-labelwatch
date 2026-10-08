@@ -66,9 +66,9 @@ def test_envelope_schema_counts_and_top_labelers(store):
                              'reason': 'not_observed'}
     assert cov['gaps'] == [{'start': '2026-09-02T01:00:00.000000Z', 'end': '2026-09-02T02:00:00.000000Z',
                             'reason': 'source_unavailable'}]
-    assert cov['sources'] == {'enrolled': 3, 'seeded': None, 'discovered': None, 'unstarted': 3, 'probing': 0, 'established': 0, 'refused': 0,
+    assert cov['sources'] == {'enrolled': 3, 'seeded': 3, 'discovered': 0, 'pending_attempts': 0, 'unstarted': 3, 'probing': 0, 'established': 0, 'refused': 0,
                               'pre_epoch_skipped': 0, 'undated_skipped': 0, 'late_skipped': 0, 'cursor_order_unverified': 0, 'undated_only': 0, 'provider_rejects': 0, 'unavailable': 0,
-                              'future_skipped': None}
+                              'future_skipped': 0}
     assert cov['observed_through'] is None  # ingest() fixtures accept no collector page
     assert stats['last_maintenance']['generation'] == 1
 
@@ -198,9 +198,9 @@ def test_refused_source_is_counted_publicly_and_its_reason_kept_private(store):
     assert refuse(store, C)['reason'] == 'bootstrap_refused:opaque_cursor'
     stats = recent_publish.read_store(store, NOW)
     env = recent_overview.overview(stats, NOW, signature='x')
-    assert env['coverage']['sources'] == {'enrolled': 3, 'seeded': None, 'discovered': None, 'unstarted': 2, 'probing': 0, 'established': 0,
+    assert env['coverage']['sources'] == {'enrolled': 3, 'seeded': 3, 'discovered': 0, 'pending_attempts': 0, 'unstarted': 2, 'probing': 0, 'established': 0,
                                           'refused': 1, 'pre_epoch_skipped': 0, 'undated_skipped': 0, 'late_skipped': 0, 'cursor_order_unverified': 0, 'undated_only': 0, 'provider_rejects': 0, 'unavailable': 0,
-                              'future_skipped': None}
+                              'future_skipped': 0}
     body = json.dumps(env)
     assert 'opaque_cursor' not in body and 'bootstrap_refused' not in body and 'reason": "bootstrap' not in body
     assert stats['refused_sources'] == [{'did': C, 'reason': 'bootstrap_refused:opaque_cursor'}]
@@ -314,10 +314,24 @@ def test_status_carries_the_collector_coverage_verdict(store, monkeypatch):
 
 def test_seeded_and_discovered_are_reported_separately(store, monkeypatch):
     summary = store.collector_bootstrap_summary
-    monkeypatch.setattr(store, 'collector_bootstrap_summary', lambda: {**summary(), 'discovered': 2})
+    monkeypatch.setattr(store, 'collector_bootstrap_summary', lambda: {**summary(), 'seeded': 1, 'discovered': 2})
     env = recent_overview.overview(recent_publish.read_store(store, NOW), NOW, signature='x')
     src = env['coverage']['sources']
     assert (src['enrolled'], src['seeded'], src['discovered']) == (3, 1, 2)
     from test_recent_site import site, get
     _, h = site(store)
     assert 'Enrolled 3 = seeded 1 + discovered 2' in get(h, '/')[2].decode()
+
+
+def test_pending_attempts_and_establishment_times_reach_operator_view(store):
+    token = store.begin_source_attempt(A, '2026-09-02T12:30:00Z')  # an attempt left open
+    env = recent_overview.overview(recent_publish.read_store(store, NOW), NOW, signature='x')
+    assert env['coverage']['sources']['pending_attempts'] == 1
+    assert A not in json.dumps(env['coverage'])
+    from test_recent_site import site, get
+    _, h = site(store)
+    health = json.loads(get(h, '/health')[2])['coverage']
+    assert health['pending_attempts_sources_total'] == 1 and A in json.dumps(health['pending_attempts_sources'])
+    assert set(health['established_at']) == {'earliest', 'latest'}
+    assert 'established_at' not in json.dumps(env)
+    assert token
