@@ -630,7 +630,8 @@ def landing_html(view, interval=None, error=None):
             coverage.append('<p>No specific gaps are recorded. This does not establish complete source coverage.</p>')
         src = cov['sources']
         rows = (
-            ('Labelers enrolled', 'seeded', ''),
+            ('Labelers enrolled', 'enrolled', 'Enrolled ' + _number(src.get('enrolled')) + ' = seeded '
+                                              + _number(src.get('seeded')) + ' + discovered ' + _number(src.get('discovered'))),
             ('Not yet started', 'unstarted', 'coverage unknown'),
             ('Probing for the current head', 'probing', 'coverage unknown'),
             ('Established', 'established', 'collecting forward from the time each source was established (shown per source in /health), '
