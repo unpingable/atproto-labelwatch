@@ -28,6 +28,7 @@ PROBE_ROWS = 50
 TOTAL_PROBES = 72          # >= 1 + ceil(53/4) gallop + 53 bisection steps over [1, 2**53]
 CURSOR_MAX = 2**53
 LATE_ALLOWANCE = timedelta(hours=48)
+STORE_HOLD = 'rotate daily observation owner before ingestion'
 DECIMAL = re.compile(r'(0|[1-9][0-9]{0,15})')
 
 
@@ -179,13 +180,20 @@ class Collector:
             raise Refused('acquisition epoch unavailable')
         floor -= LATE_ALLOWANCE
         deadline = self.monotonic()+self.limits.seconds
-        results, probes, capped = [], {}, 0
+        results, probes, capped, held = [], {}, 0, None
         for _ in range(self.limits.pages):
             if self.monotonic() >= deadline:
+                if not results:
+                    held = 'collector deadline exceeded before any attempt'
                 break
             stamp = self.now()
             if stamp.tzinfo is None or stamp.utcoffset() != timedelta(0):
                 raise Refused('UTC observation clock required')
+            admission = getattr(self.store, 'collector_admission', None)
+            held = admission(stamp.isoformat()) if admission else None
+            if held:
+                self._maintenance_gap(stamp, reason=held)
+                break
             item = self.store.collector_claim_source(limit=self.limits.sources,observed_at=stamp.isoformat())
             if item is None:
                 break
@@ -210,14 +218,35 @@ class Collector:
                 normalized, next_cursor = self._page(item, page, self.limits.page_rows)
                 results.append(self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor))
             except Exception as exc:
-                # Gap persistence failure is fatal: never report a recorded gap that was lost.
                 end = max(self.now(), stamp+timedelta(microseconds=1))
-                self.store.record_gap(stamp.isoformat(), end.isoformat(), 'source_unavailable')
-                self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat())
-                results.append({'source': item['did'], 'status': 'refused', 'reason': str(exc)[:160] if isinstance(exc, Refused) else type(exc).__name__})
+                reason = str(exc)[:160] if isinstance(exc, Refused) else type(exc).__name__
+                if isinstance(exc, RuntimeError) and STORE_HOLD in str(exc):
+                    # The store, not the source, refused (UTC rotation window).
+                    self._maintenance_gap(stamp, end)
+                    self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat(), failure=False)
+                    held = STORE_HOLD
+                    break
+                # One source's failure is per-source state, never a store-wide gap.
+                self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat(), reason=reason)
+                results.append({'source': item['did'], 'status': 'refused', 'reason': reason})
         summary = getattr(self.store, 'collector_bootstrap_summary', None)
-        return {'attempted': len(results), 'deferred': len(rows)-len({row['source'] for row in results}), 'results': results,
+        if held:
+            results.append({'source': None, 'status': 'refused', 'scope': 'store', 'reason': held[:160]})
+        attempted = [row for row in results if row['source'] is not None]
+        round_status = 'refused' if held and not attempted else 'ran'
+        return {'attempted': len(attempted), 'deferred': len(rows)-len({row['source'] for row in attempted}), 'results': results,
+                'round': {'status': round_status, 'store_hold': held}, 'refused_sources': [row['source'] for row in attempted if row['status'] == 'refused'],
                 'bootstrap': summary() if summary else None, 'coverage': 'unknown'}
+
+    def _maintenance_gap(self, stamp, end=None, reason=STORE_HOLD):
+        """One store-wide interval per hold; overlapping rounds merge in the store.
+
+        The daily-owner hold has refused ingestion since midnight UTC, so the
+        interval starts there and every round of the hold extends one row.
+        """
+        start = stamp.replace(hour=0, minute=0, second=0, microsecond=0) if reason == STORE_HOLD else stamp
+        end = max(end or stamp, start+timedelta(microseconds=1))
+        self.store.record_gap(start.isoformat(), end.isoformat(), 'maintenance')
 
     def _page(self, item, page, rows):
         labels = page.get('labels')

@@ -20,7 +20,7 @@ def recent(value='x'):
 class Store:
     def __init__(self, count=1):
         self.sources = [{'did': DID if n == 0 else f'did:plc:s{n}', 'endpoint': 'https://example.test'} for n in range(count)]
-        self.cursors, self.pages, self.gaps = {}, [], []
+        self.cursors, self.pages, self.gaps, self.failures = {}, [], [], []
         self.schedule = 0
         self.discovery_cursor = None
 
@@ -58,8 +58,10 @@ class Store:
     def begin_source_attempt(self, did, observed_at):
         return did
 
-    def finish_source_attempt(self, did, attempt_token,observed_at=None):
+    def finish_source_attempt(self, did, attempt_token, observed_at=None, failure=True, reason=None):
         assert did == attempt_token
+        if failure:
+            self.failures.append((did, reason))
 
     def accept_page(self, rows, source, request_cursor, next_cursor, observed_at, attempt_token=None):
         assert self.cursors.get(source) == request_cursor
@@ -119,7 +121,8 @@ def test_refusal_preserves_cursor_and_records_gap(page):
     s = Store(); s.cursors[DID] = 'same'
     c, _ = collector(s, [page])
     assert c.tick()['results'][0]['status'] == 'refused'
-    assert s.cursors[DID] == 'same' and not s.pages and len(s.gaps) == 1
+    # A single source's refusal is per-source state, never a store-wide gap.
+    assert s.cursors[DID] == 'same' and not s.pages and not s.gaps and len(s.failures) == 1
 
 
 def test_all_or_nothing_normalization():
@@ -134,7 +137,7 @@ def test_fairness_under_page_budget_and_failed_source():
     for _ in range(3):
         assert c.tick()['attempted'] == 1
     assert len({call[1]['did'] for call in t.calls}) == 3
-    assert len(s.gaps) == 1
+    assert not s.gaps and [f[1] for f in s.failures] == ['TimeoutError']
 
 
 def test_transport_budget_and_late_return_refused_before_commit():
@@ -166,12 +169,12 @@ def test_invalid_discovery_endpoint_refused(endpoint):
     assert len(s.sources) == 1
 
 
-def test_gap_write_failure_is_not_hidden():
+def test_failure_persistence_failure_is_not_hidden():
     s = Store()
-    def fail(*args): raise RuntimeError('gap persistence failed')
-    s.record_gap = fail
+    def fail(*args, **kwargs): raise RuntimeError('failure persistence failed')
+    s.finish_source_attempt = fail
     c, _ = collector(s, [TimeoutError()])
-    with pytest.raises(RuntimeError, match='gap persistence'): c.tick()
+    with pytest.raises(RuntimeError, match='failure persistence'): c.tick()
 
 
 def http_transport(handler):
@@ -250,7 +253,7 @@ def test_discovery_keeps_unresolved_sources_for_collection_retry():
     c.discover()
     assert s.sources == [{'did': DID, 'endpoint': None}]
     assert c.tick()['results'][0]['status'] == 'refused'
-    assert s.sources and s.gaps
+    assert s.sources and s.failures and not s.gaps
 
 
 def test_real_store_changed_terminal_page_and_restart_claim(tmp_path, monkeypatch):
@@ -295,17 +298,17 @@ def test_real_store_mock_http_discovery_and_collection(tmp_path, monkeypatch):
     assert s.collector_cursor(DID) == 'opaque/position'
 
 
-def test_failed_attempt_seals_gap_before_clearing_exact_token():
+def test_failed_attempt_records_per_source_failure_on_exact_token_without_gap():
     s = Store(); steps = []
     s.begin_source_attempt = lambda did, observed_at: 'exact-attempt'
     s.record_gap = lambda *args: steps.append('gap')
-    def finish(did, token,observed_at=None):
-        assert did == DID and token == 'exact-attempt'
+    def finish(did, token, observed_at=None, failure=True, reason=None):
+        assert did == DID and token == 'exact-attempt' and failure and reason == 'TimeoutError'
         steps.append('finished')
     s.finish_source_attempt = finish
     c, _ = collector(s, [TimeoutError()])
     assert c.tick()['results'][0]['status'] == 'refused'
-    assert steps == ['gap', 'finished']
+    assert steps == ['finished']
 
 
 def test_discovery_continuation_survives_adapter_restart_and_terminal_rescan():

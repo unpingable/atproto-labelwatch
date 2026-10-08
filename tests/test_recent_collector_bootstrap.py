@@ -273,3 +273,100 @@ def test_full_terminal_history_at_cursor_max_refused(store):
     final = until_decided(store, t, clock, A, ticks=20, bootstrap_probes=16)
     assert final['bootstrap'] == 'refused' and final['bootstrap_reason'] == 'bootstrap_refused:cursor_out_of_range'
     assert len(t.calls) <= 68
+
+
+# Review r1 gap policy: one source's failure is per-source state, not a store-wide gap.
+
+class Dead:
+    def __init__(self, clock, alive):
+        self.clock, self.alive, self.calls = clock, alive, []
+
+    def request(self, operation, params, max_bytes, timeout_seconds):
+        self.calls.append(params['did'])
+        self.clock.t += .01
+        if params['did'] not in self.alive:
+            raise TimeoutError('dead labeler')
+        return json.dumps({'labels': []}).encode()
+
+
+def gaps(store):
+    with sqlite3.connect(store.state) as c:
+        return list(c.execute('SELECT start,end,reason FROM q_recent_gaps ORDER BY start'))
+
+
+def test_dead_source_is_per_source_unavailability_not_store_gaps(store):
+    clock = Clock(); t = Dead(clock, {B}); enroll(store, A, B)
+    for _ in range(40):                      # ~10 h, stays before the midnight owner hold
+        run(store, t, clock)
+        clock.t += 900                       # past the maximum failure backoff
+    assert t.calls.count(A) >= 30 and gaps(store) == []
+    row = status(store, A)
+    assert row['unavailable_since'] == '2026-10-08T12:00:00.000000Z'
+    assert row['last_failure_reason'] == 'TimeoutError' and row['failures'] == 6
+    assert status(store, B)['unavailable_since'] is None
+    summary = store.collector_bootstrap_summary()
+    assert summary['unavailable'] == 1 and summary['coverage'] == 'unknown'
+    assert summary['unavailable_sources'][0]['did'] == A
+    t.alive.add(A)
+    run(store, t, clock); clock.t += 900; run(store, t, clock)
+    assert status(store, A)['unavailable_since'] is None
+    assert store.collector_bootstrap_summary()['unavailable'] == 0
+
+
+def test_daily_owner_hold_is_one_merged_maintenance_gap_and_stops_the_round(store):
+    clock = Clock(); t = Dead(clock, {A, B}); enroll(store, A, B)
+    clock.t = 12*3600+60                    # 2026-10-09T00:01Z, owner not rotated
+    for _ in range(4):
+        result = Collector(store, t, monotonic=clock.monotonic, now=clock.now).tick()
+        assert result['round']['status'] == 'refused' and result['attempted'] == 0
+        clock.t += 60
+    assert t.calls == []                     # no source claimed or contacted
+    assert gaps(store) == [('2026-10-09T00:00:00.000000Z', '2026-10-09T00:04:00.000000Z', 'maintenance')]
+
+
+def test_gap_overflow_released_as_one_in_window_unknown_gap(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1]/'tools'/'segmented_qualification'))
+    import storage
+    root = tmp_path/'runtime'; root.mkdir(); (tmp_path/'evidence').mkdir()
+    (tmp_path/'evidence'/'ARCHIVE-DESTINATION.json').write_text(json.dumps({'campaign_archive': str(root/'store/archive')}))
+    monkeypatch.setattr(storage, 'ROOT', root)
+    from recent_storage import RecentStore
+    s = RecentStore.create(root/'store', '2026-09-01T00:00:00Z')
+    base = datetime(2026, 9, 1, 1, tzinfo=timezone.utc)
+    for n in range(128):
+        lo = base+timedelta(seconds=10*n)
+        s.record_gap(lo.isoformat(), (lo+timedelta(seconds=1)).isoformat(), 'ingest_paused')
+    s.record_gap('2026-09-20T01:00:00Z', '2026-09-20T02:00:00Z', 'ingest_paused')   # dropped: overflow
+    s.advance_day('2026-10-05T00:00:00Z')
+    assert gaps(s) == [('2026-09-20T01:00:00.000000Z', '2026-09-20T02:00:00.000000Z', 'unknown')]
+    with sqlite3.connect(s.state) as c:
+        assert c.execute("SELECT value FROM meta WHERE key='q:recent_gap_overflow'").fetchone()[0] == '0'
+
+
+def test_skipped_counts_are_per_source_and_summed(store):
+    clock = Clock()
+    labs = [Labeler(A, 2, cts={1: 'nope', 2: '2026-10-07T00:00:00Z'}.get),
+            Labeler(B, 3, cts={1: '2020-01-01T00:00:00Z', 2: '2020-01-01T00:00:00Z', 3: 'garbage'}.get)]
+    t = Transport(clock, labs); enroll(store, A, B)
+    run(store, t, clock)
+    assert (status(store, A)['pre_epoch_skipped'], status(store, A)['undated_skipped']) == (0, 1)
+    assert (status(store, B)['pre_epoch_skipped'], status(store, B)['undated_skipped']) == (2, 1)
+    summary = store.collector_bootstrap_summary()
+    assert (summary['pre_epoch_skipped'], summary['undated_skipped']) == (2, 2)
+
+
+def test_collect_command_exit_reflects_whole_round_only(store, monkeypatch, capsys):
+    import recent_collect
+    clock = Clock(); enroll(store, A, B)
+    class Fixed:
+        def __init__(self): self.inner = Dead(clock, {B})
+        def __enter__(self): return self.inner
+        def __exit__(self, *exc): return False
+    monkeypatch.setattr(recent_collect, 'HTTPTransport', Fixed)
+    monkeypatch.setattr(recent_collect, 'Collector', lambda s, tr: Collector(s, tr, monotonic=clock.monotonic, now=clock.now))
+    assert recent_collect.main(['--store', str(store.root), '--network']) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out['collection']['refused_sources'] == [A]
+    clock.t = 12*3600+60
+    assert recent_collect.main(['--store', str(store.root), '--network']) == 1
+    assert json.loads(capsys.readouterr().out)['collection']['round']['status'] == 'refused'
