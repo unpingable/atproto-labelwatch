@@ -26,7 +26,8 @@ MAX_TOP_LABELERS = 20
 OVERVIEW_NAME = "overview.json"
 GAP_REASONS = ("not_observed", "source_unavailable", "ingest_paused", "cursor_reset",
                "maintenance", "warmup", "unknown")
-SOURCE_KEYS = ("seeded", "established", "probing", "refused", "pre_epoch_skipped")
+SOURCE_KEYS = ("seeded", "unstarted", "probing", "established", "refused", "pre_epoch_skipped",
+               "undated_skipped")
 COUNT_KEYS = ("events_24h", "events_7d", "events_window", "labelers_active_7d",
               "labelers_active_window")
 TOP_KEYS = {"labeler_did", "count"}
@@ -171,6 +172,8 @@ def validate(envelope):
             raise OverviewRefused("overview acquisition identity")
         if set(envelope["counts"]) != set(COUNT_KEYS) or any(type(v) is not int or v < 0 for v in envelope["counts"].values()):
             raise OverviewRefused("overview counts")
+        if any(type(cov["sources"][k]) is not int or cov["sources"][k] < 0 for k in SOURCE_KEYS):
+            raise OverviewRefused("overview source roster counts")
         if cov["warmup"] is not None and cov["status"] != "warming_up":
             raise OverviewRefused("warm-up must be disclosed as warming_up")
     else:
@@ -183,8 +186,10 @@ def validate(envelope):
 
 
 def _traversable(path):
+    """o+rx and nobody but the owner may write (a g/o-writable directory lets
+    another account swap overview.json between publications)."""
     mode = os.stat(path).st_mode
-    return stat.S_ISDIR(mode) and mode & 0o005 == 0o005
+    return stat.S_ISDIR(mode) and mode & 0o005 == 0o005 and mode & 0o022 == 0
 
 
 def ensure_pubdir(pubdir):
@@ -202,11 +207,22 @@ def ensure_pubdir(pubdir):
     return pubdir
 
 
+def sweep_stale_temporaries(pubdir):
+    """Remove .overview.tmp-* left by an interrupted publisher (regular files only)."""
+    removed = []
+    for path in Path(pubdir).glob(".overview.tmp-*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        path.unlink(missing_ok=True)
+        removed.append(path.name)
+    return removed
+
+
 def verify_public(pubdir, *, ancestors=True):
     """Every reader needs o+rx on the directory (and o+x on its ancestors) and o+r on the file."""
     pubdir = Path(pubdir).resolve()
     if not _traversable(pubdir):
-        raise OverviewRefused(f"publication directory is not world-traversable: {oct(os.stat(pubdir).st_mode & 0o777)}")
+        raise OverviewRefused(f"publication directory must be o+rx and not group/world-writable (0755): {oct(os.stat(pubdir).st_mode & 0o777)}")
     if ancestors:
         for parent in pubdir.parents:
             if os.stat(parent).st_mode & 0o001 != 0o001:
@@ -224,6 +240,7 @@ def publish(pubdir, envelope, *, ancestors=True):
     validate(envelope)
     pubdir = ensure_pubdir(pubdir)
     verify_public(pubdir, ancestors=ancestors)
+    sweep_stale_temporaries(pubdir)
     data = json.dumps(envelope, sort_keys=True, ensure_ascii=False, indent=2).encode() + b"\n"
     tmp = pubdir / f".overview.tmp-{os.getpid()}"
     target = pubdir / OVERVIEW_NAME

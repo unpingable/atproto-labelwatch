@@ -64,7 +64,6 @@ def test_pre_maintenance_refusal_is_not_recorded_as_source_unavailable(store):
     assert reasons and 'source_unavailable' not in reasons
 
 
-@pytest.mark.xfail(strict=True, reason='overview lane')
 def test_world_writable_publication_directory_is_refused(tmp_path):
     """The brief requires an explicit 0755 directory; a 0777 directory lets any
     local account swap overview.json between publications, yet it is accepted."""
@@ -97,7 +96,6 @@ def test_override_ack_is_bound_to_the_weakened_policy(tmp_path, monkeypatch):
         RecentStore(store.root)  # an unreviewed further weakening
 
 
-@pytest.mark.xfail(strict=True, reason='product lane')
 def test_full_window_button_works_with_a_running_clock(tmp_path, monkeypatch):
     """interval() reads now() and create() reads now() again later, so the
     30-day start is always microseconds before create()'s floor: the landing's

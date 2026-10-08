@@ -16,13 +16,19 @@ import re
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit, urlencode
 
 from labelwatch.recent_observations import (Limits, RecentObservations, Refused, account_html, timestamp, iso,
-                                            landing_html, about_html, previous_epoch_html, lookup_refusal_html)
+                                            landing_html, about_html, previous_epoch_html, lookup_refusal_html,
+                                            refusal_html)
+
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)  # once, for the sibling recent_publish module
 
 FONTS = Path(__file__).resolve().parents[2] / "src" / "labelwatch" / "_instruments" / "fonts"
 FONT_FILES = {"IBMPlexSans-Regular.woff2", "IBMPlexSans-SemiBold.woff2",
@@ -51,6 +57,25 @@ def interval(product, days=30):
     return iso(start), iso(end)
 
 
+@contextmanager
+def one_clock(product):
+    """Pin the product clock for one request.
+
+    A "last N days" request derives its interval from now() and create() checks
+    the window against now() again; with a running clock the second reading is
+    later, so the full-window start always fell just outside it (409). Pinning
+    reads the clock once; create()/export semantics are unchanged.
+    """
+    with product._lock:
+        fixed = product.now()
+        original = product.now
+        product.now = lambda: fixed
+        try:
+            yield fixed
+        finally:
+            product.now = original
+
+
 class SiteStatus:
     """Short-lived cache of the cheap store summary (no payload reads).
 
@@ -69,12 +94,12 @@ class SiteStatus:
                 return self._cached[1]
             now = self.product.now()
             try:
-                sys.path.insert(0, str(Path(__file__).resolve().parent))
                 import recent_publish
                 from labelwatch import recent_overview
                 stats = recent_publish.read_store(self.product.provider.store, now, timeout=2.0, budget=5.0, labelers=False)
                 view = recent_overview.overview(stats, now)
-                result = {"view": view, "maintenance": stats["last_maintenance"], "error": None, "now": now}
+                result = {"view": view, "maintenance": stats["last_maintenance"], "error": None, "now": now,
+                          "refused_sources": stats["refused_sources"]}
             except Exception as exc:  # summary absence is disclosed, never shown as zero
                 result = {"view": None, "maintenance": None, "error": type(exc).__name__, "now": now}
             self._cached = (tick, result)
@@ -88,11 +113,15 @@ class SiteStatus:
         cov = view["coverage"]
         through = cov["observed_through"]
         age = (status["now"] - timestamp(through)).total_seconds() if through else None
-        state = "unavailable" if age is None else "fresh" if age <= self.stale_after else "stale"
-        return 200, {"status": "ok" if state == "fresh" else "degraded",
+        # observed_through is the latest accepted collector page; null until one is accepted.
+        state = "unknown" if age is None else "fresh" if age <= self.stale_after else "stale"
+        overall = "ok" if state == "fresh" else "warming_up" if state == "unknown" and cov["status"] == "warming_up" else "degraded"
+        return 200, {"status": overall,
                      "window_days": view["window_days"], "acquisition": view["acquisition"],
                      "coverage": {"status": cov["status"], "observed_days": cov["observed_days"], "warmup": cov["warmup"],
-                                  "gaps_count": len(cov["gaps"]), "gap_overflow": cov["gap_overflow"], "sources": cov["sources"]},
+                                  "gaps_count": len(cov["gaps"]), "gap_overflow": cov["gap_overflow"], "sources": cov["sources"],
+                                  # Operator detail only; never in the public overview artifact.
+                                  "refused_sources": status["refused_sources"]},
                      "last_maintenance": status["maintenance"],
                      "freshness": {"state": state, "basis": "last_accepted_observation", "observed_through": through,
                                    "age_seconds": None if age is None else round(age, 3), "stale_after_seconds": self.stale_after},
@@ -130,6 +159,11 @@ def handler(product, *, resolver=None, status=None):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(data)
+
+        def wants_html(self):
+            """Browsers get a small HTML refusal; API clients (Accept: application/json) keep JSON."""
+            accept = (getattr(self, "headers", None) or {}).get("Accept") or ""
+            return "text/html" in accept and "application/json" not in accept
 
         def redirect(self, location):
             self.send_response(303)
@@ -178,14 +212,15 @@ def handler(product, *, resolver=None, status=None):
             if path == "/exports" and "cursor" in args:
                 return product.page(args["cursor"]), False
             if path in ("/account", "/exports"):
-                if "days" in args:
-                    args["start"], args["end"] = interval(product, int(args["days"]))
                 create = product.create_export if path == "/exports" else product.create
-                created = create(args["did"], args["start"], args["end"],
-                                         labeler=args.get("labeler") or None,
-                                         value=args.get("value") or None,
-                                         action=args.get("action") or None,
-                                         target_kind=args.get("target_kind") or None)
+                with one_clock(product):
+                    if "days" in args:
+                        args["start"], args["end"] = interval(product, int(args["days"]))
+                    created = create(args["did"], args["start"], args["end"],
+                                     labeler=args.get("labeler") or None,
+                                     value=args.get("value") or None,
+                                     action=args.get("action") or None,
+                                     target_kind=args.get("target_kind") or None)
                 if path == "/account":
                     return account_html(product.account(created["cursor"])), True
                 return created, False
@@ -228,7 +263,11 @@ def handler(product, *, resolver=None, status=None):
                     if request.path == '/account':
                         self.respond(409,dense_account_html(args),'text/html')
                         return
-                self.respond(410 if str(exc) == "snapshot_expired_or_unavailable" else 409, body)
+                code = 410 if str(exc) == "snapshot_expired_or_unavailable" else 409
+                if self.wants_html():
+                    self.respond(code, refusal_html(str(exc)), "text/html")
+                    return
+                self.respond(code, body)
             except (KeyError, ValueError):
                 self.respond(400, {"error": "invalid_request", "complete": False})
             except (BrokenPipeError, ConnectionResetError, TimeoutError):

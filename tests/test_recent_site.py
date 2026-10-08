@@ -9,7 +9,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).parents[1] / 'tools/segmented_qualification'))
 from recent_provider import RecentProvider  # noqa: E402
 from labelwatch.recent_observations import RecentObservations, coverage_statement  # noqa: E402
-from test_recent_overview import store, NOW, A, SUBJECT  # noqa: E402,F401
+from test_recent_overview import store, NOW, A, B, SUBJECT  # noqa: E402,F401
 
 PATH = Path(__file__).parents[1] / 'tools' / 'segmented_qualification' / 'recent_product.py'
 
@@ -21,8 +21,9 @@ def module():
     return loaded
 
 
-def get(handler_class, path):
+def get(handler_class, path, accept=None):
     request = handler_class.__new__(handler_class)
+    request.headers = {'Accept': accept} if accept else {}
     sent = {'status': None, 'headers': {}}
     request.send_response = lambda code: sent.update(status=code)
     request.send_header = lambda key, value: sent['headers'].update({key: value})
@@ -47,17 +48,18 @@ def test_landing_discloses_activity_epoch_coverage_gaps_roster_and_state(store):
     assert "font-src 'self'" in headers['Content-Security-Policy']
     for expected in ('Recently observed activity', 'Events observed, last 24 hours', 'Events observed, last 7 days',
                      'Epoch began', 'Sep 01, 2026 at 00:00 UTC', '30 days, rolling',
-                     '7 of 30 days observed since Sep 01, 2026 at 00:00 UTC',
+                     'Day 8 of 30 since epoch start (Sep 01, 2026 at 00:00 UTC)',
                      'was not observed by this acquisition generation',
                      'A source was unavailable during this interval.',
-                     'Labelers enrolled', 'Pre-epoch rows skipped',
+                     'Labelers enrolled', 'Rows skipped as authored before this epoch',
                      'Observations older than 30 days expire',
                      'Labelwatch records observed application/removal events; current label state is unknown.',
                      'action="/lookup"', '/exports?did=', 'href="/about"', 'href="/previous-epoch"',
                      '/instruments/fonts/IBMPlexSans-Regular.woff2'):
         assert expected in text, expected
     assert '<strong>4</strong><span>Events observed, last 7 days' in text
-    assert '<td>unknown</td>' in text  # probing/refused until the collector exposes them
+    assert 'Not yet started</th><td>3</td>' in text and 'Refused (could not be safely initialised)</th><td>0</td>' in text
+    assert 'Sources that could not be safely initialised are reported as unknown coverage, never as quiet.' in text
     assert SUBJECT not in text
 
 
@@ -92,11 +94,26 @@ def test_health_reports_acquisition_coverage_maintenance_and_freshness(store):
     assert health['acquisition']['started_at'] == '2026-09-01T00:00:00.000000Z'
     assert health['coverage']['gaps_count'] == 1 and health['coverage']['observed_days'] == 7
     assert health['last_maintenance'] == {'generation': 1, 'at': '2026-09-02T00:00:00.000000Z'}
-    # Last acceptance 2026-09-02T12:00Z is six days before NOW: collection is stale.
+    # No collector page accepted yet: unknown, never fresh from the init clock.
+    assert health['freshness']['state'] == 'unknown' and health['freshness']['observed_through'] is None
+    assert health['status'] == 'warming_up'
+    store.accept_page([], source=B, request_cursor=None, next_cursor='7', observed_at='2026-09-02T12:00:00Z')
+    _, stale = site(store)
+    health = json.loads(get(stale, '/health')[2])
     assert health['freshness']['state'] == 'stale' and health['status'] == 'degraded'
     _, fresh = site(store, now=NOW.replace(day=2, hour=12, minute=5))
     health = json.loads(get(fresh, '/health')[2])
     assert health['freshness']['state'] == 'fresh' and health['status'] == 'ok'
+
+
+def test_browser_refusals_are_html_and_api_refusals_stay_json(store):
+    _, h = site(store)
+    status, headers, body = get(h, '/account?did=' + SUBJECT + '&start=2020-01-01T00:00:00Z&end=2020-01-02T00:00:00Z',
+                                accept='text/html,application/xhtml+xml')
+    assert status == 409 and headers['Content-Type'].startswith('text/html') and b'outside the rolling 30-day window' in body
+    status, headers, body = get(h, '/account?did=' + SUBJECT + '&start=2020-01-01T00:00:00Z&end=2020-01-02T00:00:00Z',
+                                accept='application/json')
+    assert status == 409 and json.loads(body)['error'] == 'out_of_window'
 
 
 def test_unavailable_summary_is_disclosed_not_zero():
