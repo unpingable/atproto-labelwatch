@@ -20,13 +20,29 @@ starts a unit, and no install step creates or removes a marker file.
 
 ```
 /opt/labelwatch/releases/<sha>/source   git archive of <sha> (contains deploy/, tools/, src/)
-/opt/labelwatch/releases/<sha>/venv     python3.12 venv, `pip install --require-hashes --no-index`
-                                        from release/requirements-cp312-linux-x86_64.lock
+/opt/labelwatch/releases/<sha>/venv     built by release/build-venv.sh (below); labelwatch is
+                                        not installed, units use PYTHONPATH=source/src:source
 /etc/labelwatch-recent.env              from labelwatch-recent.env.example
 <admitted root>/                        LABELWATCH_RECENT_ADMITTED_ROOT, owned by labelwatch
 <admitted root>/<store>/                LABELWATCH_RECENT_STORE, created only by recent_init.py
 <admitted root>/units.lock              collect/maintain serialisation (created on first use)
 ```
+
+Build the venv offline from exactly the lock, then prove the unit gate:
+
+```
+WHEELHOUSE=<wheelhouse> PYTHON=/usr/bin/python3.12 \
+  /opt/labelwatch/releases/<sha>/source/release/build-venv.sh /opt/labelwatch/releases/<sha>
+```
+
+which runs `python3.12 -m venv <release>/venv` and
+`<release>/venv/bin/python -m pip install --no-index --require-hashes --no-deps
+--find-links <wheelhouse> -r <release>/source/release/requirements-cp312-linux-x86_64.lock`,
+then `pip check`, an exact name/version comparison of the venv against the
+lock, a source import under the unit `PYTHONPATH`, and the collect unit's
+`ExecStartPre` dependency gate. It refuses an existing venv. The reviewed
+wheelhouse is `wheelhouse-clean-start-20261008` (see
+release/DEPENDENCY_CUSTODY.md).
 
 Units name the release directory explicitly (`REPLACE_WITH_RELEASE_SHA`); there
 is no `current` symlink, so a release change is a reviewed unit edit plus

@@ -55,3 +55,24 @@ PyPI artifact (not a rebuild from source), and glibc ≥ 2.28 on the target
 host is assumed from the manylinux tag, not checked on the host. License
 metadata (MIT for duckdb, Apache-2.0 for pyarrow, plus bundled native
 libraries) still needs the same human review as the other wheels.
+
+## 2026-10-08: clean-start wheelhouse and locked venv
+
+Wheelhouse: `labelwatch-segmented-horizon-capacity-20261005/runtime/wheelhouse-clean-start-20261008/`
+(23 wheels, one per lock line). 21 are copied byte-for-byte from the reviewed
+wheelhouse `2026-09-07-overnight-completion/lanes/dependency-recovery/labelwatch/wheelhouse/`
+(its `labelwatch-0.1.0rc2` wheel is excluded); the 0bada713 packaging run
+(`runtime-packaging-20261006/caecf073-*/WHEELS.json`) drew its seven HTTP
+wheels from that same directory. duckdb and pyarrow were downloaded once from
+PyPI (see above). Every file's sha256 was checked against its lock line before
+use, and no file is unpinned.
+
+`release/build-venv.sh` builds a venv from exactly this lock (`--no-index
+--require-hashes --no-deps --find-links`), checks the venv equals the lock,
+and runs the collect unit's dependency gate. Built at
+`runtime/clean-start-venv-locked/venv` with /usr/bin/python3.12 (3.12.3): gate
+passed with no pin change. The earlier `clean-start-venv` used for lane tests
+was not the lock (e.g. idna 3.20); test tools (pytest 9.1.1, pytest-asyncio
+1.4.0, pluggy, iniconfig, packaging, Pygments) are kept outside the locked
+venv in `clean-start-venv-locked/test-tools` and added only via PYTHONPATH
+for tests.
