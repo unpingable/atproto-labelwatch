@@ -99,7 +99,7 @@ class SiteStatus:
                 stats = recent_publish.read_store(self.product.provider.store, now, timeout=2.0, budget=5.0, labelers=False)
                 view = recent_overview.overview(stats, now)
                 result = {"view": view, "maintenance": stats["last_maintenance"], "error": None, "now": now,
-                          "refused_sources": stats["refused_sources"]}
+                          "refused_sources": stats["refused_sources"], "operator_sources": stats["operator_sources"]}
             except Exception as exc:  # summary absence is disclosed, never shown as zero
                 result = {"view": None, "maintenance": None, "error": type(exc).__name__, "now": now}
             self._cached = (tick, result)
@@ -121,7 +121,8 @@ class SiteStatus:
                      "coverage": {"status": cov["status"], "observed_days": cov["observed_days"], "warmup": cov["warmup"],
                                   "gaps_count": len(cov["gaps"]), "gap_overflow": cov["gap_overflow"], "sources": cov["sources"],
                                   # Operator detail only; never in the public overview artifact.
-                                  "refused_sources": status["refused_sources"]},
+                                  "refused_sources": status["refused_sources"],
+                                  **status["operator_sources"]},
                      "last_maintenance": status["maintenance"],
                      "freshness": {"state": state, "basis": "last_accepted_observation", "observed_through": through,
                                    "age_seconds": None if age is None else round(age, 3), "stale_after_seconds": self.stale_after},

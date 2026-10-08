@@ -66,7 +66,7 @@ def test_envelope_schema_counts_and_top_labelers(store):
     assert cov['gaps'] == [{'start': '2026-09-02T01:00:00.000000Z', 'end': '2026-09-02T02:00:00.000000Z',
                             'reason': 'source_unavailable'}]
     assert cov['sources'] == {'seeded': 3, 'unstarted': 3, 'probing': 0, 'established': 0, 'refused': 0,
-                              'pre_epoch_skipped': 0, 'undated_skipped': 0}
+                              'pre_epoch_skipped': 0, 'undated_skipped': 0, 'late_skipped': 0, 'cursor_order_unverified': 0, 'undated_only': 0, 'provider_rejects': 0}
     assert cov['observed_through'] is None  # ingest() fixtures accept no collector page
     assert stats['last_maintenance']['generation'] == 1
 
@@ -76,7 +76,7 @@ def test_no_private_fields_or_subject_dids(store):
     body = json.dumps(env)
     dids = set(re.findall(r'did:[a-z0-9]+:[A-Za-z0-9._:%-]+', body))
     assert dids == {r['labeler_did'] for r in env['top_labelers_7d']}
-    for private in (SUBJECT, 'at://', 'early', 'late', 'next', 'quarantin', 'probe', 'endpoint', 'cursor', str(store.root)):
+    for private in (SUBJECT, 'at://', '"early"', '"late"', '"next"', 'quarantin', 'probe', 'endpoint', 'provider_cursor', 'opaque', str(store.root)):
         assert private not in body
     leaked = dict(env, top_labelers_7d=[{'labeler_did': SUBJECT, 'count': 1, 'uri': 'x'}])
     with pytest.raises(recent_overview.OverviewRefused):
@@ -197,7 +197,7 @@ def test_refused_source_is_counted_publicly_and_its_reason_kept_private(store):
     stats = recent_publish.read_store(store, NOW)
     env = recent_overview.overview(stats, NOW, signature='x')
     assert env['coverage']['sources'] == {'seeded': 3, 'unstarted': 2, 'probing': 0, 'established': 0,
-                                          'refused': 1, 'pre_epoch_skipped': 0, 'undated_skipped': 0}
+                                          'refused': 1, 'pre_epoch_skipped': 0, 'undated_skipped': 0, 'late_skipped': 0, 'cursor_order_unverified': 0, 'undated_only': 0, 'provider_rejects': 0}
     body = json.dumps(env)
     assert 'opaque_cursor' not in body and 'bootstrap_refused' not in body and 'reason": "bootstrap' not in body
     assert stats['refused_sources'] == [{'did': C, 'reason': 'bootstrap_refused:opaque_cursor'}]
@@ -243,3 +243,31 @@ def test_status_read_does_not_take_the_writer_lock(store):
     with lock(store.root):  # a collector round holding the writer lease
         stats = recent_publish.read_store(store, NOW, timeout=0.5, budget=5)
     assert stats['counts']['events_7d'] == 4
+
+
+def test_order_lateness_and_reject_disclosures_are_counts_publicly_and_detail_privately(store):
+    from storage import connect
+    with connect(store.state) as c:
+        c.execute("UPDATE q_recent_sources SET cursor_order_unverified=1, cursor_order_evidence=?, late_skipped=5 WHERE did=?",
+                  (json.dumps({'regressed_at': 'secret-evidence'}), A))
+        c.execute("UPDATE q_recent_sources SET undated_skipped=3, accepted_rows=0, provider_rejects=2 WHERE did=?", (B,))
+    stats = recent_publish.read_store(store, NOW)
+    env = recent_overview.overview(stats, NOW, signature='x')
+    src = env['coverage']['sources']
+    assert (src['late_skipped'], src['cursor_order_unverified'], src['undated_only'], src['provider_rejects'],
+            src['undated_skipped']) == (5, 1, 1, 1, 3)
+    body = json.dumps(env)
+    assert 'secret-evidence' not in body and 'evidence' not in body
+    assert set(re.findall(r'did:[a-z0-9]+:[A-Za-z0-9._:%-]+', body)) <= {r['labeler_did'] for r in env['top_labelers_7d']}
+    from test_recent_site import site, get
+    _, h = site(store)
+    health = json.loads(get(h, '/health')[2])['coverage']
+    assert health['cursor_order_unverified_sources'] == [{'did': A, 'evidence': {'regressed_at': 'secret-evidence'}}]
+    assert health['undated_only_sources'] == [B]
+    assert health['provider_rejects_sources'] == [{'did': B, 'provider_rejects': 2}]
+    landing = get(h, '/')[2].decode()
+    assert 'Sources whose page order could not be verified: 1 (their coverage is reported as unknown)' in landing
+    assert 'Rows skipped as late (older than 48 h at acceptance): 5' in landing
+    assert 'secret-evidence' not in landing
+    about = get(h, '/about')[2].decode()
+    assert '<code>late_skipped</code>' in about and '<code>cursor_order_unverified</code>' in about

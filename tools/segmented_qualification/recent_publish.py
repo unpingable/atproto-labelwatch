@@ -33,15 +33,20 @@ from labelwatch import recent_overview  # noqa: E402
 def _sources(store):
     """Source roster from the collector's bootstrap disclosure.
 
-    Returns (public counts, operator-only refused sources with reasons).
+    Returns (public counts, operator-only refused sources with reasons,
+    operator-only per-source disclosure lists).
     established is not completeness; refused/unstarted/probing coverage is unknown.
     """
     summary = store.collector_bootstrap_summary()
     counts = {key: int(summary[key]) for key in ('unstarted', 'probing', 'established', 'refused',
-                                                  'pre_epoch_skipped', 'undated_skipped')}
+                                                  'pre_epoch_skipped', 'undated_skipped', 'late_skipped',
+                                                  'cursor_order_unverified', 'undated_only', 'provider_rejects')}
     counts['seeded'] = counts['unstarted'] + counts['probing'] + counts['established'] + counts['refused']
     refused = [{'did': row['did'], 'reason': row['reason']} for row in summary['refused_sources']]
-    return counts, refused
+    # Operator detail only (DIDs and evidence); never part of the public overview.
+    operator = {key: summary[key] for key in ('cursor_order_unverified_sources', 'undated_only_sources',
+                                              'provider_rejects_sources')}
+    return counts, refused, operator
 
 
 def _count_since(c, cut, upper):
@@ -106,7 +111,7 @@ def snapshot_state(store, now, *, deadline, labelers=True):
         c.close()
     return {'acquisition': acquisition, 'meta': meta, 'upper': upper, 'counts': counts, 'gaps': gaps,
             'gap_overflow': meta['gap_overflow'] == '1', 'observed_through': observed_through,
-            'sources': None, 'refused_sources': [], 'plan': plan}
+            'sources': None, 'refused_sources': [], 'operator_sources': {}, 'plan': plan}
 
 
 def _labeler_counts(store, plan, upper, deadline):
@@ -165,7 +170,7 @@ def read_store(store, now, *, timeout=10.0, budget=120.0, labelers=True):
     deadline = time.monotonic() + budget
     with lock(store.root, 'reader.lock', shared=True, timeout=timeout):
         stats = snapshot_state(store, now, deadline=deadline, labelers=labelers)
-        stats['sources'], stats['refused_sources'] = _sources(store)
+        stats['sources'], stats['refused_sources'], stats['operator_sources'] = _sources(store)
         top = []
         if labelers:
             totals = _labeler_counts(store, stats['plan'], stats['upper'], deadline)
