@@ -92,3 +92,11 @@ def test_http_store_busy_is_503_with_retry_after(store):
     assert status == 503 and headers['Retry-After'] == '5' and json.loads(body)['error'] == 'store_busy'
     status, headers, body = get(h, '/account?did=' + SUBJECT + '&start=' + LO + '&end=' + HI, accept='text/html')
     assert status == 503 and b'busy' in body
+
+
+def test_ingest_tolerates_a_reader_wal_vanishing_during_its_budget_check(store, monkeypatch):
+    from pathlib import Path as P
+    ghost = store.root / 'reader-catalog-ghost.sqlite-wal'
+    real_glob = P.glob
+    monkeypatch.setattr(P, 'glob', lambda self, pattern: list(real_glob(self, pattern)) + ([ghost] if pattern == '*.sqlite-wal' else []))
+    store.check_local()  # a WAL listed but already gone is not a failure
