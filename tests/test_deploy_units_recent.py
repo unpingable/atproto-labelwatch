@@ -119,3 +119,22 @@ def test_round_deadline_fits_collect_timeout_and_stale_exceeds_it():
     assert (start, stop) == (45, 5)
     assert 0 < round_s <= 30 and start >= round_s + 10
     assert stale > start
+
+
+def test_network_egress_rules():
+    collect = parse('labelwatch-recent-collect.service')['Service']
+    assert collect['IPAddressDeny'] == ['link-local multicast localhost 10.0.0.0/8 172.16.0.0/12 '
+                                        '192.168.0.0/16 100.64.0.0/10 fc00::/7']
+    assert 'IPAddressAllow' not in collect
+    for name in ('labelwatch-recent-product.service', 'labelwatch-recent-overview.service',
+                 'labelwatch-recent-maintain.service'):
+        assert parse(name)['Service']['IPAddressDeny'] == ['any'], name
+
+
+def test_docs_state_the_committed_roster_size():
+    import json
+    count = json.loads((DEPLOY / 'roster-epoch2-seed.json').read_text())['count']
+    assert count == 580
+    for name in ('README-recent.md', 'labelwatch-recent.env.example'):
+        text = (DEPLOY / name).read_text()
+        assert '~584' not in text and str(count) in text, name

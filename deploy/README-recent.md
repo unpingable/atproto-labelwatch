@@ -127,7 +127,8 @@ touch either file.
 
 - `LABELWATCH_RECENT_ROUND_SECONDS` (collector default 10, max 30) is the
   per-round collection deadline. Use 30 for the first day of an epoch so the
-  ~584 seeded sources bootstrap in about 15-20 minutes, then return to 10.
+  580 seeded sources bootstrap in about 15-20 minutes, then return to 10.
+  (584 was the scheduler-fixture figure; the committed seed holds 580.)
 - The collect unit's `TimeoutStartSec=45` (with `TimeoutStopSec=5`) must
   exceed ROUND plus about 10 s of grace for setup and commit, so ROUND may
   not exceed 35 under this unit; the collector caps it at 30.
