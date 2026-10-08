@@ -9,7 +9,8 @@ starts a unit, and no install step creates or removes a marker file.
 |---|---|
 | `labelwatch-recent-collect.service` / `.timer` | one finite collection round every 2 min (`Persistent=false`, `RandomizedDelaySec=15`) |
 | `labelwatch-recent-maintain.service` / `.timer` | daily rotation/archive/expiry at 00:05 UTC (`Persistent=true`) |
-| `labelwatch-recent-product.service` | skeleton for the read-only product on 127.0.0.1:8431 (content owned by the product lane) |
+| `labelwatch-recent-product.service` | read-only rolling-observatory site on 127.0.0.1:8431 |
+| `labelwatch-recent-overview.service` / `.timer` | aggregate overview publisher for the facts API, every 30 min (publishes a held artifact while held) |
 | `labelwatch-recent.env.example` | shared environment, installed as `/etc/labelwatch-recent.env` |
 | `roster-epoch2-seed.json` | 580 legacy labeler DIDs from the 2026-10-01 archive (`labelers.labeler_did`) |
 
@@ -124,3 +125,12 @@ that finds the lock held exits 75, treated as success, and is not queued.
 `advance_day` is idempotent per UTC day: rotation to an already active owner
 is a no-op and an interrupted expiry journal is resumed; `Persistent=true`
 therefore only adds a catch-up run after downtime.
+
+## Public routing of the product (127.0.0.1:8431)
+
+Route publicly only `/`, `/about`, `/previous-epoch`, `/account`, `/exports`,
+`/download`, `/lookup` and `/instruments/*`. `/health` carries operator detail
+(refused, unavailable, order-unverified and undated-only source DIDs with
+reasons/evidence, and per-source status) and must stay loopback/operator-only:
+do not route it through Caddy. Every other path answers an explicit refusal.
+The previous epoch's report tree is withdrawn and must not be served.
