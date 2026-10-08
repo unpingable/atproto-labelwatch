@@ -23,6 +23,8 @@ from storage import Store, owned, connect, lock, db, custody, ingest, sha, syncd
 BOOTSTRAP_POLICY={'total_probes':72,'cursor_max':2**53,'history_pages':16,'reject_attempts':6,'endpoint_seconds':86400,
                   'rearm_seconds':86400,'rearms':3}
 BOOTSTRAP_PHASES=('unstarted','probing','established','refused')
+# Per-source request spacing (seconds), enforced by every claim, probes included.
+SOURCE_MIN_INTERVAL=1
 SCHEDULER_POLICY={'warm_seconds':1,'quiet_seconds':30,'failure_base_seconds':30,'failure_max_seconds':900,'failure_counter_max':6,'hot_streak_max':4}
 _UNSET = object()
 UTC = dt.timezone.utc
@@ -108,7 +110,8 @@ class RecentStore(Store):
                 provider_rejects INTEGER NOT NULL DEFAULT 0 CHECK(provider_rejects BETWEEN 0 AND 6),
                 endpoint_resolved_at TEXT,
                 future_skipped INTEGER NOT NULL DEFAULT 0 CHECK(future_skipped>=0),
-                boot_confirm TEXT,rearm_at TEXT,rearms INTEGER NOT NULL DEFAULT 0 CHECK(rearms BETWEEN 0 AND 3));
+                boot_confirm TEXT,rearm_at TEXT,rearms INTEGER NOT NULL DEFAULT 0 CHECK(rearms BETWEEN 0 AND 3),
+                origin TEXT NOT NULL DEFAULT 'seeded' CHECK(origin IN ('seeded','discovered')),last_request TEXT);
             ''')
             for key, value in {'version':'7','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
                                'end':iso(stamp),'generation':'0','clock':iso(stamp),'events':'0'}.items():
@@ -255,7 +258,10 @@ class RecentStore(Store):
                     if endpoint is not None and (not isinstance(endpoint,str) or len(endpoint.encode())>2048 or not endpoint.startswith('https://')):raise ValueError('invalid source endpoint')
                     old=c.execute('SELECT endpoint FROM q_recent_sources WHERE did=?',(did,)).fetchone()
                     if old and old[0] and endpoint and old[0]!=endpoint:raise RuntimeError('source endpoint change requires explicit cursor reset')
-                    c.execute('INSERT INTO q_recent_sources(did,endpoint) VALUES (?,?) ON CONFLICT(did) DO UPDATE SET endpoint=COALESCE(q_recent_sources.endpoint,excluded.endpoint)',(did,endpoint))
+                    # origin is fixed at first enrollment: discovery pages are 'discovered',
+                    # explicit enrollment (init seed, operator roster) is 'seeded'.
+                    c.execute('INSERT INTO q_recent_sources(did,endpoint,origin) VALUES (?,?,?) ON CONFLICT(did) DO UPDATE SET endpoint=COALESCE(q_recent_sources.endpoint,excluded.endpoint)',
+                              (did,endpoint,'discovered' if discovery else 'seeded'))
                 if c.execute('SELECT COUNT(*) FROM q_recent_sources').fetchone()[0]>limit:raise RuntimeError('source enrollment ceiling; no discovered source dropped')
                 if discovery:
                     if next_cursor is None:c.execute("DELETE FROM meta WHERE key='q:recent_discovery_cursor'")
@@ -280,8 +286,27 @@ class RecentStore(Store):
                 if row[0]:
                     if stamp<=row[1]:raise RuntimeError('pending attempt requires advancing recovery clock')
                     self._record_gap(c,row[1],stamp,'unknown')
-                c.execute('UPDATE q_recent_sources SET attempt_token=?,attempt_start=? WHERE did=?',(token,stamp,did))
+                c.execute('UPDATE q_recent_sources SET attempt_token=?,attempt_start=?,last_request=? WHERE did=?',(token,stamp,stamp,did))
                 self.caps(c,scan=False);c.commit();return token
+            finally:c.close()
+
+    def collector_sweep_attempts(self,observed_at,stale_seconds=60):
+        """Disclose attempts lost with a killed process (older than the stop deadline).
+
+        Process loss is store-wide: one merged 'unknown' gap from the oldest lost
+        attempt start to now; the attempts are cleared so sources are claimable.
+        """
+        if not 0<stale_seconds<=3600:raise ValueError('stale attempt bound')
+        stamp=clock(observed_at);cut=iso(stamp-dt.timedelta(seconds=stale_seconds))
+        with lock(self.root):
+            c=connect(self.state)
+            try:
+                self.recover(c);c.execute('BEGIN IMMEDIATE')
+                lost=list(c.execute('SELECT did,attempt_start FROM q_recent_sources WHERE attempt_token IS NOT NULL AND attempt_start<? ORDER BY attempt_start LIMIT 2048',(cut,)))
+                if lost:
+                    self._record_gap(c,lost[0][1],iso(stamp),'unknown')
+                    c.executemany('UPDATE q_recent_sources SET attempt_token=NULL,attempt_start=NULL WHERE did=?',[(r[0],) for r in lost])
+                c.commit();return [{'did':r[0],'attempt_start':r[1]} for r in lost]
             finally:c.close()
 
     def finish_source_attempt(self,did,attempt_token,observed_at=None,failure=True,reason=None,rejected=None):
@@ -330,6 +355,18 @@ class RecentStore(Store):
             return [dict(r) for r in c.execute('SELECT did,endpoint FROM q_recent_sources ORDER BY did LIMIT ?',(limit,))]
         finally:c.close()
 
+    def collector_next_due(self):
+        """Earliest time any claimable source becomes due (spacing included), or None."""
+        c=connect(self.state,readonly=True)
+        try:
+            self.require(c);best=None
+            for next_due,last in c.execute("SELECT next_due,last_request FROM q_recent_sources WHERE boot_phase!='refused'"):
+                due=max(clock(next_due) if next_due else EPOCH,
+                        clock(last)+dt.timedelta(seconds=SOURCE_MIN_INTERVAL) if last else EPOCH)
+                best=due if best is None or due<best else best
+            return None if best is None else iso(best)
+        finally:c.close()
+
     def collector_source_status(self,limit):
         """Per-source bootstrap disclosure rows for the product (bounded listing)."""
         if not 0<limit<=2048:raise ValueError('source listing bound')
@@ -342,7 +379,7 @@ class RecentStore(Store):
                 unavailable_since,last_failure_at,last_failure_reason,failures,
                 late_skipped,accepted_rows,cursor_order_unverified,cursor_order_evidence,provider_rejects,
                 undated_skipped>0 AND accepted_rows=0 AS undated_only,endpoint_resolved_at,
-                future_skipped,boot_at AS established_at,rearm_at,rearms
+                future_skipped,boot_at AS established_at,rearm_at,rearms,origin,last_request,attempt_start
                 FROM q_recent_sources ORDER BY did LIMIT ?''',(limit,))]
         finally:c.close()
 
@@ -405,6 +442,9 @@ class RecentStore(Store):
             positioned=c.execute("SELECT COUNT(*) FROM q_recent_sources WHERE boot_phase IN ('unstarted','probing') AND provider_cursor IS NOT NULL").fetchone()[0]
             skipped=c.execute('SELECT COALESCE(SUM(pre_epoch_skipped),0),COALESCE(SUM(undated_skipped),0),COALESCE(SUM(late_skipped),0),COALESCE(SUM(future_skipped),0) FROM q_recent_sources').fetchone()
             established_at=c.execute("SELECT MIN(boot_at),MAX(boot_at) FROM q_recent_sources WHERE boot_phase='established'").fetchone()
+            origins=dict(c.execute('SELECT origin,COUNT(*) FROM q_recent_sources GROUP BY origin').fetchall())
+            pending=[{'did':r[0],'attempt_start':r[1]} for r in c.execute(
+                'SELECT did,attempt_start FROM q_recent_sources WHERE attempt_token IS NOT NULL ORDER BY attempt_start LIMIT 2048')]
             unordered=[{'did':r[0],'evidence':json.loads(r[1]) if r[1] else None} for r in c.execute(
                 'SELECT did,cursor_order_evidence FROM q_recent_sources WHERE cursor_order_unverified=1 ORDER BY did LIMIT 2048')]
             undated_only=[r[0] for r in c.execute('SELECT did FROM q_recent_sources WHERE undated_skipped>0 AND accepted_rows=0 ORDER BY did LIMIT 2048')]
@@ -420,6 +460,8 @@ class RecentStore(Store):
                     'provider_rejects':len(rejecting),'provider_rejects_sources':rejecting,'future_skipped':skipped[3],
                     # Per-source collection runs forward from its establishment, not from the epoch.
                     'established_at':{'earliest':established_at[0],'latest':established_at[1]},
+                    'seeded':origins.get('seeded',0),'discovered':origins.get('discovered',0),
+                    'pending_attempts':len(pending),'pending_attempts_sources':pending,
                     'coverage':'unknown' if phases['unstarted']+phases['probing']+phases['refused']-positioned>0 or unavailable
                                or unordered or undated_only else 'established_sources_only'}
         finally:c.close()
@@ -473,7 +515,7 @@ class RecentStore(Store):
             return row[0]
         finally:c.close()
 
-    def collector_claim_source(self,limit=2048,observed_at=None,probing=False):
+    def collector_claim_source(self,limit=2048,observed_at=None,probing=False,did=None):
         """Claim the next due source; probing=True claims only a cursorless bootstrapping
         source (round-robin among them), or None. Due re-arms are restored first."""
         if not 0<limit<=2048:raise ValueError('source claim bound')
@@ -490,10 +532,17 @@ class RecentStore(Store):
                     WHEN boot_lo IS NOT NULL THEN 'probing' ELSE 'unstarted' END
                     WHERE boot_phase='refused' AND rearm_at IS NOT NULL AND rearm_at<=?""",
                     (BOOTSTRAP_POLICY['reject_attempts']-1,stamp,stamp))
+                spaced=iso(clock(stamp)-dt.timedelta(seconds=SOURCE_MIN_INTERVAL))
+                due=' AND (next_due IS NULL OR next_due<=?) AND (last_request IS NULL OR last_request<=?)'
                 if probing:
-                    sql="SELECT did,endpoint FROM q_recent_sources WHERE provider_cursor IS NULL AND boot_phase IN ('unstarted','probing') AND (next_due IS NULL OR next_due<=?)"
+                    sql="SELECT did,endpoint FROM q_recent_sources WHERE provider_cursor IS NULL AND boot_phase IN ('unstarted','probing')"+due
+                    if did is not None:
+                        # Continue a source mid-search (consecutive probes, still spaced).
+                        row=c.execute(sql+' AND did=?',(stamp,spaced,did)).fetchone()
+                        if row is None:c.commit();return None
+                        self.caps(c,scan=False);c.commit();return dict(row)
                     previous=db.get_meta(c,'q:recent_last_probe') or ''
-                    row=c.execute(sql+' AND did>? ORDER BY did LIMIT 1',(stamp,previous)).fetchone() or c.execute(sql+' ORDER BY did LIMIT 1',(stamp,)).fetchone()
+                    row=c.execute(sql+' AND did>? ORDER BY did LIMIT 1',(stamp,spaced,previous)).fetchone() or c.execute(sql+' ORDER BY did LIMIT 1',(stamp,spaced)).fetchone()
                     if row is None:c.commit();return None
                     db.set_meta(c,'q:recent_last_probe',row['did'])
                     self.caps(c,scan=False);c.commit();return dict(row)
@@ -502,9 +551,9 @@ class RecentStore(Store):
                 def candidate(hot):
                     key='q:recent_last_hot' if hot else 'q:recent_last_cold'
                     previous=db.get_meta(c,key) or ''
-                    sql='SELECT did,endpoint FROM q_recent_sources WHERE '+('hot>0' if hot else 'hot=0')+" AND boot_phase!='refused' AND (next_due IS NULL OR next_due<=?)"
-                    row=c.execute(sql+' AND did>? ORDER BY did LIMIT 1',(stamp,previous)).fetchone()
-                    if row is None:row=c.execute(sql+' ORDER BY did LIMIT 1',(stamp,)).fetchone()
+                    sql='SELECT did,endpoint FROM q_recent_sources WHERE '+('hot>0' if hot else 'hot=0')+" AND boot_phase!='refused'"+due
+                    row=c.execute(sql+' AND did>? ORDER BY did LIMIT 1',(stamp,spaced,previous)).fetchone()
+                    if row is None:row=c.execute(sql+' ORDER BY did LIMIT 1',(stamp,spaced)).fetchone()
                     return row,key
                 cold,cold_key=candidate(0);hot,hot_key=candidate(1)
                 choose_hot=hot is not None and (streak<SCHEDULER_POLICY['hot_streak_max'] or cold is None)
