@@ -29,6 +29,18 @@ TOTAL_PROBES = 72          # >= 1 + ceil(53/4) gallop + 53 bisection steps over 
 CURSOR_MAX = 2**53
 LATE_ALLOWANCE = timedelta(hours=48)
 STORE_HOLD = 'rotate daily observation owner before ingestion'
+ENDPOINT_TTL = timedelta(hours=24)
+REJECT_STATUSES = {'400', '401', '403', '404', '410'}
+
+
+def _deterministic(reason):
+    """A provider answer that will not change by retrying (count-bounded), else None."""
+    match = re.fullmatch(r'provider status (\d{3})', reason or '')
+    if match and match.group(1) in REJECT_STATUSES:
+        return match.group(1)
+    if reason == 'source attribution mismatch':
+        return 'attribution'
+    return None
 DECIMAL = re.compile(r'(0|[1-9][0-9]{0,15})')
 
 
@@ -199,6 +211,9 @@ class Collector:
                 break
             item = source(item)
             state = self.store.collector_source_state(item['did'])
+            resolved = _source_time(state.get('endpoint_resolved_at'))
+            if resolved is not None and stamp-resolved >= ENDPOINT_TTL:
+                item = {**item, 'endpoint': None}     # re-resolve a cached endpoint daily
             booting = state['cursor'] is None and state['phase'] in ('unstarted', 'probing')
             if booting and probes.get(item['did'], 0) >= self.limits.bootstrap_probes:
                 capped += 1   # Per-tick probe share spent; yield the slot, never loop.
@@ -216,7 +231,12 @@ class Collector:
                 position = cursor(state['cursor'])
                 page = self._request('labels', {**item, 'cursor': position, 'limit': self.limits.page_rows}, deadline)
                 normalized, next_cursor = self._page(item, page, self.limits.page_rows)
-                results.append(self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor))
+                if self._endpoint_changed(item, page):
+                    self.store.finish_source_attempt(item['did'], attempt, observed_at=self.now().isoformat(), failure=False)
+                    results.append({'source': item['did'], 'status': 'endpoint_changed'})
+                    continue
+                results.append(self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor,
+                                            self.limits.page_rows))
             except Exception as exc:
                 end = max(self.now(), stamp+timedelta(microseconds=1))
                 reason = str(exc)[:160] if isinstance(exc, Refused) else type(exc).__name__
@@ -227,7 +247,9 @@ class Collector:
                     held = STORE_HOLD
                     break
                 # One source's failure is per-source state, never a store-wide gap.
-                self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat(), reason=reason)
+                rejected = _deterministic(reason)
+                extra = {'rejected': rejected} if rejected else {}
+                self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat(), reason=reason, **extra)
                 results.append({'source': item['did'], 'status': 'refused', 'reason': reason})
         summary = getattr(self.store, 'collector_bootstrap_summary', None)
         if held:
@@ -237,6 +259,15 @@ class Collector:
         return {'attempted': len(attempted), 'deferred': len(rows)-len({row['source'] for row in attempted}), 'results': results,
                 'round': {'status': round_status, 'store_hold': held}, 'refused_sources': [row['source'] for row in attempted if row['status'] == 'refused'],
                 'bootstrap': summary() if summary else None, 'coverage': 'unknown'}
+
+    def _endpoint_changed(self, item, page):
+        """Persist a transport-resolved endpoint; True when the provider namespace changed."""
+        endpoint = page.get('_resolved_endpoint')
+        persist = getattr(self.store, 'collector_resolved_endpoint', None)
+        if endpoint is None or persist is None:
+            return False
+        return persist(item['did'], source({'did': item['did'], 'endpoint': endpoint})['endpoint'],
+                       self.now().isoformat())['changed']
 
     def _maintenance_gap(self, stamp, end=None, reason=STORE_HOLD):
         """One store-wide interval per hold; overlapping rounds merge in the store.
@@ -265,36 +296,48 @@ class Collector:
                 raise Refused('invalid label fields')
             if 'neg' in raw and type(raw['neg']) is not bool:
                 raise Refused('invalid label action')
+            if not isinstance(raw.get('cts'), str) or not raw['cts']:
+                # No source time: no identity and no epoch decision. Skip this row
+                # (counted undated), never refuse the page that carries it.
+                normalized.append(None)
+                continue
             r = normalize_label(raw, strict_identity=True)
             normalized.append((r.labeler_did,r.src,r.uri,r.cid,r.val,r.neg,r.exp,r.sig,r.ts,r.event_hash,parse_target_did(r.uri)))
         return normalized, next_cursor
 
-    def _accept(self, item, normalized, position, next_cursor, attempt, stamp, deadline, floor):
+    def _accept(self, item, normalized, position, next_cursor, attempt, stamp, deadline, floor, limit):
         if next_cursor is not None and next_cursor == position:
             raise Refused('label continuation did not advance')
         before, after = _decimal(position), _decimal(next_cursor)
         if before is not None and after is not None and after <= before:
             raise Refused('label continuation regressed')
-        kept, pre_epoch, undated = [], 0, 0
-        for row in normalized:
-            authored = _source_time(row[8])
-            if authored is None:
-                undated += 1
-            elif authored < floor:
-                pre_epoch += 1      # Epoch-only: never a silent historical backfill.
-            else:
-                kept.append(row)
         if self.monotonic() >= deadline:
             raise Refused('collector deadline exceeded before commit')
         accepted_at = self.now()
         if accepted_at.tzinfo is None or accepted_at.utcoffset() != timedelta(0) or accepted_at < stamp:
             raise Refused('observation clock regression')
-        skipped = {k: v for k, v in (('pre_epoch', pre_epoch), ('undated', undated)) if v}
+        # Bounded late arrival: the allowance applies at acceptance time as well
+        # as at the epoch, so a source first reached late never backfills history.
+        late_floor = max(floor, accepted_at-LATE_ALLOWANCE)
+        kept, pre_epoch, late, undated = [], 0, 0, 0
+        for row in normalized:
+            authored = None if row is None else _source_time(row[8])
+            if authored is None:
+                undated += 1
+            elif authored < floor:
+                pre_epoch += 1      # Epoch-only: never a silent historical backfill.
+            elif authored < late_floor:
+                late += 1
+            else:
+                kept.append(row)
+        skipped = {k: v for k, v in (('pre_epoch', pre_epoch), ('undated', undated), ('late', late)) if v}
         extra = {'skipped': skipped} if skipped else {}
+        if len(normalized) == limit and not kept and pre_epoch+late == len(normalized):
+            extra['history'] = True     # a full page of old rows: counts toward the re-probe cap
         result = self.store.accept_page(kept, source=item['did'], request_cursor=position,
                                         next_cursor=next_cursor, observed_at=accepted_at.isoformat(), attempt_token=attempt, **extra)
         return {'source': item['did'], 'status': 'accepted', 'rows': len(kept), 'pre_epoch_skipped': pre_epoch,
-                'undated_skipped': undated, 'terminal': next_cursor is None, 'result': result}
+                'late_skipped': late, 'undated_skipped': undated, 'terminal': next_cursor is None, 'result': result}
 
     def _bootstrap(self, item, state, attempt, stamp, deadline, floor):
         """One probe: gallop x16 then bisect on the numeric cursor until a short page.
@@ -325,13 +368,15 @@ class Collector:
         page = self._request('labels', {**item, 'cursor': position, 'limit': min(PROBE_ROWS, self.limits.page_rows)}, deadline)
         rows = min(PROBE_ROWS, self.limits.page_rows)
         normalized, next_cursor = self._page(item, page, rows)
+        if self._endpoint_changed(item, page):
+            raise Refused('resolved endpoint changed; bootstrap restarts')
         if not normalized and x is not None:
             hi = x
         elif len(normalized) < rows or next_cursor is None:
             # Short (or terminal) page: everything after `position` is in hand, so
             # no cursor arithmetic is needed and an opaque continuation is kept as-is.
             value = step(phase='established', lo=state['lo'], hi=state['hi'], established=position, finish=False)
-            return {**self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor),
+            return {**self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor, rows),
                     'bootstrap': value['phase'], 'probes': value['probes']}
         else:
             # Further probing needs a verified numeric, advancing cursor; anything
@@ -346,7 +391,7 @@ class Collector:
         if hi is not None and hi-lo <= 1:
             if x == lo:   # The full page for lo is in hand: it is the first collected page.
                 value = step(phase='established', lo=str(lo), hi=str(hi), established=str(lo), finish=False)
-                return {**self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor),
+                return {**self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor, rows),
                         'bootstrap': value['phase'], 'probes': value['probes']}
             return report(step(phase='established', lo=str(lo), hi=str(hi), established=str(lo)))
         return report(step(phase='probing', lo=str(lo), hi=None if hi is None else str(hi)), probe=position, rows=len(normalized))
@@ -367,6 +412,7 @@ class HTTPTransport:
         self.http_transport = http_transport
         self._loop=None
         self._executor=None
+        self._client=None   # one client per invocation (tick), reused across requests
 
     def __enter__(self):
         import asyncio
@@ -382,10 +428,12 @@ class HTTPTransport:
         # enrolled source is attempted. Join only after this finite invocation.
         # OS DNS may still stall here; the enclosing process deadline is required.
         try:
+            if self._client is not None:
+                self._loop.run_until_complete(self._client.aclose())
             self._loop.run_until_complete(self._loop.shutdown_asyncgens())
             self._executor.shutdown(wait=True,cancel_futures=True)
         finally:
-            self._loop.close();self._loop=None;self._executor=None
+            self._loop.close();self._loop=None;self._executor=None;self._client=None
 
     def request(self, operation, params, *, max_bytes, timeout_seconds):
         import asyncio
@@ -400,64 +448,74 @@ class HTTPTransport:
         from urllib.parse import quote, unquote
         from .resolve import resolve_service_endpoint
         remaining = max_bytes
-        async with httpx.AsyncClient(transport=self.http_transport, trust_env=False,
-                                     follow_redirects=False, timeout=timeout_seconds) as client:
-            async def fetch(url, query=None):
-                nonlocal remaining
-                async with client.stream('GET', url, params=query, headers={'Accept': 'application/json',
-                                                                         'Accept-Encoding': 'identity'}) as response:
-                    response.raise_for_status()
-                    if response.headers.get('content-encoding', 'identity') != 'identity':
-                        raise Refused('encoded response refused')
-                    body = bytearray()
-                    async for chunk in response.aiter_bytes(chunk_size=8192):
-                        remaining -= len(chunk)
-                        if remaining < 0:
-                            raise Refused('aggregate response byte ceiling')
-                        body.extend(chunk)
-                value = json.loads(body)
-                if not isinstance(value, dict):
-                    raise Refused('HTTP JSON object required')
-                return value
+        if self._client is None:
+            self._client = httpx.AsyncClient(transport=self.http_transport, trust_env=False,
+                                             follow_redirects=False, timeout=timeout_seconds)
+        client = self._client
+        async def fetch(url, query=None):
+            nonlocal remaining
+            async with client.stream('GET', url, params=query, timeout=timeout_seconds,
+                                     headers={'Accept': 'application/json', 'Accept-Encoding': 'identity'}) as response:
+                if response.status_code >= 400:
+                    # Deterministic 4xx answers are count-bounded by the store.
+                    raise Refused(f'provider status {response.status_code}')
+                response.raise_for_status()
+                if response.headers.get('content-encoding', 'identity') != 'identity':
+                    raise Refused('encoded response refused')
+                body = bytearray()
+                async for chunk in response.aiter_bytes(chunk_size=8192):
+                    remaining -= len(chunk)
+                    if remaining < 0:
+                        raise Refused('aggregate response byte ceiling')
+                    body.extend(chunk)
+            value = json.loads(body)
+            if not isinstance(value, dict):
+                raise Refused('HTTP JSON object required')
+            return value
 
-            if operation == 'discover':
-                query = {'collection': 'app.bsky.labeler.service', 'limit': params['limit']}
-                if params['cursor'] is not None:
-                    query['cursor'] = params['cursor']
-                page = await fetch('https://bsky.network/xrpc/com.atproto.sync.listReposByCollection', query)
-                repos = page.get('repos')
-                if not isinstance(repos, list) or len(repos) > params['limit']:
-                    raise Refused('discovery repository page ceiling')
-                result = {'sources': [{'did': r['did'], 'endpoint': None} for r in repos],
-                          'cursor': page.get('cursor')}
-            elif operation == 'labels':
-                did, endpoint = params['did'], params['endpoint']
+        if operation == 'discover':
+            query = {'collection': 'app.bsky.labeler.service', 'limit': params['limit']}
+            if params['cursor'] is not None:
+                query['cursor'] = params['cursor']
+            page = await fetch('https://bsky.network/xrpc/com.atproto.sync.listReposByCollection', query)
+            repos = page.get('repos')
+            if not isinstance(repos, list) or len(repos) > params['limit']:
+                raise Refused('discovery repository page ceiling')
+            result = {'sources': [{'did': r['did'], 'endpoint': None} for r in repos],
+                      'cursor': page.get('cursor')}
+        elif operation == 'labels':
+            did, endpoint = params['did'], params['endpoint']
+            if endpoint is None:
+                if did.startswith('did:plc:'):
+                    url = 'https://plc.directory/'+quote(did, safe=':')
+                elif did.startswith('did:web:'):
+                    parts = did[len('did:web:'):].split(':')
+                    authority = unquote(parts[0])
+                    parsed = urlsplit('https://'+authority)
+                    if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment or not parsed.hostname:
+                        raise Refused('invalid did:web authority')
+                    path = '/'.join(quote(unquote(part), safe='') for part in parts[1:])
+                    url = 'https://'+authority+('/'+path if path else '/.well-known')+'/did.json'
+                else:
+                    raise Refused('unsupported DID method')
+                doc = await fetch(url)
+                if doc.get('id') != did:
+                    raise Refused('DID document identity mismatch')
+                endpoint = source({'did': did, 'endpoint': resolve_service_endpoint(doc)})['endpoint']
                 if endpoint is None:
-                    if did.startswith('did:plc:'):
-                        url = 'https://plc.directory/'+quote(did, safe=':')
-                    elif did.startswith('did:web:'):
-                        parts = did[len('did:web:'):].split(':')
-                        authority = unquote(parts[0])
-                        parsed = urlsplit('https://'+authority)
-                        if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment or not parsed.hostname:
-                            raise Refused('invalid did:web authority')
-                        path = '/'.join(quote(unquote(part), safe='') for part in parts[1:])
-                        url = 'https://'+authority+('/'+path if path else '/.well-known')+'/did.json'
-                    else:
-                        raise Refused('unsupported DID method')
-                    doc = await fetch(url)
-                    if doc.get('id') != did:
-                        raise Refused('DID document identity mismatch')
-                    endpoint = source({'did': did, 'endpoint': resolve_service_endpoint(doc)})['endpoint']
-                    if endpoint is None:
-                        raise Refused('labeler endpoint unresolved')
-                query = {'sources': did, 'uriPatterns': '*', 'limit': params['limit']}
-                if params['cursor'] is not None:
-                    query['cursor'] = params['cursor']
-                result = await fetch(endpoint+'/xrpc/com.atproto.label.queryLabels', query)
+                    raise Refused('labeler endpoint unresolved')
+                resolved = endpoint
             else:
-                raise Refused('unknown transport operation')
-            encoded = json.dumps(result, separators=(',', ':')).encode()
-            if len(encoded) > max_bytes:
-                raise Refused('adapter result byte ceiling')
-            return encoded
+                resolved = None
+            query = {'sources': did, 'uriPatterns': '*', 'limit': params['limit']}
+            if params['cursor'] is not None:
+                query['cursor'] = params['cursor']
+            result = await fetch(endpoint+'/xrpc/com.atproto.label.queryLabels', query)
+            if resolved is not None:
+                result['_resolved_endpoint'] = resolved   # persisted by the collector
+        else:
+            raise Refused('unknown transport operation')
+        encoded = json.dumps(result, separators=(',', ':')).encode()
+        if len(encoded) > max_bytes:
+            raise Refused('adapter result byte ceiling')
+        return encoded

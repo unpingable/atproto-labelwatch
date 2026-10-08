@@ -370,3 +370,88 @@ def test_collect_command_exit_reflects_whole_round_only(store, monkeypatch, caps
     clock.t = 12*3600+60
     assert recent_collect.main(['--store', str(store.root), '--network']) == 1
     assert json.loads(capsys.readouterr().out)['collection']['round']['status'] == 'refused'
+
+
+# Review r2 rulings.
+
+def test_late_rows_are_bounded_at_acceptance_time_and_counted_apart_from_pre_epoch(store):
+    # Day 10 of the epoch: a row 3 days old is inside the epoch but late; a row
+    # older than the epoch floor is pre-epoch; a 1-day-old row is accepted.
+    cts = {1: '2026-10-01T00:00:00Z', 2: '2026-10-15T12:00:00Z', 3: '2026-10-17T12:00:00Z'}
+    clock = Clock(); clock.t = 9*86400
+    t = Transport(clock, [Labeler(A, 3, cts=cts.get)]); enroll(store, A)
+    store.rotate('2026-10-17')
+    result = run(store, t, clock)[0]['results'][0]
+    assert (result['rows'], result['pre_epoch_skipped'], result['late_skipped']) == (1, 1, 1)
+    row = status(store, A)
+    assert (row['pre_epoch_skipped'], row['late_skipped'], row['accepted_rows']) == (1, 1, 1)
+    assert store.collector_bootstrap_summary()['late_skipped'] == 1
+
+
+class Rejecting:
+    def __init__(self, clock, status):
+        self.clock, self.status, self.calls = clock, status, 0
+
+    def request(self, operation, params, max_bytes, timeout_seconds):
+        from labelwatch.recent_collector import Refused
+        self.calls += 1; self.clock.t += .01
+        raise Refused(f'provider status {self.status}')
+
+
+@pytest.mark.parametrize('code,refused', [(404, True), (401, True), (503, False)])
+def test_deterministic_provider_rejections_are_count_bounded(store, code, refused):
+    clock = Clock(); t = Rejecting(clock, code); enroll(store, A)
+    for _ in range(12):
+        run(store, t, clock); clock.t += 900
+    row = status(store, A)
+    if refused:
+        assert t.calls == 6 and row['bootstrap'] == 'refused'
+        assert row['bootstrap_reason'] == f'bootstrap_refused:provider_rejects:{code}'
+    else:
+        assert t.calls == 12 and row['bootstrap'] == 'unstarted' and row['provider_rejects'] == 0
+
+
+def test_resolved_endpoint_is_persisted_so_each_request_is_one_get(store):
+    import httpx
+    from labelwatch.recent_collector import HTTPTransport
+    hosts = []
+    def handler(request):
+        hosts.append(request.url.host)
+        if request.url.host == 'plc.directory':
+            return httpx.Response(200, json={'id': A, 'service': [{'id': '#atproto_labeler', 'serviceEndpoint': 'https://labeler.test'}]})
+        return httpx.Response(200, json={'labels': []})
+    store.remember_sources([{'did': A, 'endpoint': None}])
+    clock = Clock()
+    with HTTPTransport(httpx.MockTransport(handler)) as transport:
+        for _ in range(3):
+            Collector(store, transport, monotonic=clock.monotonic, now=clock.now).tick(); clock.t += 31
+    assert hosts == ['plc.directory', 'labeler.test', 'labeler.test', 'labeler.test']
+    assert store.collector_sources(10) == [{'did': A, 'endpoint': 'https://labeler.test'}]
+    clock.t += 86400          # daily re-resolution
+    store.rotate('2026-10-09')
+    with HTTPTransport(httpx.MockTransport(handler)) as transport:
+        Collector(store, transport, monotonic=clock.monotonic, now=clock.now).tick()
+    assert hosts[-2:] == ['plc.directory', 'labeler.test']
+
+
+def test_overlapping_cursor_pages_mark_order_unverified_with_evidence(store):
+    class Overlap(Labeler):
+        def query(self, cursor, limit):
+            # fran.pw-like: the page after a returned cursor repeats rows already served.
+            body = super().query(None if cursor is None else str(max(0, int(cursor)-3)), limit)
+            return body if cursor is None or int(body.get('cursor') or 0) > int(cursor) else {'labels': []}
+    clock = Clock(); t = Transport(clock, [Overlap(A, 200, recent=200, growth=5)]); enroll(store, A)
+    run(store, t, clock, ticks=3)
+    row = status(store, A)
+    assert row['cursor_order_unverified'] == 1 and json.loads(row['cursor_order_evidence'])['overlap'] == 3
+    summary = store.collector_bootstrap_summary()
+    assert summary['cursor_order_unverified'] == 1 and summary['coverage'] == 'unknown'
+    assert row['accepted_rows'] >= 200 and row['bootstrap'] == 'established'   # rows still accepted, never refused
+
+
+def test_v6_store_refused_without_conversion(store):
+    from storage import connect as sconnect, db as sdb
+    with sconnect(store.state) as c:
+        sdb.set_meta(c, 'q:recent_version', '6')
+    with pytest.raises(RuntimeError, match='recent schema v7 required; no implicit conversion'):
+        store.collector_sources(10)

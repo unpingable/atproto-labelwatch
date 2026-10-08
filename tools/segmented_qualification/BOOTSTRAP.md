@@ -24,7 +24,12 @@ were unreachable (TLS alert, timeout, 404, 302) or required auth (401).
 * Cursor: decimal integer (row id) on every responding labeler. Malformed cursor:
   400 InvalidRequest on both implementations. No opaque cursor was observed.
 * Order: on every non-empty page, the returned cursor was greater than the request
-  cursor (the last row id). The id namespace is monotone.
+  cursor. Verified id-ordered on mod.bsky.app and skyware samples (review r2: 31
+  mid-history mod.bsky.app cursors, disjoint pages, returned minus request 50-61).
+  NOT id-ordered on ozone.fran.pw and labeler.urbanism.plus (review r2, 2026-10-08:
+  fran.pw 1200 -> 8321 but 2000 -> 5089; pages at 1200 and 2000 share 43 of 50 rows;
+  following the chain from 1200 to the head never returned 6 rows of the page at
+  2000). Labels carry no id, so per-page id checks are impossible; see "Order".
 * `cts` is NOT a monotone key. Ozone renders current label state for old ids:
   fran.pw and urbanism.plus pages 1-2 were out of `cts` order and repeated rows across
   pages. Near-head pages were monotone. So `cts` monotonicity is not an admission
@@ -121,6 +126,38 @@ rule; none exists yet.
 * `recent_collect.py` exits 0 when the round ran (per-source refusals are listed in
   `collection.refused_sources`), and 1 only when the round was refused (store hold,
   deadline before any attempt, store open/reserve refusal).
+
+## Review r2 rulings (2026-10-08)
+
+* Order: a page reached by following the previous page's cursor that repeats rows
+  already served (tail or custody duplicates) sets `cursor_order_unverified=1` with
+  first-seen `cursor_order_evidence` {request, previous_request, overlap, rows, at}.
+  Rows are still accepted; the source is never refused for this, but its coverage is
+  reported `unknown` and no continuity is claimed. Bisection still relies on
+  `id > x` filtering: for such providers only the head position is trusted. A provider
+  that re-renders one label identity at a new id (Ozone current-state) can raise the
+  flag falsely; the error is in the conservative direction.
+* Post-establishment history: 16 consecutive full pages whose rows were all pre-epoch
+  or late re-arm probing from the current position (`boot_lo`, probe budget applies);
+  with the budget spent or a non-numeric position the source is
+  `bootstrap_refused:premature_head`.
+* A row without `cts` is skipped and counted in `undated_skipped`; the page is
+  accepted. A source with `undated_skipped > 0` and `accepted_rows = 0` is
+  `undated_only` and reported as coverage `unknown`.
+* Late allowance at acceptance time: a row is accepted only if its source time is at
+  least max(acquisition start - 48 h, acceptance - 48 h). Older than the epoch floor:
+  `pre_epoch_skipped`; inside the epoch but older than acceptance - 48 h:
+  `late_skipped`.
+* Endpoints: a transport-resolved endpoint is persisted (`endpoint_resolved_at`) and
+  re-resolved after 24 h; each probe or page is then 1 GET instead of 2. One HTTP client
+  is reused per invocation. A changed resolved endpoint restarts bootstrap for that
+  source (different provider namespace). Configured endpoints are not replaced.
+* Deterministic provider rejections (HTTP 400/401/403/404/410, attribution mismatch)
+  on 6 consecutive attempts refuse the source as
+  `bootstrap_refused:provider_rejects:<status>`; transient errors (5xx, timeouts, TLS)
+  reset the count and keep the backoff.
+* Schema `q:recent_version` = 7; a v6 store is refused ("recent schema v7 required; no
+  implicit conversion"). Probe bound: 68 proven, 72 enforced by the store.
 
 ## Unknown / not guaranteed
 

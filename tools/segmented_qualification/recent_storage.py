@@ -16,7 +16,11 @@ from storage import Store, owned, connect, lock, db, custody, ingest, sha, syncd
 
 # Bounded head establishment (BOOTSTRAP.md). A cursorless new-epoch source
 # probes numeric provider cursors; it never traverses history page by page.
-BOOTSTRAP_POLICY={'total_probes':72,'cursor_max':2**53}
+# total_probes is the store cap (72); the collector's proven bound is 68
+# (1 + ceil(53/4) gallop + 53 bisection steps). history_pages caps consecutive
+# full all-skipped pages after establishment; reject_attempts caps consecutive
+# deterministic provider rejections; endpoint_seconds re-resolves endpoints.
+BOOTSTRAP_POLICY={'total_probes':72,'cursor_max':2**53,'history_pages':16,'reject_attempts':6,'endpoint_seconds':86400}
 BOOTSTRAP_PHASES=('unstarted','probing','established','refused')
 SCHEDULER_POLICY={'warm_seconds':1,'quiet_seconds':30,'failure_base_seconds':30,'failure_max_seconds':900,'failure_counter_max':6,'hot_streak_max':4}
 _UNSET = object()
@@ -94,9 +98,16 @@ class RecentStore(Store):
                 boot_lo TEXT,boot_hi TEXT,boot_cursor TEXT,boot_started TEXT,boot_at TEXT,boot_reason TEXT,
                 pre_epoch_skipped INTEGER NOT NULL DEFAULT 0 CHECK(pre_epoch_skipped>=0),
                 undated_skipped INTEGER NOT NULL DEFAULT 0 CHECK(undated_skipped>=0),
-                unavailable_since TEXT,last_failure_at TEXT,last_failure_reason TEXT CHECK(length(last_failure_reason)<=160));
+                unavailable_since TEXT,last_failure_at TEXT,last_failure_reason TEXT CHECK(length(last_failure_reason)<=160),
+                late_skipped INTEGER NOT NULL DEFAULT 0 CHECK(late_skipped>=0),
+                accepted_rows INTEGER NOT NULL DEFAULT 0 CHECK(accepted_rows>=0),
+                history_streak INTEGER NOT NULL DEFAULT 0 CHECK(history_streak BETWEEN 0 AND 16),
+                cursor_order_unverified INTEGER NOT NULL DEFAULT 0 CHECK(cursor_order_unverified IN (0,1)),
+                cursor_order_evidence TEXT CHECK(length(cursor_order_evidence)<=1024),
+                provider_rejects INTEGER NOT NULL DEFAULT 0 CHECK(provider_rejects BETWEEN 0 AND 6),
+                endpoint_resolved_at TEXT);
             ''')
-            for key, value in {'version':'6','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
+            for key, value in {'version':'7','days':'30','start':iso(stamp.replace(hour=0,minute=0,second=0,microsecond=0)-dt.timedelta(days=29)),
                                'end':iso(stamp),'generation':'0','clock':iso(stamp),'events':'0'}.items():
                 db.set_meta(c, 'q:recent_'+key, value)
             db.set_meta(c,'q:recent_start',iso(stamp-dt.timedelta(days=30)))
@@ -116,8 +127,8 @@ class RecentStore(Store):
         return cls(root)
 
     def require(self, c):
-        if db.get_meta(c,'q:recent_version') != '6':
-            raise RuntimeError('recent schema v6 enrollment required; old evidence preserved, no implicit conversion')
+        if db.get_meta(c,'q:recent_version') != '7':
+            raise RuntimeError('recent schema v7 required; no implicit conversion; old evidence preserved')
         self.acquisition(c)
 
     @staticmethod
@@ -270,12 +281,13 @@ class RecentStore(Store):
                 self.caps(c,scan=False);c.commit();return token
             finally:c.close()
 
-    def finish_source_attempt(self,did,attempt_token,observed_at=None,failure=True,reason=None):
+    def finish_source_attempt(self,did,attempt_token,observed_at=None,failure=True,reason=None,rejected=None):
         """A single source's failure is per-source state, never a store-wide gap.
 
         unavailable_since keeps the first failed attempt start until a success.
         """
         if reason is not None and (not isinstance(reason,str) or len(reason)>160):raise ValueError('failure reason bound')
+        if rejected is not None and (not isinstance(rejected,str) or len(rejected)>32):raise ValueError('rejection bound')
         with lock(self.root):
             c=connect(self.state)
             try:
@@ -291,6 +303,13 @@ class RecentStore(Store):
                 if failure:
                     c.execute('UPDATE q_recent_sources SET unavailable_since=COALESCE(unavailable_since,?),last_failure_at=?,last_failure_reason=? WHERE did=?',
                               (row[1],iso(stamp),reason or 'unspecified',did))
+                    # Deterministic provider rejections are count-bounded (structural refusal);
+                    # transient failures keep the backoff and reset the count.
+                    rejects=c.execute('SELECT provider_rejects FROM q_recent_sources WHERE did=?',(did,)).fetchone()[0]
+                    rejects=min(BOOTSTRAP_POLICY['reject_attempts'],rejects+1) if rejected else 0
+                    c.execute('UPDATE q_recent_sources SET provider_rejects=? WHERE did=?',(rejects,did))
+                    if rejected and rejects>=BOOTSTRAP_POLICY['reject_attempts']:
+                        c.execute("UPDATE q_recent_sources SET boot_phase='refused',boot_reason=? WHERE did=?",('bootstrap_refused:provider_rejects:'+rejected,did))
                 c.commit()
             finally:c.close()
 
@@ -311,7 +330,9 @@ class RecentStore(Store):
             return [dict(r) for r in c.execute('''SELECT did,boot_phase AS bootstrap,boot_probes AS bootstrap_probes,
                 boot_started AS bootstrap_started_at,boot_at AS bootstrap_established_at,boot_cursor AS bootstrap_cursor,boot_reason AS bootstrap_reason,
                 pre_epoch_skipped,undated_skipped,provider_cursor IS NOT NULL AS positioned,
-                unavailable_since,last_failure_at,last_failure_reason,failures
+                unavailable_since,last_failure_at,last_failure_reason,failures,
+                late_skipped,accepted_rows,cursor_order_unverified,cursor_order_evidence,provider_rejects,
+                undated_skipped>0 AND accepted_rows=0 AS undated_only,endpoint_resolved_at
                 FROM q_recent_sources ORDER BY did LIMIT ?''',(limit,))]
         finally:c.close()
 
@@ -333,10 +354,35 @@ class RecentStore(Store):
         c=connect(self.state,readonly=True)
         try:
             self.require(c)
-            row=c.execute('SELECT provider_cursor,boot_phase,boot_probes,boot_lo,boot_hi FROM q_recent_sources WHERE did=?',(did,)).fetchone()
+            row=c.execute('SELECT provider_cursor,boot_phase,boot_probes,boot_lo,boot_hi,endpoint_resolved_at FROM q_recent_sources WHERE did=?',(did,)).fetchone()
             if row is None:raise RuntimeError('source is not enrolled')
-            return {'cursor':row[0],'phase':row[1],'probes':row[2],'lo':row[3],'hi':row[4]}
+            return {'cursor':row[0],'phase':row[1],'probes':row[2],'lo':row[3],'hi':row[4],'endpoint_resolved_at':row[5]}
         finally:c.close()
+
+    def collector_resolved_endpoint(self,did,endpoint,resolved_at):
+        """Persist a transport-resolved endpoint (1 GET per request afterwards).
+
+        A configured endpoint (never resolved here) is not replaced. A changed
+        resolved endpoint is a different provider namespace: the source restarts
+        bootstrap from that provider's head (never continues an old cursor).
+        """
+        if not isinstance(endpoint,str) or len(endpoint.encode())>2048 or not endpoint.startswith('https://'):raise ValueError('invalid source endpoint')
+        stamp=iso(clock(resolved_at))
+        with lock(self.root):
+            c=connect(self.state)
+            try:
+                self.recover(c);c.execute('BEGIN IMMEDIATE')
+                row=c.execute('SELECT endpoint,endpoint_resolved_at FROM q_recent_sources WHERE did=?',(did,)).fetchone()
+                if row is None:raise RuntimeError('source is not enrolled')
+                if row[0] is not None and row[1] is None:c.rollback();return {'changed':False,'configured':True}
+                changed=row[0] is not None and row[0]!=endpoint
+                c.execute('UPDATE q_recent_sources SET endpoint=?,endpoint_resolved_at=? WHERE did=?',(endpoint,stamp,did))
+                if changed:
+                    c.execute("""UPDATE q_recent_sources SET provider_cursor=NULL,last_page=NULL,boot_phase='unstarted',boot_probes=0,
+                        boot_lo=NULL,boot_hi=NULL,boot_cursor=NULL,boot_at=NULL,boot_reason=NULL,history_streak=0,
+                        last_failure_reason='endpoint_changed' WHERE did=? AND boot_phase!='refused'""",(did,))
+                c.commit();return {'changed':changed}
+            finally:c.close()
 
     def collector_bootstrap_summary(self):
         """Per-source acquisition disclosure; established is not completeness."""
@@ -347,14 +393,22 @@ class RecentStore(Store):
             for phase,n in c.execute('SELECT boot_phase,COUNT(*) FROM q_recent_sources GROUP BY boot_phase'):phases[phase]=n
             # A positioned source predating this bootstrap is collected forward as before.
             positioned=c.execute("SELECT COUNT(*) FROM q_recent_sources WHERE boot_phase IN ('unstarted','probing') AND provider_cursor IS NOT NULL").fetchone()[0]
-            skipped=c.execute('SELECT COALESCE(SUM(pre_epoch_skipped),0),COALESCE(SUM(undated_skipped),0) FROM q_recent_sources').fetchone()
+            skipped=c.execute('SELECT COALESCE(SUM(pre_epoch_skipped),0),COALESCE(SUM(undated_skipped),0),COALESCE(SUM(late_skipped),0) FROM q_recent_sources').fetchone()
+            unordered=[{'did':r[0],'evidence':json.loads(r[1]) if r[1] else None} for r in c.execute(
+                'SELECT did,cursor_order_evidence FROM q_recent_sources WHERE cursor_order_unverified=1 ORDER BY did LIMIT 2048')]
+            undated_only=[r[0] for r in c.execute('SELECT did FROM q_recent_sources WHERE undated_skipped>0 AND accepted_rows=0 ORDER BY did LIMIT 2048')]
+            rejecting=[{'did':r[0],'provider_rejects':r[1]} for r in c.execute('SELECT did,provider_rejects FROM q_recent_sources WHERE provider_rejects>0 ORDER BY did LIMIT 2048')]
             refused=[{'did':r[0],'reason':r[1]} for r in c.execute("SELECT did,boot_reason FROM q_recent_sources WHERE boot_phase='refused' ORDER BY did LIMIT 2048")]
             unavailable=[{'did':r[0],'since':r[1],'last_failure_at':r[2],'reason':r[3]} for r in c.execute(
                 'SELECT did,unavailable_since,last_failure_at,last_failure_reason FROM q_recent_sources WHERE unavailable_since IS NOT NULL ORDER BY did LIMIT 2048')]
             return {**phases,'positioned_without_bootstrap':positioned,'pre_epoch_skipped':skipped[0],
                     'undated_skipped':skipped[1],'refused_sources':refused,
-                    'unavailable':len(unavailable),'unavailable_sources':unavailable,
-                    'coverage':'unknown' if phases['unstarted']+phases['probing']+phases['refused']-positioned>0 or unavailable else 'established_sources_only'}
+                    'unavailable':len(unavailable),'unavailable_sources':unavailable,'late_skipped':skipped[2],
+                    'cursor_order_unverified':len(unordered),'cursor_order_unverified_sources':unordered,
+                    'undated_only':len(undated_only),'undated_only_sources':undated_only,
+                    'provider_rejects':len(rejecting),'provider_rejects_sources':rejecting,
+                    'coverage':'unknown' if phases['unstarted']+phases['probing']+phases['refused']-positioned>0 or unavailable
+                               or unordered or undated_only else 'established_sources_only'}
         finally:c.close()
 
     def bootstrap_step(self,did,attempt_token,observed_at,expect,phase,lo=None,hi=None,established=None,reason=None,finish=True):
@@ -384,7 +438,7 @@ class RecentStore(Store):
                 if probes>BOOTSTRAP_POLICY['total_probes']:raise RuntimeError('bootstrap probe ceiling')
                 if phase=='probing' and probes>=BOOTSTRAP_POLICY['total_probes']:
                     phase,reason='refused','probe_budget_exhausted'
-                c.execute('UPDATE q_recent_sources SET boot_phase=?,boot_probes=?,boot_lo=?,boot_hi=?,boot_started=COALESCE(boot_started,?),unavailable_since=NULL WHERE did=?',
+                c.execute('UPDATE q_recent_sources SET boot_phase=?,boot_probes=?,boot_lo=?,boot_hi=?,boot_started=COALESCE(boot_started,?),unavailable_since=NULL,provider_rejects=0,history_streak=0 WHERE did=?',
                           (phase,probes,lo,hi,stamp,did))
                 if phase=='established':
                     c.execute('UPDATE q_recent_sources SET provider_cursor=?,boot_cursor=?,boot_at=? WHERE did=?',(established,established,stamp,did))
@@ -443,7 +497,7 @@ class RecentStore(Store):
         due=iso(stamp+dt.timedelta(seconds=delay))
         c.execute('UPDATE q_recent_sources SET hot=?,next_due=?,failures=0 WHERE did=?',(hot,due,source))
 
-    def accept_page(self,rows,*,source,request_cursor,next_cursor,observed_at,death=None,attempt_token=None,skipped=None):
+    def accept_page(self,rows,*,source,request_cursor,next_cursor,observed_at,death=None,attempt_token=None,skipped=None,history=False):
         """Opaque provider continuation CAS; no manufactured upstream cursor.
 
         The last bounded page remembers its exact hashes after window expiry,
@@ -451,18 +505,23 @@ class RecentStore(Store):
         This is not unbounded replay identity or proof of stream continuity.
         skipped={'pre_epoch':n,'undated':m} counts rows the collector refused to
         accept as source-dated before the epoch floor (or undatable); they are a
-        disclosure, never observations and never a coverage gap.
+        disclosure, never observations and never a coverage gap. 'late' counts
+        rows inside the epoch but older than acceptance minus the late allowance.
+        history=True marks a full page whose rows were all skipped as too old;
+        BOOTSTRAP_POLICY.history_pages consecutive ones re-probe the head.
+        Overlap on a cursor-following page (rows already seen) marks the source
+        cursor_order_unverified: rows are still accepted, continuity is not claimed.
         """
         skipped=dict(skipped or {})
-        if set(skipped)-{'pre_epoch','undated'} or any(type(v) is not int or not 0<=v<=100 for v in skipped.values()):raise ValueError('skipped row accounting')
-        pre_epoch,undated=skipped.get('pre_epoch',0),skipped.get('undated',0)
-        if len(rows)+pre_epoch+undated>100:raise RuntimeError('collector page ceiling')
+        if set(skipped)-{'pre_epoch','undated','late'} or any(type(v) is not int or not 0<=v<=100 for v in skipped.values()):raise ValueError('skipped row accounting')
+        pre_epoch,undated,late=skipped.get('pre_epoch',0),skipped.get('undated',0),skipped.get('late',0)
+        if len(rows)+pre_epoch+undated+late>100:raise RuntimeError('collector page ceiling')
         for value in (request_cursor,next_cursor):
             if value is not None and (not isinstance(value,str) or len(value.encode())>4096):raise ValueError('opaque cursor bound')
         self.validate_rows(rows);stamp=clock(observed_at);self.check_local()
         page={'request':request_cursor,'next':next_cursor,'hashes':[r[9] for r in rows],
               'payloads':[custody.payload_digest(r) for r in rows]}
-        if pre_epoch or undated:page['skipped']=[pre_epoch,undated]
+        if pre_epoch or undated or late:page['skipped']=[pre_epoch,undated,late]
         with lock(self.root):
             c=connect(self.state)
             try:
@@ -485,8 +544,23 @@ class RecentStore(Store):
                 fresh=[row for row in rows if row[9] not in tail]
                 accepted,duplicates=self._stage_observations(c,fresh,stamp,death)
                 position=next_cursor if next_cursor is not None else request_cursor
-                self._schedule_success(c,source,bool(rows) or bool(pre_epoch+undated),request_cursor,next_cursor,stamp)
-                c.execute('UPDATE q_recent_sources SET provider_cursor=?,last_page=?,last_observed=?,attempt_token=NULL,attempt_start=NULL,pre_epoch_skipped=pre_epoch_skipped+?,undated_skipped=undated_skipped+?,unavailable_since=NULL WHERE did=?',(position,json.dumps(page,sort_keys=True),iso(stamp),pre_epoch,undated,source))
+                self._schedule_success(c,source,bool(rows) or bool(pre_epoch+undated+late),request_cursor,next_cursor,stamp)
+                c.execute('UPDATE q_recent_sources SET provider_cursor=?,last_page=?,last_observed=?,attempt_token=NULL,attempt_start=NULL,pre_epoch_skipped=pre_epoch_skipped+?,undated_skipped=undated_skipped+?,late_skipped=late_skipped+?,accepted_rows=accepted_rows+?,unavailable_since=NULL,provider_rejects=0 WHERE did=?',(position,json.dumps(page,sort_keys=True),iso(stamp),pre_epoch,undated,late,len(accepted),source))
+                followed=previous is not None and previous.get('next') is not None and previous['next']==request_cursor and previous['next']!=previous['request']
+                overlap=len(rows)-len(fresh)+len(duplicates)
+                if followed and overlap:
+                    evidence=json.dumps({'request':request_cursor,'previous_request':previous['request'],'overlap':overlap,'rows':len(rows),'at':iso(stamp)},sort_keys=True)
+                    c.execute('UPDATE q_recent_sources SET cursor_order_unverified=1,cursor_order_evidence=COALESCE(cursor_order_evidence,?) WHERE did=?',(evidence[:1024],source))
+                streak=c.execute('SELECT history_streak,boot_probes FROM q_recent_sources WHERE did=?',(source,)).fetchone()
+                streak,probes=(streak[0]+1 if history else 0),streak[1]
+                if streak>=BOOTSTRAP_POLICY['history_pages']:
+                    # Premature head: re-probe from here (budget applies) or refuse.
+                    numeric=isinstance(position,str) and position.isdigit() and len(position)<=16 and int(position)<=BOOTSTRAP_POLICY['cursor_max']
+                    if numeric and probes<BOOTSTRAP_POLICY['total_probes']-1:
+                        c.execute("UPDATE q_recent_sources SET provider_cursor=NULL,boot_phase='probing',boot_lo=?,boot_hi=NULL,history_streak=0,hot=0 WHERE did=?",(position,source))
+                    else:
+                        c.execute("UPDATE q_recent_sources SET boot_phase='refused',boot_reason='bootstrap_refused:premature_head',history_streak=0 WHERE did=?",(source,))
+                else:c.execute('UPDATE q_recent_sources SET history_streak=? WHERE did=?',(streak,source))
                 self.caps(c,scan=False)
                 if death:death('before_recent_ingest_commit')
                 c.commit()
