@@ -132,3 +132,20 @@ def test_future_source_time_is_not_accepted_silently(store):
     with sqlite3.connect(store.state) as c:
         accepted = c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]
     assert accepted == 0 or store.collector_bootstrap_summary().get('future_skipped'), accepted
+
+
+def test_busy_source_bootstrap_is_not_starved_by_a_quiet_roster(store):
+    # Round-robin claims give a probing source one slot per pass over the roster, so
+    # time-to-establish scales with roster size x probes; labels issued before
+    # establishment are never collected (coverage starts at boot_at).
+    quiet = [f'did:plc:q{i:023d}'.replace('0', 'a') for i in range(200)]
+    clock = Clock(); big = Labeler(A, 1_000_000, recent=30, growth=3)
+    class Mixed(Transport):
+        def request(self, operation, params, max_bytes, timeout_seconds):
+            if params['did'] != A:
+                self.clock.t += .01
+                return json.dumps({'labels': []}).encode()
+            return super().request(operation, params, max_bytes, timeout_seconds)
+    t = Mixed(clock, [big]); enroll(store, A, *quiet)
+    run(store, t, clock, ticks=40, pages=20)   # 800 attempts; the source needs <= 22 probes
+    assert status(store, A)['bootstrap'] == 'established', status(store, A)
