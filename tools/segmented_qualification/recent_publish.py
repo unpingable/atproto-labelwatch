@@ -3,6 +3,7 @@
 
   PYTHONPATH=src:. python tools/segmented_qualification/recent_publish.py --store PATH --pubdir DIR
   PYTHONPATH=src:. python tools/segmented_qualification/recent_publish.py --pubdir DIR --hold
+  ... --hold-marker /etc/labelwatch-operator-safe-hold --activation-marker /etc/labelwatch-recent-qualified-activation
 
 Reads one admitted RecentStore under the same writer/reader lease order as the
 account provider, releases the writer lease after the state snapshot, and keeps
@@ -184,12 +185,18 @@ def main(argv=None):
     parser.add_argument('--store', type=Path)
     parser.add_argument('--pubdir', type=Path, required=True)
     parser.add_argument('--hold', action='store_true', help='publish an explicit held artifact; the store is not read')
+    parser.add_argument('--hold-marker', type=Path, action='append', default=[],
+                        help='publish the held artifact if this path exists (repeatable)')
+    parser.add_argument('--activation-marker', type=Path, default=None,
+                        help='publish the held artifact unless this path exists')
     parser.add_argument('--now', default=None, help='UTC acceptance clock; defaults to current UTC')
     parser.add_argument('--budget-seconds', type=float, default=120.0)
     args = parser.parse_args(argv)
     now = clock(args.now) if args.now else datetime.now(timezone.utc)
     try:
-        if args.hold:
+        hold = args.hold or any(marker.exists() for marker in args.hold_marker) or (
+            args.activation_marker is not None and not args.activation_marker.exists())
+        if hold:
             envelope = recent_overview.held(now)
         else:
             if args.store is None:

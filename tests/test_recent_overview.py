@@ -167,3 +167,19 @@ def test_maintenance_recovery_pending_refuses(store):
         c.execute("INSERT INTO q_recent_transition VALUES (1,'{}')")
     with pytest.raises(RuntimeError, match='maintenance'):
         recent_publish.read_store(store, NOW)
+
+
+def test_hold_and_activation_markers_publish_held_artifact(tmp_path, monkeypatch, store):
+    publish = recent_overview.publish
+    monkeypatch.setattr(recent_overview, 'publish', lambda d, e: publish(d, e, ancestors=False))
+    pubdir, hold, active = tmp_path / 'pub', tmp_path / 'safe-hold', tmp_path / 'activation'
+    argv = ['--store', str(store.root), '--pubdir', str(pubdir), '--now', NOW.isoformat(),
+            '--hold-marker', str(hold), '--activation-marker', str(active)]
+    assert recent_publish.main(argv) == 0  # not activated: held
+    assert json.loads((pubdir / 'overview.json').read_text())['hold'] is True
+    active.touch()
+    assert recent_publish.main(argv) == 0
+    assert json.loads((pubdir / 'overview.json').read_text())['hold'] is False
+    hold.touch()
+    assert recent_publish.main(argv) == 0
+    assert json.loads((pubdir / 'overview.json').read_text())['hold'] is True
