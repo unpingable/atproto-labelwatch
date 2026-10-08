@@ -42,7 +42,13 @@ def _sources(store):
                                                   'pre_epoch_skipped', 'undated_skipped', 'late_skipped',
                                                   'cursor_order_unverified', 'undated_only', 'provider_rejects',
                                                   'unavailable')}
-    counts['seeded'] = counts['unstarted'] + counts['probing'] + counts['established'] + counts['refused']
+    counts['enrolled'] = counts['unstarted'] + counts['probing'] + counts['established'] + counts['refused']
+    # seeded (init roster) vs discovered: read defensively; unknown until the collector exposes discovered.
+    discovered = summary.get('discovered')
+    if type(discovered) is int and 0 <= discovered <= counts['enrolled']:
+        counts['discovered'], counts['seeded'] = discovered, counts['enrolled'] - discovered
+    else:
+        counts['discovered'] = counts['seeded'] = None
     # Read defensively: newer collector disclosures render when present, unknown otherwise.
     counts['future_skipped'] = int(summary['future_skipped']) if type(summary.get('future_skipped')) is int else None
     counts['coverage'] = summary.get('coverage') or 'unknown'

@@ -26,11 +26,11 @@ MAX_TOP_LABELERS = 20
 OVERVIEW_NAME = "overview.json"
 GAP_REASONS = ("not_observed", "source_unavailable", "ingest_paused", "cursor_reset",
                "maintenance", "warmup", "unknown")
-SOURCE_KEYS = ("seeded", "unstarted", "probing", "established", "refused", "pre_epoch_skipped",
+SOURCE_KEYS = ("enrolled", "unstarted", "probing", "established", "refused", "pre_epoch_skipped",
                "undated_skipped", "late_skipped", "cursor_order_unverified", "undated_only",
                "provider_rejects", "unavailable")
 # Present when the collector exposes it; int or null (unknown).
-OPTIONAL_SOURCE_KEYS = ("future_skipped",)
+OPTIONAL_SOURCE_KEYS = ("future_skipped", "seeded", "discovered")
 COUNT_KEYS = ("events_24h", "events_7d", "events_window", "labelers_active_7d",
               "labelers_active_window")
 TOP_KEYS = {"labeler_did", "count"}

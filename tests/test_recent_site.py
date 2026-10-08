@@ -172,7 +172,23 @@ def test_vendored_fonts_only(store):
 
 def test_health_lists_per_source_status_defensively(store):
     _, h = site(store)
-    health = json.loads(get(h, '/health')[2])['coverage']
+    default = json.loads(get(h, '/health')[2])['coverage']
+    assert 'source_status' not in default
+    health = json.loads(get(h, '/health?full=1')[2])['coverage']
     rows = {row['did']: row for row in health['source_status']}
     assert set(rows) == {A, B, 'did:web:labelerc.example'}
     assert rows[A]['bootstrap'] == 'unstarted' and 'bootstrap_cursor' not in rows[A]
+
+
+def test_health_lists_are_capped_with_totals(store, monkeypatch):
+    mod, h = site(store)
+    many = [{'did': 'did:plc:r%03d' % n, 'reason': 'bootstrap_refused:x'} for n in range(120)]
+    summary = store.collector_bootstrap_summary
+    monkeypatch.setattr(store, 'collector_bootstrap_summary', lambda: {**summary(), 'refused_sources': many})
+    _, h = site(store)
+    default = json.loads(get(h, '/health')[2])['coverage']
+    assert len(default['refused_sources']) == 50 and default['refused_sources_total'] == 120
+    assert default['lists_truncated'] is True and 'source_status' not in default
+    full = json.loads(get(h, '/health?full=1')[2])['coverage']
+    assert len(full['refused_sources']) == 120 and len(full['source_status']) == 3
+    assert get(h, '/health?full=yes')[0] == 409
