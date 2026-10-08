@@ -220,3 +220,20 @@ def test_busy_source_among_400_unreachable_cursorless_establishes_within_ten_rou
     trace = first_day(store, 0.05, 12)
     assert all(r['elapsed'] <= 30+1.3 for r in trace)            # never sleeps past the deadline
     assert trace[-1]['busy'] == 'established', [(r['round'], r['busy_probes']) for r in trace]
+
+
+def test_cursor_jump_is_disclosed_for_a_provider_capping_pages_below_page_rows(store):
+    # cursor_jump only fires when len(page) == Limits.page_rows (100). A provider that
+    # caps pages at 50 (the cap the bootstrap itself learns) never produces a "full"
+    # page in forward collection, so skipped ids are never disclosed.
+    class CappedJumping(Labeler):
+        def query(self, cursor, limit):
+            body = super().query(cursor, min(limit, 50))
+            if limit == 100 and cursor is not None and len(body['labels']) == 50:   # forward collection only
+                body['cursor'] = str(int(cursor)+50*5)
+            return body
+    clock = Clock(); t = Transport(clock, [CappedJumping(A, 10, recent=10, growth=400)]); enroll(store, A)
+    run(store, t, clock, ticks=4)
+    row = status(store, A)
+    assert row['accepted_rows'] >= 100
+    assert row['cursor_order_unverified'] == 1, (row['accepted_rows'], row['cursor_order_evidence'])
