@@ -91,3 +91,31 @@ def test_override_ack_is_bound_to_the_weakened_policy(tmp_path, monkeypatch):
     monkeypatch.setenv(storage.RESERVES_ENV, json.dumps([{'mount': '/', 'bytes': 1}]))
     with pytest.raises(RuntimeError, match='weaker'):
         RecentStore(store.root)  # an unreviewed further weakening
+
+
+def test_full_window_button_works_with_a_running_clock(tmp_path, monkeypatch):
+    """interval() reads now() and create() reads now() again later, so the
+    30-day start is always microseconds before create()'s floor: the landing's
+    'Full 30-day window' lookup answers 409 out_of_window on a real clock."""
+    import recent_product
+    from recent_provider import RecentProvider
+    from labelwatch.recent_observations import RecentObservations, Limits
+    root = tmp_path / 'runtime'; root.mkdir()
+    monkeypatch.setattr(storage, 'ROOT', root)
+    started = datetime.now(timezone.utc) - timedelta(seconds=5)
+    RecentStore.create(root / 'store', started.isoformat())
+    product = RecentObservations(RecentProvider(root / 'store'), Limits(days=30))
+    request = recent_product.handler(product, status=object()).__new__(recent_product.handler(product, status=object()))
+    rendered, is_html = request.dispatch('/account', {'did': 'did:plc:ar7c4by46qjdydhdevvrndac', 'days': '30'})
+    assert is_html
+
+
+def test_init_refuses_an_acceptance_clock_far_from_wall_time(tmp_path, monkeypatch):
+    """recent_init --now is unbounded: a backdated epoch start makes the overview
+    claim the whole 30-day window was observed (no warm-up) on day one."""
+    import recent_init
+    root = tmp_path / 'runtime'; root.mkdir()
+    monkeypatch.setattr(storage, 'ROOT', root)
+    backdated = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+    with pytest.raises((RuntimeError, ValueError)):
+        recent_init.init(root / 'store', backdated)
