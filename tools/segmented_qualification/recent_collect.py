@@ -7,7 +7,9 @@ does not create a store, rotate owners or enable a service. Existing RecentStore
 import argparse
 import json
 
-from labelwatch.recent_collector import Collector, HTTPTransport
+from labelwatch.recent_collector import Collector, HTTPTransport, STORE_HOLD
+
+HOLD_EXIT = 75
 from recent_storage import RecentStore
 
 
@@ -20,8 +22,9 @@ def main(argv=None):
     if not args.network:
         parser.error('network collection requires explicit --network')
     # Exit 0 when the round ran, even if single sources were refused (they are
-    # per-source state, listed in the JSON). Exit 1 only for whole-round failure:
-    # the store refused (open, reserve, maintenance hold) or nothing was attempted.
+    # per-source state, listed in the JSON). Exit 75 for the daily owner hold.
+    # Exit 1 for whole-round failure: store refused (open, reserve, recovery) or
+    # nothing was attempted before the deadline.
     try:
         with HTTPTransport() as transport:
             collector=Collector(RecentStore(args.store),transport)
@@ -30,7 +33,11 @@ def main(argv=None):
         print(json.dumps({'round':{'status':'refused','reason':(str(exc) or type(exc).__name__)[:160]}},sort_keys=True),flush=True)
         return 1
     print(json.dumps(result,sort_keys=True),flush=True)
-    return 1 if result['collection'].get('round',{}).get('status')=='refused' else 0
+    round_=result['collection'].get('round',{})
+    if round_.get('status')!='refused':return 0
+    # The expected 00:00 UTC owner hold is not a failure: 75 (EX_TEMPFAIL) is
+    # listed in SuccessExitStatus of the unit; every other refusal stays 1.
+    return HOLD_EXIT if round_.get('store_hold')==STORE_HOLD else 1
 
 
 if __name__ == '__main__':
