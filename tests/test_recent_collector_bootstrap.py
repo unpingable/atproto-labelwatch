@@ -37,6 +37,10 @@ class Clock:
     def now(self):
         return NOW+timedelta(seconds=self.t)
 
+    def sleep(self, seconds):
+        # Virtual wait for per-source spacing inside a round's deadline.
+        self.t += seconds
+
 
 class Labeler:
     """History of `size` labels; ids 1..size; old ids are source-dated long before the epoch."""
@@ -92,7 +96,8 @@ def enroll(store, *dids):
 def run(store, transport, clock, ticks=1, **limits):
     out = []
     for _ in range(ticks):
-        out.append(Collector(store, transport, limits=Limits(**limits), monotonic=clock.monotonic, now=clock.now).tick())
+        out.append(Collector(store, transport, limits=Limits(**limits), monotonic=clock.monotonic, now=clock.now,
+                             sleep=clock.sleep).tick())
         clock.t += 31        # past the quiet interval
     return out
 
@@ -242,7 +247,7 @@ def test_pre_epoch_rows_skipped_counted_and_observed_time_is_acceptance(store):
         observed = {r[0] for r in c.execute('SELECT observed_us FROM q_recent_seen')}
     assert len(observed) == 1
     stamp = observed.pop()
-    assert micros(NOW) < stamp <= micros(NOW+timedelta(seconds=1))   # acceptance clock, not cts
+    assert micros(NOW) < stamp <= micros(NOW+timedelta(seconds=5))   # acceptance clock (after spaced probes), not cts
     assert store.collector_bootstrap_summary()['pre_epoch_skipped'] == 2
 
 
@@ -364,7 +369,7 @@ def test_collect_command_exit_reflects_whole_round_only(store, monkeypatch, caps
         def __enter__(self): return self.inner
         def __exit__(self, *exc): return False
     monkeypatch.setattr(recent_collect, 'HTTPTransport', Fixed)
-    monkeypatch.setattr(recent_collect, 'Collector', lambda s, tr: Collector(s, tr, monotonic=clock.monotonic, now=clock.now))
+    monkeypatch.setattr(recent_collect, 'Collector', lambda s, tr, **kw: Collector(s, tr, monotonic=clock.monotonic, now=clock.now))
     assert recent_collect.main(['--store', str(store.root), '--network']) == 0
     out = json.loads(capsys.readouterr().out)
     assert out['collection']['refused_sources'] == [A]
@@ -447,7 +452,7 @@ def test_overlapping_cursor_pages_mark_order_unverified_with_evidence(store):
     assert row['cursor_order_unverified'] == 1 and json.loads(row['cursor_order_evidence'])['overlap'] == 3
     summary = store.collector_bootstrap_summary()
     assert summary['cursor_order_unverified'] == 1 and summary['coverage'] == 'unknown'
-    assert row['accepted_rows'] >= 200 and row['bootstrap'] == 'established'   # rows still accepted, never refused
+    assert row['accepted_rows'] >= 100 and row['bootstrap'] == 'established'   # rows still accepted, never refused
 
 
 def test_v6_store_refused_without_conversion(store):
@@ -504,3 +509,81 @@ def test_future_rows_counted_and_established_at_exposed(store):
     summary = store.collector_bootstrap_summary()
     assert summary['future_skipped'] == 1
     assert summary['established_at']['earliest'] == row['established_at'] is not None
+
+
+# C1 live-run addendum (D1, D2, D4, D5, seeded/discovered).
+
+class Latent(Transport):
+    """~45 attempts per 10 s as measured live: 0.22 s per request; quiet sources empty."""
+    def request(self, operation, params, max_bytes, timeout_seconds):
+        self.clock.t += .21
+        if params['did'] not in self.labelers:
+            self.calls.append((params['did'], params['cursor'], params['limit']))
+            self.clock.t += .01
+            return json.dumps({'labels': []}).encode()
+        return super().request(operation, params, max_bytes, timeout_seconds)
+
+
+def test_busy_source_establishes_within_ten_30s_rounds_among_150_probing(store):
+    quiet = [f'did:plc:q{i:03d}' for i in range(149)]
+    clock = Clock(); big = Labeler(A, 1_000_000, recent=30, growth=1)
+    t = Latent(clock, [big]); enroll(store, A, *quiet)
+    for round_ in range(1, 11):
+        run(store, t, clock, seconds=30)
+        clock.t += 90          # 2-minute cadence
+        if status(store, A)['bootstrap'] == 'established':
+            break
+    assert status(store, A)['bootstrap'] == 'established', status(store, A)
+    assert round_ <= 10 and len(probes(t)) and status(store, A)['bootstrap_probes'] <= 68
+
+
+def test_requests_to_one_source_are_spaced_at_least_one_second(store):
+    clock = Clock(); lab = Labeler(A, 30, recent=30, growth=150)
+    times = []
+    class Timed(Transport):
+        def request(self, operation, params, max_bytes, timeout_seconds):
+            times.append(self.clock.t)
+            return super().request(operation, params, max_bytes, timeout_seconds)
+    t = Timed(clock, [lab]); enroll(store, A)
+    run(store, t, clock, ticks=2)
+    assert len(times) >= 8
+    assert min(b-a for a, b in zip(times, times[1:]) if b-a < 30) >= 1 - 1e-6
+
+
+def test_killed_round_attempt_is_swept_and_disclosed_once(store):
+    clock = Clock(); enroll(store, A, B)
+    for did in (A, B):
+        store.begin_source_attempt(did, clock.now().isoformat())   # process killed mid-request
+    assert store.collector_bootstrap_summary()['pending_attempts'] == 2
+    clock.t = 120
+    result = run(store, Transport(clock, [Labeler(A, 0), Labeler(B, 0)]), clock)[0]
+    assert result['round']['lost_attempts'] == 2
+    with sqlite3.connect(store.state) as c:
+        gaps = list(c.execute("SELECT start,end FROM q_recent_gaps WHERE reason='unknown'"))
+    assert gaps == [('2026-10-08T12:00:00.000000Z', '2026-10-08T12:02:00.000000Z')]
+    assert store.collector_bootstrap_summary()['pending_attempts'] == 0
+
+
+def test_resolution_persists_even_when_labels_request_fails(store):
+    import httpx
+    from labelwatch.recent_collector import HTTPTransport
+    hosts = []
+    def handler(request):
+        hosts.append(request.url.host)
+        if request.url.host == 'plc.directory':
+            return httpx.Response(200, json={'id': A, 'service': [{'id': '#atproto_labeler', 'serviceEndpoint': 'https://labeler.test'}]})
+        return httpx.Response(503)
+    store.remember_sources([{'did': A, 'endpoint': None}])
+    clock = Clock()
+    with HTTPTransport(httpx.MockTransport(handler)) as transport:
+        for _ in range(3):
+            Collector(store, transport, monotonic=clock.monotonic, now=clock.now).tick(); clock.t += 1000
+    assert hosts.count('plc.directory') == 1 and hosts.count('labeler.test') == 3
+    assert store.collector_sources(10) == [{'did': A, 'endpoint': 'https://labeler.test'}]
+
+
+def test_seeded_and_discovered_are_counted_apart(store):
+    store.remember_sources([{'did': A, 'endpoint': None}])
+    store.remember_sources([{'did': B, 'endpoint': None}, {'did': A, 'endpoint': None}], request_cursor=None, next_cursor=None)
+    summary = store.collector_bootstrap_summary()
+    assert (summary['seeded'], summary['discovered']) == (1, 1)
