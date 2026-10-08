@@ -159,6 +159,43 @@ rule; none exists yet.
 * Schema `q:recent_version` = 7; a v6 store is refused ("recent schema v7 required; no
   implicit conversion"). Probe bound: 68 proven, 72 enforced by the store.
 
+## Review r3 rulings (2026-10-08)
+
+* Endpoint custody: the transport reports its own DID resolution on a side channel
+  (`HTTPTransport.resolutions`), cleared before every request; a `_resolved_endpoint`
+  key in a provider body is stripped and ignored. A page body never changes the
+  endpoint, the bootstrap state or the probe budget.
+* Short pages are confirmed: a probe page with fewer rows than requested and a numeric
+  continuation is the head only if the probe at that continuation returns fewer
+  rows. If it returns at least as many (and at least 10), the provider caps pages:
+  that size becomes the full-page size for the rest of the search. Cost: at most
+  one extra probe per establishment (still under the 72 store cap).
+* History cap: after establishment, 16 consecutive pages of any size with zero
+  accepted rows (pre-epoch, late, undated or future) and an advancing cursor re-probe
+  from the current position, or refuse `premature_head`. Only a page with accepted
+  rows resets the count.
+* `cursor_jump` (disclosure heuristic, not a loss detector): on a full page with
+  numeric cursors, `next - request > 2 x rows` sets `cursor_order_unverified` with
+  evidence kind `cursor_jump` (overlap evidence is kind `overlap`). Verified
+  id-ordered providers advance about one id per row (mod.bsky.app 50-61 per 50 rows,
+  skyware 50 per 50); urbanism.plus jumped 1728 ids for 50 rows. The factor is 2, not
+  the suggested 8, because a provider skipping two thirds of a page (the r3 fixture)
+  stays under 8. Public wording: "page order could not be verified; rows may have
+  been skipped by the provider".
+* Future rows: source time more than 300 s after acceptance is skipped and counted as
+  `future_skipped`.
+* Fair bootstrap: at least ceil(attempts/3) of each tick's attempts go to cursorless
+  bootstrapping sources (round-robin among them) while any are due; the 8-probe
+  per-source per-tick cap is unchanged. Collection for each source runs forward from
+  its `established_at`, not from the epoch; the summary exposes
+  `established_at: {earliest, latest}`.
+* `provider_rejects` refusals clear `unavailable_since` (counted once, as refused) and
+  re-arm once after 24 h (`rearm_at`) without resetting `boot_probes`; after 3
+  re-arms the reason becomes `bootstrap_refused_final:provider_rejects:<status>`. A
+  successful page resets `rearms`.
+* `recent_collect.py` exits 75 for the expected daily owner hold (unit
+  `SuccessExitStatus=75`); other whole-round refusals stay 1.
+
 ## Unknown / not guaranteed
 
 * Per-source coverage starts at `boot_at` (established time). Labels issued between
