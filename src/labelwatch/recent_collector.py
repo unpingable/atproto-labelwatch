@@ -29,11 +29,14 @@ TOTAL_PROBES = 72          # >= 1 + ceil(53/4) gallop + 53 bisection steps over 
 CURSOR_MAX = 2**53
 LATE_ALLOWANCE = timedelta(hours=48)
 STORE_HOLD = 'rotate daily observation owner before ingestion'
+WAL_PINNED = 'wal_budget_pinned'
+STORE_CONDITIONS = (STORE_HOLD, WAL_PINNED)
 ENDPOINT_TTL = timedelta(hours=24)
 FUTURE_ALLOWANCE = timedelta(seconds=300)
 # Verified id-ordered providers advance about one id per row (mod.bsky.app 50-61 ids
 # per 50 rows, skyware 50 per 50); urbanism.plus jumped 1728 ids for 50 rows.
 CURSOR_JUMP = 2
+JUMP_MIN_ROWS = 10      # any page this size or larger, whatever the provider's page cap
 REJECT_STATUSES = {'400', '401', '403', '404', '410'}
 
 
@@ -92,6 +95,39 @@ def cursor(value):
     return value
 
 
+PRIVATE_NAMES = ('localhost',)
+PRIVATE_SUFFIXES = ('.localhost', '.local', '.internal')
+
+
+def _private_address(text):
+    """True for loopback, private, link-local, unique-local, reserved or unspecified IPs."""
+    import ipaddress
+    try:
+        address = ipaddress.ip_address(text.strip('[]').split('%')[0])
+    except ValueError:
+        return None          # not a literal IP
+    if getattr(address, 'ipv4_mapped', None):
+        address = address.ipv4_mapped
+    return (address.is_private or address.is_loopback or address.is_link_local or address.is_reserved
+            or address.is_multicast or address.is_unspecified)
+
+
+def public_host(host):
+    """Refuse hosts that would point a collector request at the collector's own network.
+
+    Literal IPs in loopback/private/link-local/ULA ranges and local-only names are
+    refused here; names are also checked after resolution (HTTPTransport). The unit's
+    IPAddressDeny is the second layer against DNS rebinding.
+    """
+    if not host:
+        return False
+    name = host.lower().rstrip('.')
+    private = _private_address(name)
+    if private is not None:
+        return not private
+    return name not in PRIVATE_NAMES and not name.endswith(PRIVATE_SUFFIXES)
+
+
 def source(value):
     if not isinstance(value, dict) or not isinstance(value.get('did'), str) or not _is_valid_did(value['did']):
         raise Refused('invalid source DID')
@@ -103,6 +139,8 @@ def source(value):
     url = urlsplit(endpoint)
     if url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment:
         raise Refused('invalid source endpoint')
+    if not public_host(url.hostname):
+        raise Refused('non-public source endpoint refused')
     return {'did': value['did'], 'endpoint': endpoint.rstrip('/')}
 
 
@@ -207,10 +245,12 @@ class Collector:
         sweep = getattr(self.store, 'collector_sweep_attempts', None)
         lost = sweep(self.now().isoformat(), self.stale_seconds) if sweep else []
         results, probes, capped, held = [], {}, 0, None
-        sticky = []      # sources mid-search this tick: stepped again as soon as spacing allows
-        # Reserved share: at least ceil(attempts/3) of a tick's attempts go to
-        # bootstrapping sources (round-robin among them) while any are due.
-        attempts, probe_attempts = 0, 0
+        # Reserved share: at least ceil(attempts/3) of a tick's attempts are claimed
+        # for bootstrapping sources. The store orders that claim in-progress first
+        # (most probes used), then unstarted round-robin, so a source mid-search
+        # keeps its priority across ticks. Only share claims count toward the share.
+        # Sources that hit the per-tick probe cap or failed this tick are excluded.
+        attempts, probe_attempts, excluded = 0, 0, set()
         slots, waits = self.limits.pages, 0
         while slots > 0:
             # A wait for spacing does not use a page slot; waits are bounded too.
@@ -227,20 +267,14 @@ class Collector:
             if held:
                 self._maintenance_gap(stamp, reason=held)
                 break
-            item = None
+            item, shared = None, False
+            extra = {'exclude': sorted(excluded)} if excluded else {}
             if probe_attempts*3 < attempts+1:
-                for did in list(sticky):
-                    item = self.store.collector_claim_source(limit=self.limits.sources, observed_at=stamp.isoformat(),
-                                                             probing=True, did=did)
-                    if item is not None:
-                        break
-                if item is None:
-                    item = self.store.collector_claim_source(limit=self.limits.sources, observed_at=stamp.isoformat(), probing=True)
-                if item is not None and probes.get(item['did'], 0) >= self.limits.bootstrap_probes:
-                    item = None       # its per-tick share is spent; fall back to rotation
-                # A probing source that is merely not yet due (spacing) keeps the share open.
+                item = self.store.collector_claim_source(limit=self.limits.sources, observed_at=stamp.isoformat(),
+                                                         probing=True, **extra)
+                shared = item is not None
             if item is None:
-                item = self.store.collector_claim_source(limit=self.limits.sources,observed_at=stamp.isoformat())
+                item = self.store.collector_claim_source(limit=self.limits.sources,observed_at=stamp.isoformat(), **extra)
             if item is None:
                 # Nothing due (per-source spacing, quiet backoff): wait for the next
                 # due source if it falls inside this round's deadline, else stop.
@@ -260,26 +294,23 @@ class Collector:
                 item = {**item, 'endpoint': None}     # re-resolve a cached endpoint daily
             booting = state['cursor'] is None and state['phase'] in ('unstarted', 'probing')
             if booting and probes.get(item['did'], 0) >= self.limits.bootstrap_probes:
+                excluded.add(item['did'])
                 capped += 1   # Per-tick probe share spent; yield the slot, never loop.
                 if capped > len(rows):
                     break
                 continue
             capped = 0
             attempts += 1
-            if booting:
+            if shared:
                 probe_attempts += 1
+            if booting:
                 probes[item['did']] = probes.get(item['did'], 0)+1
+                if probes[item['did']] >= self.limits.bootstrap_probes:
+                    excluded.add(item['did'])
             attempt = self.store.begin_source_attempt(item['did'], stamp.isoformat())
             try:
                 if booting:
-                    outcome = self._bootstrap(item, state, attempt, stamp, deadline, floor)
-                    results.append(outcome)
-                    still = outcome.get('status') == 'bootstrap' and outcome.get('phase') == 'probing'
-                    if still and probes[item['did']] < self.limits.bootstrap_probes:
-                        if item['did'] not in sticky:
-                            sticky.append(item['did'])
-                    elif item['did'] in sticky:
-                        sticky.remove(item['did'])
+                    results.append(self._bootstrap(item, state, attempt, stamp, deadline, floor))
                     continue
                 position = cursor(state['cursor'])
                 page = self._request('labels', {**item, 'cursor': position, 'limit': self.limits.page_rows}, deadline)
@@ -293,17 +324,18 @@ class Collector:
             except Exception as exc:
                 end = max(self.now(), stamp+timedelta(microseconds=1))
                 reason = str(exc)[:160] if isinstance(exc, Refused) else type(exc).__name__
-                if isinstance(exc, RuntimeError) and STORE_HOLD in str(exc):
-                    # The store, not the source, refused (UTC rotation window).
-                    self._maintenance_gap(stamp, end)
+                condition = next((c for c in STORE_CONDITIONS if isinstance(exc, RuntimeError) and c in str(exc)), None)
+                if condition:
+                    # The store, not the source, refused (UTC rotation window, or a WAL
+                    # pinned by readers): one store-level maintenance gap, round stops.
+                    self._maintenance_gap(stamp, end, reason=condition)
                     self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat(), failure=False)
-                    held = STORE_HOLD
+                    held = condition
                     break
                 # One source's failure is per-source state, never a store-wide gap.
                 # Our own resolution is kept even when the labels request failed.
                 self._endpoint_changed(item)
-                if item['did'] in sticky:
-                    sticky.remove(item['did'])
+                excluded.add(item['did'])     # backoff applies; never re-claimed this tick
                 rejected = _deterministic(reason)
                 extra = {'rejected': rejected} if rejected else {}
                 self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat(), reason=reason, **extra)
@@ -400,7 +432,7 @@ class Collector:
             # Any page (any size) with zero accepted rows and an advancing cursor
             # counts toward the history cap; one undated row does not reset it.
             extra['history'] = True
-        if len(normalized) == limit and before is not None and after is not None and after-before > CURSOR_JUMP*len(normalized):
+        if len(normalized) >= JUMP_MIN_ROWS and before is not None and after is not None and after-before > CURSOR_JUMP*len(normalized):
             # Disclosure heuristic, not a loss detector: ids skipped by the provider.
             extra['order_evidence'] = {'kind': 'cursor_jump', 'request': position, 'next': next_cursor,
                                        'rows': len(normalized)}
@@ -457,15 +489,15 @@ class Collector:
         lo_s, hi_s = state['lo'], state['hi']
         if confirming:
             served, before = len(normalized), conf['rows']
-            if not (served >= before >= 10):
-                # Fewer rows beyond the continuation: the short page was the head.
+            if served < before:
+                # Fewer rows (or none) beyond the continuation: the short page was the head.
                 established = conf['at']
                 if established is not None and _decimal(established) is None:
                     raise RuntimeError('persisted bootstrap confirmation invalid')
                 return report(step(phase='established', lo=lo_s, hi=hi_s, established=established, confirm=None),
                               confirmed=True)
             if served < rows:
-                cap = served      # the provider serves at most this many rows per page
+                cap = max(cap or 0, served)   # adopt the larger size as the provider page cap
         full = cap or rows
         if not normalized and x is not None:
             hi = x
@@ -549,6 +581,17 @@ class HTTPTransport:
         return self._loop.run_until_complete(asyncio.wait_for(
             self._request(operation,params,max_bytes,timeout_seconds),timeout=timeout_seconds))
 
+    async def _public_resolution(self, url):
+        """Refuse a name that resolves to a non-public address (best effort; see public_host)."""
+        import asyncio
+        if not public_host(url.hostname):
+            raise Refused('non-public host refused')
+        if _private_address(url.hostname) is not None:
+            return
+        infos = await asyncio.get_running_loop().getaddrinfo(url.hostname, url.port or 443)
+        if any(_private_address(info[4][0]) for info in infos):
+            raise Refused('host resolves to a non-public address')
+
     async def _request(self, operation, params, max_bytes, timeout_seconds):
         import httpx
         from urllib.parse import quote, unquote
@@ -560,6 +603,8 @@ class HTTPTransport:
         client = self._client
         async def fetch(url, query=None):
             nonlocal remaining
+            if self.http_transport is None:
+                await self._public_resolution(urlsplit(url))
             async with client.stream('GET', url, params=query, timeout=timeout_seconds,
                                      headers={'Accept': 'application/json', 'Accept-Encoding': 'identity'}) as response:
                 if response.status_code >= 400:
@@ -600,6 +645,8 @@ class HTTPTransport:
                     parsed = urlsplit('https://'+authority)
                     if parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment or not parsed.hostname:
                         raise Refused('invalid did:web authority')
+                    if not public_host(parsed.hostname):
+                        raise Refused('non-public did:web authority refused')
                     path = '/'.join(quote(unquote(part), safe='') for part in parts[1:])
                     url = 'https://'+authority+('/'+path if path else '/.well-known')+'/did.json'
                 else:
