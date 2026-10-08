@@ -1,4 +1,5 @@
 """Rolling-observatory pages over a real RecentStore; account/export routes unchanged."""
+import html
 import importlib.util
 import io
 import json
@@ -58,7 +59,14 @@ def test_landing_discloses_activity_epoch_coverage_gaps_roster_and_state(store):
                      '/instruments/fonts/IBMPlexSans-Regular.woff2'):
         assert expected in text, expected
     assert '<strong>4</strong><span>Events observed, last 7 days' in text
-    assert 'Not yet started</th><td>3</td>' in text and 'Refused (could not be safely initialised)</th><td>0</td>' in text
+    assert 'Not yet started</th><td>3</td>' in text and 'Refused</th><td>0</td>' in text
+    for note in ('collecting forward from the time each source was established (shown per source in /health), not from the epoch start',
+                 'transient failures, retried with backoff',
+                 'not retried (structural reason; provider rejections re-armed at most 3\u00d7 after 24 h)',
+                 'rows may have been skipped by the provider \u2014 a disclosure heuristic, not a loss detector'):
+        assert html.escape(note) in text, note
+    assert 'Only undated rows</th><td>0</td>' in text and 'Provider rejections</th><td>0</td>' in text
+    assert 'Rows skipped as authored in the future</th><td>unknown</td>' in text  # until the collector exposes it
     assert 'Sources that could not be safely initialised are reported as unknown coverage, never as quiet.' in text
     assert SUBJECT not in text
 
@@ -160,3 +168,11 @@ def test_vendored_fonts_only(store):
     assert status == 200 and headers['Content-Type'] == 'font/woff2' and body[:4] == b'wOF2'
     status, _, _ = get(h, '/instruments/fonts/OFL-IBM-Plex.txt')
     assert status == 409
+
+
+def test_health_lists_per_source_status_defensively(store):
+    _, h = site(store)
+    health = json.loads(get(h, '/health')[2])['coverage']
+    rows = {row['did']: row for row in health['source_status']}
+    assert set(rows) == {A, B, 'did:web:labelerc.example'}
+    assert rows[A]['bootstrap'] == 'unstarted' and 'bootstrap_cursor' not in rows[A]

@@ -629,20 +629,33 @@ def landing_html(view, interval=None, error=None):
         else:
             coverage.append('<p>No specific gaps are recorded. This does not establish complete source coverage.</p>')
         src = cov['sources']
+        rows = (
+            ('Labelers enrolled', 'seeded', ''),
+            ('Not yet started', 'unstarted', 'coverage unknown'),
+            ('Probing for the current head', 'probing', 'coverage unknown'),
+            ('Established', 'established', 'collecting forward from the time each source was established (shown per source in /health), '
+                                           'not from the epoch start'),
+            ('Unavailable', 'unavailable', 'transient failures, retried with backoff'),
+            ('Refused', 'refused', 'not retried (structural reason; provider rejections re-armed at most 3\u00d7 after 24 h)'),
+            ('Page order unverified', 'cursor_order_unverified', 'page order could not be verified; rows may have been skipped by the '
+                                                                  'provider \u2014 a disclosure heuristic, not a loss detector'),
+            ('Only undated rows', 'undated_only', 'every row offered lacked a usable authored date; coverage unknown'),
+            ('Provider rejections', 'provider_rejects', 'sources whose provider rejected requests'),
+            ('Rows skipped as authored before this epoch', 'pre_epoch_skipped', ''),
+            ('Rows skipped as late (older than 48 h at acceptance)', 'late_skipped', ''),
+            ('Rows skipped as authored in the future', 'future_skipped', ''),
+            ('Rows skipped without a usable authored date', 'undated_skipped', ''),
+        )
         coverage.append('<h3>Source roster</h3><table><tbody>' + ''.join(
-            '<tr><th>' + _esc(k) + '</th><td>' + _esc(_number(src.get(key))) + '</td></tr>' for k, key in (
-                ('Labelers enrolled', 'seeded'), ('Not yet started', 'unstarted'), ('Probing for the current head', 'probing'),
-                ('Established (collecting from the epoch forward)', 'established'),
-                ('Refused (could not be safely initialised)', 'refused'),
-                ('Rows skipped as authored before this epoch', 'pre_epoch_skipped'),
-                ('Rows skipped without a usable authored date', 'undated_skipped'))) + '</tbody></table>'
+            '<tr><th>' + _esc(label) + '</th><td>' + _esc(_number(src.get(key))) + '</td><td class="nz-muted">' + _esc(note) + '</td></tr>'
+            for label, key, note in rows) + '</tbody></table>'
             '<p>Sources whose page order could not be verified: ' + _esc(_number(src.get('cursor_order_unverified')))
             + ' (their coverage is reported as unknown)</p>'
             '<p>Sources currently unavailable (transient failures, retried with backoff): '
             + _esc(_number(src.get('unavailable'))) + '</p>'
             '<p>Rows skipped as late (older than 48 h at acceptance): ' + _esc(_number(src.get('late_skipped'))) + '</p>'
             '<p>Sources that could not be safely initialised are reported as unknown coverage, never as quiet. '
-            'Established means collection is positioned at the epoch, not that coverage is complete.</p>')
+            'Established is not completeness.</p>')
         coverage.append('<p class="nz-muted">Observations older than ' + _esc(window) + ' days expire. '
                         'Requests outside the window are refused explicitly.</p></section>')
         body.append(''.join(coverage))
