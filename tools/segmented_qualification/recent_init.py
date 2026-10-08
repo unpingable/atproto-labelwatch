@@ -5,6 +5,7 @@ the collector bootstraps each one. Nothing here enables a unit, touches a hold
 or activation marker, or imports legacy history.
 """
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -40,7 +41,7 @@ def source_sha():
     try:
         sha = subprocess.run(['git', '-C', str(storage.REPO), 'rev-parse', 'HEAD'], capture_output=True, text=True,
                              timeout=10, check=True).stdout.strip()
-        dirty = subprocess.run(['git', '-C', str(storage.REPO), 'status', '--porcelain', '--untracked-files=no'],
+        dirty = subprocess.run(['git', '-C', str(storage.REPO), 'status', '--porcelain'],
                                capture_output=True, text=True, timeout=10, check=True).stdout.strip() != ''
         return {'sha': sha, 'dirty': dirty, 'basis': 'git'}
     except (OSError, subprocess.SubprocessError):
@@ -55,10 +56,33 @@ def versions():
     return found
 
 
-def init(root, now, days=30, roster=None):
+MAX_SKEW_SECONDS = 300
+
+
+def acceptance_clock(now, allow_skew_seconds=None, wall=None):
+    """The epoch start must be the real wall clock.
+
+    A backdated start would erase warm-up and claim a full observed window.
+    Wider skew needs an explicit operator bound, recorded in the receipt.
+    """
+    stamp = clock(now)
+    wall = wall or dt.datetime.now(dt.timezone.utc)
+    skew = (stamp - wall).total_seconds()
+    if allow_skew_seconds is not None and (type(allow_skew_seconds) is not int or allow_skew_seconds < 0):
+        raise ValueError('clock skew allowance must be a non-negative integer')
+    bound = MAX_SKEW_SECONDS if allow_skew_seconds is None else allow_skew_seconds
+    if abs(skew) > bound:
+        raise ValueError('acceptance clock %.3f s from wall clock exceeds %d s' % (skew, bound))
+    return {'requested': iso(stamp), 'wall': iso(wall), 'skew_seconds': skew,
+            'allowed_skew_seconds': bound, 'explicit_allowance': allow_skew_seconds is not None}
+
+
+def init(root, now, days=30, roster=None, allow_skew_seconds=None, wall=None):
     root = storage.owned(root)
     if days != 30: raise ValueError('only 30-day candidate admitted')
-    clock(now); storage.reserve_policy(root)
+    acceptance = acceptance_clock(now, allow_skew_seconds, wall)
+    # The policy must hold now, not merely parse, before any effect.
+    storage.admit_reserves(storage.reserve_policy(root), 0, (root.parent,), 'shared_reserve_unavailable')
     dids, roster_sha = load_roster(roster) if roster else ([], None)
     if root.exists():
         if not root.is_dir() or any(root.iterdir()): raise RuntimeError('store root exists and is not empty')
@@ -75,7 +99,7 @@ def init(root, now, days=30, roster=None):
             'basis': acquisition['basis'], 'days': days,
             'roster': {'path': os.path.abspath(roster) if roster else None, 'sha256': roster_sha,
                        'count': len(dids), 'cursors': 'none', 'coverage': 'unknown_until_bootstrap'},
-            'reserves': policy, 'source': source_sha(), 'versions': versions(), 'created_at': iso(clock(now))}
+            'acceptance_clock': acceptance, 'reserves': policy, 'source': source_sha(), 'versions': versions(), 'created_at': iso(clock(now))}
 
 
 def main(argv=None):
@@ -84,10 +108,12 @@ def main(argv=None):
     parser.add_argument('--now', required=True, help='explicit UTC acceptance clock, e.g. 2026-10-08T00:00:00Z')
     parser.add_argument('--days', type=int, default=30)
     parser.add_argument('--roster', help='labelwatch.roster-seed.v1 JSON')
+    parser.add_argument('--allow-clock-skew-seconds', type=int, default=None,
+                        help='explicitly admit |now - wall clock| up to N s (default bound 300 s); recorded')
     parser.add_argument('--receipt', help='write the receipt JSON here as well (must not exist)')
     args = parser.parse_args(argv)
     if args.receipt and os.path.exists(args.receipt): parser.error('receipt path exists')
-    receipt = init(args.root, args.now, args.days, args.roster)
+    receipt = init(args.root, args.now, args.days, args.roster, args.allow_clock_skew_seconds)
     text = json.dumps(receipt, sort_keys=True, indent=2) + '\n'
     if args.receipt:
         with open(args.receipt, 'x') as f:

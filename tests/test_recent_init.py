@@ -1,5 +1,8 @@
 """Empty-store initialisation with an unknown-coverage roster seed."""
+import datetime
 import hashlib
+import os
+import subprocess
 import json
 import sys
 from pathlib import Path
@@ -11,8 +14,19 @@ import storage
 import recent_init
 from recent_storage import RecentStore
 
+WALL = datetime.datetime(2026, 10, 8, 0, 5, tzinfo=datetime.timezone.utc)
 NOW = '2026-10-08T00:05:00Z'
 SEED = Path(__file__).parents[1] / 'deploy/roster-epoch2-seed.json'
+
+
+@pytest.fixture(autouse=True)
+def wall(monkeypatch):
+    """Pin the wall clock the init command compares --now against."""
+    class Fixed(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return WALL
+    monkeypatch.setattr(recent_init.dt, 'datetime', Fixed)
 
 
 @pytest.fixture
@@ -93,3 +107,50 @@ def test_refuses_existing_receipt(admitted, tmp_path):
 def test_committed_seed_is_valid():
     dids, _ = recent_init.load_roster(SEED)
     assert dids == sorted(dids) and len(dids) == 580
+
+
+@pytest.mark.parametrize('offset', [-301, 301, -40 * 86400])
+def test_refuses_clock_far_from_wall(admitted, offset):
+    now = (WALL + datetime.timedelta(seconds=offset)).isoformat()
+    with pytest.raises(ValueError, match='exceeds 300 s'):
+        recent_init.init(admitted / 'store', now)
+    assert not (admitted / 'store').exists()
+
+
+def test_explicit_skew_allowance_is_bounded_and_recorded(admitted):
+    now = (WALL - datetime.timedelta(seconds=900)).isoformat()
+    with pytest.raises(ValueError, match='exceeds 600 s'):
+        recent_init.init(admitted / 'store', now, allow_skew_seconds=600)
+    assert not (admitted / 'store').exists()
+    receipt = recent_init.init(admitted / 'store', now, allow_skew_seconds=900)
+    assert receipt['acceptance_clock'] == {'requested': '2026-10-07T23:50:00.000000Z',
+                                           'wall': '2026-10-08T00:05:00.000000Z', 'skew_seconds': -900.0,
+                                           'allowed_skew_seconds': 900, 'explicit_allowance': True}
+    assert receipt['started_at'] == '2026-10-07T23:50:00.000000Z'
+
+
+def test_cli_skew_flag(admitted, capsys):
+    now = (WALL + datetime.timedelta(seconds=400)).isoformat()
+    with pytest.raises(ValueError):
+        recent_init.main(['--root', str(admitted / 'store'), '--now', now])
+    assert recent_init.main(['--root', str(admitted / 'store'), '--now', now, '--allow-clock-skew-seconds', '400']) == 0
+    assert json.loads(capsys.readouterr().out)['acceptance_clock']['skew_seconds'] == 400.0
+
+
+def test_refuses_when_reserve_does_not_hold_now(admitted, monkeypatch):
+    s = os.statvfs('/')
+    monkeypatch.setenv(storage.RESERVES_ENV, json.dumps([{'mount': '/', 'bytes': s.f_bavail * s.f_frsize * 4}]))
+    with pytest.raises(RuntimeError, match='shared_reserve_unavailable'):
+        recent_init.init(admitted / 'store', NOW)
+    assert not (admitted / 'store').exists()
+
+
+def test_dirty_flag_counts_untracked(monkeypatch):
+    calls = []
+    def run(cmd, **kw):
+        calls.append(cmd)
+        out = 'abc\n' if 'rev-parse' in cmd else '?? new-file\n'
+        return subprocess.CompletedProcess(cmd, 0, out, '')
+    monkeypatch.setattr(recent_init.subprocess, 'run', run)
+    assert recent_init.source_sha() == {'sha': 'abc', 'dirty': True, 'basis': 'git'}
+    assert not any('--untracked-files=no' in c for c in calls)
