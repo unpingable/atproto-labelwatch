@@ -1,0 +1,14 @@
+# Example only; not installed or enabled. Every 30 minutes keeps the overview
+# well inside the facts API's 2 h freshness bound; a missed run is not replayed
+# (a late overview is simply the next one).
+[Unit]
+Description=Labelwatch recent observatory: publish estate overview every 30 min
+
+[Timer]
+OnCalendar=*-*-* *:10/30:00 UTC
+AccuracySec=10s
+Persistent=false
+Unit=labelwatch-recent-overview.service
+
+[Install]
+WantedBy=timers.target

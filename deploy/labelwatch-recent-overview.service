@@ -1,0 +1,45 @@
+# Example only; not installed. Publishes the aggregate estate overview
+# (labelwatch.recent-overview.v1) for the facts API, which serves it only while
+# fresh (default max age 2 h). Deliberately NOT gated on the hold/activation
+# markers: while held or not yet activated it publishes an explicit held
+# artifact (hold:true, no readings) instead of leaving a stale one in place.
+# The publication directory must be world-traversable (0755) and the file 0644;
+# the command refuses, with no replacement, otherwise. Add to the env file:
+#   LABELWATCH_RECENT_PUBDIR=/REPLACE_WITH_PUBLIC_OVERVIEW_DIR
+# and point the facts API at ${LABELWATCH_RECENT_PUBDIR}/overview.json.
+[Unit]
+Description=Labelwatch recent observatory: publish aggregate estate overview
+
+[Service]
+Type=oneshot
+User=labelwatch
+Group=labelwatch
+EnvironmentFile=/etc/labelwatch-recent.env
+WorkingDirectory=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source/src:/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source
+ExecStart=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/venv/bin/python tools/segmented_qualification/recent_publish.py --store ${LABELWATCH_RECENT_STORE} --pubdir ${LABELWATCH_RECENT_PUBDIR} --hold-marker /etc/labelwatch-operator-safe-hold --activation-marker /etc/labelwatch-recent-qualified-activation --budget-seconds 600
+TimeoutStartSec=15min
+TimeoutStopSec=30
+KillMode=control-group
+SendSIGKILL=yes
+Restart=no
+MemoryMax=1G
+CPUQuota=50%
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+IPAddressDeny=any
+UMask=0022
+ReadWritePaths=/REPLACE_WITH_ADMITTED_RECENT_ROOT /REPLACE_WITH_PUBLIC_OVERVIEW_DIR
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=20
