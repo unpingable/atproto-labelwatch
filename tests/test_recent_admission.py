@@ -61,7 +61,7 @@ def test_symlinked_admitted_root_refused(env):
 def test_symlinked_store_component_refused(env):
     real = env.tmp / 'elsewhere'; real.mkdir()
     (env.admitted / 'hop').symlink_to(real)
-    with pytest.raises(ValueError, match='symlink'):
+    with pytest.raises(ValueError, match='symlink|foreign entry'):
         storage.owned(env.admitted / 'hop' / 'store')
 
 
@@ -139,7 +139,7 @@ def test_store_filesystem_must_be_covered(env):
     env.mp.setenv(storage.RESERVES_ENV, json.dumps([{'mount': '/', 'bytes': 1}, {'mount': str(other), 'bytes': 1}]))
     store.check_local()
     env.mp.setenv(storage.RESERVES_ENV, json.dumps([{'mount': str(other), 'bytes': 1}]))
-    env.mp.setenv(storage.OVERRIDE_ENV, hashlib.sha256(recorded(store).encode()).hexdigest())
+    env.mp.setenv(storage.OVERRIDE_ENV, storage.override_ack(recorded(store), storage.reserve_policy(store.root)))
     with pytest.raises(RuntimeError, match='without configured reserve'):
         store.check_local()
 
@@ -161,8 +161,40 @@ def test_weaker_policy_refused_at_open_unless_acknowledged(env):
     with pytest.raises(RuntimeError, match='weaker_than_recorded'):
         RecentStore(store.root)
     env.mp.setenv(storage.OVERRIDE_ENV, hashlib.sha256(record.encode()).hexdigest())
+    with pytest.raises(RuntimeError, match='weaker_than_recorded'):
+        RecentStore(store.root)  # an ack of the recorded policy alone is not enough
+    reviewed = storage.reserve_policy(store.root)
+    env.mp.setenv(storage.OVERRIDE_ENV, storage.override_ack(record, reviewed))
     RecentStore(store.root)
     assert recorded(store) == record  # acknowledgement never rewrites the record
+    env.mp.setenv(storage.RESERVES_ENV, json.dumps([{'mount': other, 'bytes': 9}]))
+    with pytest.raises(RuntimeError, match='weaker_than_recorded'):
+        RecentStore(store.root)  # any change to the running policy voids the ack
+
+
+@pytest.mark.parametrize('path', ['/etc/labelwatch', '/usr/local/lw', '/lib64/x', '/var/www/lw', '/root/lw',
+                                  '/var/lib/labelwatch/generations/g', '/home/u/.config/lw', '/proc'])
+def test_system_prefix_refused(path):
+    assert storage._system(Path(path))
+
+
+def test_ordinary_paths_not_system(env):
+    assert not storage._system(Path('/var/lib/labelwatch/recent'))
+    assert not storage._system(env.admitted)
+
+
+def test_admitted_root_contents_rule(env):
+    RecentStore.create(env.admitted / 'epoch-2', NOW)
+    (env.admitted / 'pending').mkdir()
+    (env.admitted / 'units.lock').write_text('')
+    assert storage.admitted_root() == env.admitted
+    (env.admitted / 'stray.json').write_text('{}')
+    with pytest.raises(ValueError, match='foreign entry: stray.json'):
+        storage.owned(env.admitted / 'epoch-3')
+    (env.admitted / 'stray.json').unlink()
+    (env.admitted / 'other').mkdir(); (env.admitted / 'other' / 'x').write_text('')
+    with pytest.raises(ValueError, match='foreign entry: other'):
+        storage.admitted_root()
 
 
 def test_admitted_store_without_record_refused(env):
