@@ -1,4 +1,9 @@
-# Skeleton only; content is owned by the product implementer. Not installed.
+# Example only; not installed. Read-only rolling-observatory site on 127.0.0.1:8431:
+# / (landing), /about, /previous-epoch, /health (operator JSON), /lookup,
+# /account, /exports, /download. Caddy routes the public hostname here only
+# after activation; until then the hold page stays in front.
+# Handle lookup is off: /lookup accepts DIDs only unless --resolve-handles is
+# added (outbound HTTPS to public.api.bsky.app; then drop IPAddressDeny below).
 [Unit]
 Description=Labelwatch recent observatory: read-only product (127.0.0.1:8431)
 ConditionPathExists=!/etc/labelwatch-operator-safe-hold
@@ -12,7 +17,7 @@ EnvironmentFile=/etc/labelwatch-recent.env
 WorkingDirectory=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONPATH=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source/src:/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/source
-ExecStart=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/venv/bin/python tools/segmented_qualification/recent_product.py --store ${LABELWATCH_RECENT_STORE} --port 8431 --window-days ${LABELWATCH_RECENT_WINDOW_DAYS}
+ExecStart=/opt/labelwatch/releases/REPLACE_WITH_RELEASE_SHA/venv/bin/python tools/segmented_qualification/recent_product.py --store ${LABELWATCH_RECENT_STORE} --port 8431 --window-days ${LABELWATCH_RECENT_WINDOW_DAYS} --stale-after-seconds 900
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=30
@@ -31,6 +36,8 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+IPAddressDeny=any
+IPAddressAllow=localhost
 UMask=0027
 ReadWritePaths=/REPLACE_WITH_ADMITTED_RECENT_ROOT
 StandardOutput=journal

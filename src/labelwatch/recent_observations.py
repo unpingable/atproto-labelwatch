@@ -414,6 +414,16 @@ class RecentObservations:
                                 "current_state": "unknown"}, "export_cursor": cursor}
 
 
+# Public gap-reason wording, shared by account views and the rolling-observatory pages.
+GAP_REASONS={'not_observed':'Acquisition had not begun; this interval was not observed.',
+             'source_unavailable':'A source was unavailable during this interval.',
+             'ingest_paused':'Collection was stopped during this interval.',
+             'cursor_reset':'Source continuation was reset; continuity is not established.',
+             'maintenance':'Collection coverage was interrupted by maintenance.',
+             'warmup':'The collector was warming up; observation coverage is not established.',
+             'unknown':'Observation coverage is not established for this interval.'}
+
+
 def account_html(account):
     """Human account view over the same bounded, normalized public snapshot."""
     esc=lambda value:html.escape(str(value),quote=True)
@@ -434,13 +444,7 @@ def account_html(account):
                         '<p class="value">'+esc(row['value'])+'</p><p>From <code>'+esc(row['labeler_did'])+'</code></p>'
                         '<p class="muted">Observed '+esc(when(row['observed_at']))+' · Source authored '+esc(when(row['source_timestamp']))+'</p>'
                         '<p class="subject">'+esc(row['uri'])+'</p></article></li>')
-    reasons={'not_observed':'Acquisition had not begun; this interval was not observed.',
-             'source_unavailable':'A source was unavailable during this interval.',
-             'ingest_paused':'Collection was stopped during this interval.',
-             'cursor_reset':'Source continuation was reset; continuity is not established.',
-             'maintenance':'Collection coverage was interrupted by maintenance.',
-             'warmup':'The collector was warming up; observation coverage is not established.',
-             'unknown':'Observation coverage is not established for this interval.'}
+    reasons=GAP_REASONS
     gaps=''.join('<li>'+esc(when(gap['start']))+' to '+esc(when(gap['end']))+': '+esc(reasons.get(gap['reason'],reasons['unknown']))+'</li>'
                  for gap in manifest['coverage']['gaps'])
     gap_content='<ul>'+gaps+'</ul>' if gaps else '<p>No specific gaps are recorded. This does not establish complete source coverage.</p>'
@@ -476,3 +480,185 @@ def account_html(account):
             '<details><summary>Expert observation rows (normalized projection)</summary><p>Public label-record signatures are included when recorded; this view does not verify them. Internal probes and operational metadata are excluded.</p>'
             '<div class="table-wrap"><table><thead><tr><th>Observed</th><th>Action</th><th>Label</th><th>Labeler</th><th>Subject</th><th>Public signature</th></tr></thead><tbody>'+expert+'</tbody></table></div>'
             '<pre>'+esc(json.dumps(rows,ensure_ascii=False,indent=2))+'</pre></details></html>')
+
+
+# ---------------------------------------------------------------------------
+# Rolling-observatory pages. Presentation only: every figure comes from the
+# aggregate overview envelope (labelwatch.recent-overview.v1); nothing here
+# reads storage or changes account/export semantics.
+# ---------------------------------------------------------------------------
+
+PREVIOUS_EPOCH_END = '2026-10-06'
+EPOCH_GAP_NOTES = {'pre_epoch': 'Source-authored before this epoch began (beyond the late allowance); skipped, not stored, and counted per source.'}
+
+
+def _neutral_css():
+    from pathlib import Path
+    css = (Path(__file__).resolve().parent / '_instruments' / 'neutral.css').read_text(encoding='utf-8')
+    return css.replace('url("fonts/', 'url("/instruments/fonts/')
+
+
+_LAYOUT = ('body{margin:0}.nz-wrap{max-width:960px;margin:0 auto;padding:0 16px}main{padding:1.5rem 0 2rem}'
+           'h1{font-size:clamp(2rem,6vw,3.4rem);margin:.4rem 0}h2{font-size:1.25rem;margin-top:2rem}'
+           '.nz-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1rem;margin:1rem 0}'
+           '.nz-cards .nz-panel strong{display:block;font:700 2rem/1.1 var(--nz-serif)}.nz-cards .nz-panel span{color:var(--nz-muted);font-size:.9rem}'
+           '.nz-muted{color:var(--nz-muted)}form{display:flex;flex-wrap:wrap;gap:.8rem;align-items:end}label{display:flex;flex-direction:column;gap:.3rem;font-size:.9rem}'
+           'code,.nz-wrap td{overflow-wrap:anywhere}table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:.4rem;border-bottom:1px solid var(--nz-rule)}'
+           '.nz-state{border-left:4px solid var(--nz-signal);padding-left:1rem}')
+
+
+def _esc(value):
+    return html.escape(str(value), quote=True)
+
+
+def _when(value):
+    stamp = timestamp(value)
+    return stamp.strftime('%b %d, %Y at %H:%M') + ' UTC'
+
+
+def page_html(title, body):
+    """Shared shell; the neutral-instruments stylesheet is reused verbatim."""
+    nav = ('<nav><a href="/">Overview</a><a href="/#account">Account lookup</a>'
+           '<a href="/about">About coverage</a><a href="/previous-epoch">Previous epoch</a></nav>')
+    return ('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>' + _esc(title) + '</title><style>' + _neutral_css() + _LAYOUT + '</style>'
+            '<body><div class="nz-wrap"><header class="nz-masthead"><span class="nz-family">Neutral Zone</span>'
+            '<span class="nz-product">Labelwatch</span>' + nav + '</header><main>' + body + '</main>'
+            '<footer class="nz-footer"><p>Labelwatch records observed label application and removal events. '
+            'Current label state is unknown. Observations older than 30 days expire.</p></footer></div></body></html>')
+
+
+def coverage_statement(started_at=None, window_days=30):
+    """The public coverage statement (proposal Part 4, verbatim with N and the epoch start filled in)."""
+    began = _esc(_when(started_at)) if started_at else 'a time that is currently unavailable'
+    return (f'Labelwatch keeps a rolling window of the most recent {int(window_days)} days of public label observations. '
+            'Older observations expire and are not served. '
+            f'The current observation epoch began on {began}. '
+            'Anything before that time was not observed by this epoch; it is shown as &quot;not observed&quot;, never as quiet. '
+            'Source-authored dates on labels are not observation times. '
+            'Inside the window, recorded gaps are disclosed with their reason. '
+            'No recorded gaps does not prove complete source coverage, and no observations does not mean no labels exist. '
+            'Labelwatch records observed application and removal events; it does not know whether a label is currently active. '
+            f'Observations from the previous epoch, which ended {PREVIOUS_EPOCH_END}, are not part of this service. '
+            'Requests outside the window are refused explicitly.')
+
+
+def _number(value):
+    return 'unknown' if value is None else f'{value:,}'
+
+
+def _account_form(interval=None):
+    form = ('<section id="account" class="nz-panel"><h2>Look up an account</h2>'
+            '<form action="/lookup"><label>Account DID or handle<input name="account" required '
+            'placeholder="did:plc:… or name.bsky.social" size="34"></label>'
+            '<button name="days" value="7">Last 7 days</button>'
+            '<button class="secondary" name="days" value="30">Full 30-day window</button></form>'
+            '<p class="nz-muted">Shows observed label events for that account inside the window. '
+            'No observations does not mean no labels exist. Current label state is unknown.</p>')
+    if interval:
+        start, end = interval
+        form += ('<details><summary>Choose an exact interval</summary><form action="/account">'
+                 '<label>Account DID<input name="did" required></label>'
+                 '<label>Start (UTC ISO timestamp)<input name="start" value="' + _esc(start) + '" required></label>'
+                 '<label>End, exclusive (UTC ISO timestamp)<input name="end" value="' + _esc(end) + '" required></label>'
+                 '<button>View this period</button></form>'
+                 '<p class="nz-muted">Interval ends at the available source frontier, which may be earlier than now. '
+                 'Account previews have a finite row budget; no truncated result is published.</p></details>')
+    return form + '</section>'
+
+
+def _exports_panel():
+    return ('<section class="nz-panel"><h2>Exports</h2><p>Every account view links a whole-period JSON download. '
+            'For periods larger than the preview budget, <code>/exports?did=…&amp;days=30</code> opens a bounded, '
+            'paginated export with a fixed acquisition frontier. Exports are finite consistent snapshots and expire '
+            'after their stated deadline; an interrupted download is incomplete.</p></section>')
+
+
+def landing_html(view, interval=None, error=None):
+    """Landing page for the rolling observatory.
+
+    view is a labelwatch.recent-overview.v1 envelope (top labelers optional),
+    or None when the store summary is unavailable.
+    """
+    body = ['<p class="nz-eyebrow">Rolling observatory</p><h1>Recently observed labeling activity</h1>'
+            '<p>Labelwatch watches public ATProto labelers and records the label application and removal events it '
+            'observes. It keeps a rolling 30-day window: observations older than 30 days expire and are not served.</p>'
+            '<p class="nz-state"><strong>Labelwatch records observed application/removal events; current label state is unknown.</strong> '
+            'A recorded application does not establish that a label is still active.</p>']
+    if view is None:
+        body.append('<section class="nz-panel"><h2>Observation summary unavailable</h2><p>The current observation summary '
+                    'could not be read' + (' (' + _esc(error) + ')' if error else '') + '. This is absence of evidence, '
+                    'not evidence that nothing was observed.</p></section>')
+    else:
+        cov, counts, acq = view['coverage'], view['counts'], view['acquisition']
+        window = view['window_days']
+        rail = [('Epoch began', _when(acq['started_at'])),
+                ('Window', f'{window} days, rolling'),
+                ('Observed', f"{cov['observed_days']} of {window} days"),
+                ('Recorded gaps', 'overflow' if cov['gap_overflow'] else str(len(cov['gaps'])))]
+        body.append('<div class="nz-status-rail">' + ''.join('<span>' + _esc(k) + ' <strong>' + _esc(v) + '</strong></span>' for k, v in rail) + '</div>')
+        cards = [('Events observed, last 24 hours', counts.get('events_24h')),
+                 ('Events observed, last 7 days', counts.get('events_7d')),
+                 (f'Events observed in the {window}-day window', counts.get('events_window')),
+                 ('Labelers active, last 7 days', counts.get('labelers_active_7d'))]
+        body.append('<h2>Recently observed activity</h2><div class="nz-cards">' + ''.join(
+            '<div class="nz-panel"><strong>' + _esc(_number(v)) + '</strong><span>' + _esc(k) + '</span></div>' for k, v in cards) + '</div>'
+            '<p class="nz-muted">Counts are of observations recorded by this epoch, not of everything that happened. '
+            'A labeler that could not be reached contributes nothing.</p>')
+        coverage = ['<section class="nz-panel"><h2>Coverage of this epoch</h2>',
+                    '<p>Local acquisition began ' + _esc(_when(acq['started_at'])) + '. Earlier source-authored dates are not historical observation times.</p>']
+        if cov['warmup']:
+            coverage.append('<p><strong>' + _esc(cov['observed_days']) + ' of ' + _esc(window) + ' days observed since '
+                            + _esc(_when(acq['started_at'])) + '.</strong> Warm-up: ' + _esc(_when(cov['warmup']['start'])) + ' to '
+                            + _esc(_when(cov['warmup']['end'])) + ' was not observed by this acquisition generation.</p>')
+        else:
+            coverage.append('<p>The full ' + _esc(window) + '-day window lies inside this epoch.</p>')
+        if cov['gaps']:
+            coverage.append('<h3>Collection interruptions</h3><ul>' + ''.join(
+                '<li>' + _esc(_when(g['start'])) + ' to ' + _esc(_when(g['end'])) + ': ' + _esc(GAP_REASONS.get(g['reason'], GAP_REASONS['unknown'])) + '</li>'
+                for g in cov['gaps']) + '</ul>')
+            if cov['gap_overflow']:
+                coverage.append('<p>More interruptions were recorded than can be listed; the whole window is disclosed as not established.</p>')
+        else:
+            coverage.append('<p>No specific gaps are recorded. This does not establish complete source coverage.</p>')
+        src = cov['sources']
+        coverage.append('<h3>Source roster</h3><table><tbody>' + ''.join(
+            '<tr><th>' + _esc(k) + '</th><td>' + _esc(_number(src.get(key))) + '</td></tr>' for k, key in (
+                ('Labelers enrolled', 'seeded'), ('Established (at least one page accepted)', 'established'),
+                ('Probing', 'probing'), ('Refused', 'refused'), ('Pre-epoch rows skipped', 'pre_epoch_skipped'))) + '</tbody></table>')
+        coverage.append('<p class="nz-muted">Observations older than ' + _esc(window) + ' days expire. '
+                        'Requests outside the window are refused explicitly.</p></section>')
+        body.append(''.join(coverage))
+        if view.get('top_labelers_7d'):
+            body.append('<h2>Most active labelers, last 7 days</h2><table><thead><tr><th>Labeler service</th><th>Events observed</th></tr></thead><tbody>'
+                        + ''.join('<tr><td><code>' + _esc(r['labeler_did']) + '</code></td><td>' + _esc(_number(r['count'])) + '</td></tr>'
+                                  for r in view['top_labelers_7d']) + '</tbody></table>')
+    body.append(_account_form(interval))
+    body.append(_exports_panel())
+    body.append('<p><a href="/about">How coverage works</a> · <a href="/previous-epoch">About the previous epoch</a></p>')
+    return page_html('Labelwatch rolling observatory', ''.join(body))
+
+
+def about_html(started_at=None, window_days=30):
+    glossary = ''.join('<tr><th><code>' + _esc(k) + '</code></th><td>' + _esc(v) + '</td></tr>'
+                       for k, v in list(GAP_REASONS.items()) + list(EPOCH_GAP_NOTES.items()))
+    return page_html('About Labelwatch coverage',
+                     '<p class="nz-eyebrow">About</p><h1>What this observatory covers</h1>'
+                     '<section class="nz-panel"><p>' + coverage_statement(started_at, window_days) + '</p></section>'
+                     '<h2>Gap reasons</h2><p>Each disclosed interval carries one of these reasons.</p>'
+                     '<table><tbody>' + glossary + '</tbody></table>')
+
+
+def previous_epoch_html():
+    return page_html('Previous Labelwatch epoch',
+                     '<p class="nz-eyebrow">Previous epoch</p><h1>The previous epoch is withdrawn</h1>'
+                     '<section class="nz-panel"><p>The previous Labelwatch observation epoch ended on ' + PREVIOUS_EPOCH_END + '. '
+                     'Its pages, census, labeler and alert reports are withdrawn and are not served by this service. '
+                     'Its observations are not part of the current rolling window, and nothing from it is presented '
+                     'as observed by the current epoch.</p></section>'
+                     '<p><a href="/">Return to the current rolling observatory</a></p>')
+
+
+def lookup_refusal_html(reason):
+    return page_html('Account lookup', '<h1>Account lookup</h1><section class="nz-panel"><p>' + _esc(reason) + '</p>'
+                     '<p>Enter the account DID (for example <code>did:plc:…</code>).</p></section>' + _account_form())
