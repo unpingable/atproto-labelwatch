@@ -8,7 +8,7 @@ DID = 'did:plc:one'
 NOW = datetime(2026, 10, 6, tzinfo=timezone.utc)
 
 
-def label(value='x', cts='2020-01-01T00:00:00Z'):
+def label(value='x', cts='2026-10-05T23:00:00Z'):
     return {'src': DID, 'uri': 'did:plc:subject', 'val': value, 'cts': cts}
 
 
@@ -58,12 +58,12 @@ class Store:
     def begin_source_attempt(self, did, observed_at):
         return did
 
-    def finish_source_attempt(self, did, attempt_token, observed_at=None, failure=True, reason=None):
+    def finish_source_attempt(self, did, attempt_token, observed_at=None, failure=True, reason=None, rejected=None):
         assert did == attempt_token
         if failure:
             self.failures.append((did, reason))
 
-    def accept_page(self, rows, source, request_cursor, next_cursor, observed_at, attempt_token=None):
+    def accept_page(self, rows, source, request_cursor, next_cursor, observed_at, attempt_token=None, **accounting):
         assert self.cursors.get(source) == request_cursor
         self.pages.append(rows)
         if next_cursor is not None:
@@ -100,7 +100,7 @@ def test_terminal_nonempty_page_preserves_opaque_input_and_accepts_changed_tail(
     assert c.tick()['results'][0]['rows'] == 2
     assert [call[1]['cursor'] for call in t.calls] == ['opaque:Z/2']*2
     assert s.cursors[DID] == 'opaque:Z/2'
-    assert s.pages[0][0][8] == '2020-01-01T00:00:00Z'
+    assert s.pages[0][0][8] == '2026-10-05T23:00:00Z'
 
 
 def test_empty_absent_cursor_remains_cursorless():
@@ -114,7 +114,6 @@ def test_empty_absent_cursor_remains_cursorless():
     {'labels': [label()], 'cursor': 'same'},
     {'labels': [dict(label(), src='did:plc:other')]},
     {'labels': [dict(label(), neg='false')]},
-    {'labels': [dict(label(), cts=None)]},
     {'labels': [label()]*101}, {'other': []}, b'not-json', b' '*1048577,
 ])
 def test_refusal_preserves_cursor_and_records_gap(page):
@@ -123,6 +122,12 @@ def test_refusal_preserves_cursor_and_records_gap(page):
     assert c.tick()['results'][0]['status'] == 'refused'
     # A single source's refusal is per-source state, never a store-wide gap.
     assert s.cursors[DID] == 'same' and not s.pages and not s.gaps and len(s.failures) == 1
+
+
+def test_row_without_source_time_is_skipped_not_page_refused():
+    s = Store(); c, _ = collector(s, [{'labels': [dict(label(), cts=None), label('kept')]}])
+    result = c.tick()['results'][0]
+    assert result['status'] == 'accepted' and result['undated_skipped'] == 1 and result['rows'] == 1
 
 
 def test_all_or_nothing_normalization():

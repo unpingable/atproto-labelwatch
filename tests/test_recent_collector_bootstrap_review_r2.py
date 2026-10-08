@@ -66,7 +66,11 @@ def test_non_id_ordered_pages_do_not_silently_lose_recent_rows(store):
         accepted = c.execute('SELECT COUNT(*) FROM q_recent_seen').fetchone()[0]-before
         gaps = c.execute('SELECT COUNT(*) FROM q_recent_gaps').fetchone()[0]
     # Either every new row is observed, or the loss is disclosed as a gap/unknown coverage.
-    assert accepted == 300 or gaps > 0, (accepted, gaps)
+    # Integrator ruling (r2 item 1): disclosure is per-source (cursor_order_unverified,
+    # coverage unknown), not a store-wide gap.
+    unverified = status(store, A)['cursor_order_unverified']
+    assert accepted == 300 or gaps > 0 or (unverified and store.collector_bootstrap_summary()['coverage'] == 'unknown'), \
+        (accepted, gaps, unverified)
 
 
 class Undated(Labeler):
