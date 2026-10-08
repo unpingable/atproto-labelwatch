@@ -84,3 +84,19 @@ def test_env_example_reserves_parse():
     value = json.loads(line.split('=', 1)[1])
     assert value and all(set(e) == {'mount', 'bytes'} for e in value)
     assert not any(e['mount'] == '/data' for e in value)
+
+
+@pytest.mark.parametrize('name,families', [
+    ('labelwatch-recent-collect.service', 'AF_UNIX AF_INET AF_INET6'),
+    ('labelwatch-recent-product.service', 'AF_UNIX AF_INET AF_INET6'),
+    ('labelwatch-recent-overview.service', 'AF_UNIX AF_INET AF_INET6'),
+    ('labelwatch-recent-maintain.service', 'AF_UNIX')])
+def test_syscall_capability_and_address_family_sandbox(name, families):
+    service = parse(name)['Service']
+    assert service['CapabilityBoundingSet'] == ['']
+    assert service['RestrictAddressFamilies'] == [families]
+    assert service['SystemCallFilter'] == ['@system-service']
+
+
+def test_maintain_has_no_network():
+    assert parse('labelwatch-recent-maintain.service')['Service']['IPAddressDeny'] == ['any']
