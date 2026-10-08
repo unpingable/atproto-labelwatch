@@ -25,13 +25,18 @@ class RecentProvider:
         if prefix and (type(after_id) is not int or after_id<0 or (upper_id is not None and (type(upper_id) is not int or upper_id<after_id))):raise ValueError('invalid export keyset')
         deadline=time.monotonic()+timeout_seconds
         start,end=iso(clock(start)),iso(clock(end))
-        # Serialize acquisition/materialization; all leases are released before
-        # yielding immutable product rows, so pagination cannot pin storage.
-        with lock(self.store.root,timeout=timeout_seconds),lock(self.store.root,'reader.lock',shared=True,timeout=max(.001,deadline-time.monotonic())):
+        # Readers never take the writer lease: one read-only WAL transaction on
+        # the state fixes the selection, and the shared reader lease fences
+        # retirement/maintenance while payloads are read. Rows accepted after
+        # the snapshot are invisible (fixed event ids); rows still pending a
+        # flush at the snapshot are read from the state itself. All leases are
+        # released before yielding immutable product rows.
+        with lock(self.store.root,'reader.lock',shared=True,timeout=timeout_seconds):
             c=connect(self.store.state,readonly=True);duck=duckdb.connect()
             duck.execute("SET memory_limit='128MB'");duck.execute('SET threads=1');duck.execute("SET max_temp_directory_size='0B'")
             timer=threading.Timer(max(.001,deadline-time.monotonic()),duck.interrupt);timer.daemon=True;timer.start()
             try:
+                c.execute('BEGIN')
                 self.store.require(c)
                 if c.execute('SELECT 1 FROM q_recent_transition').fetchone():raise RuntimeError('maintenance recovery pending')
                 frontier={k:db.get_meta(c,'q:recent_'+k) for k in ('start','end','generation','events')}
@@ -41,9 +46,13 @@ class RecentProvider:
                     if upper_id is None:upper_id=c.execute('SELECT COALESCE(MAX(event_id),0) FROM q_recent_seen').fetchone()[0]
                     selected=list(c.execute('SELECT event_id,observed_us,owner_day FROM q_recent_seen WHERE target_did=? AND observed_us>=? AND observed_us<? AND event_id>? AND event_id<=? ORDER BY event_id LIMIT ?', (did,micros(start),micros(end),after_id,upper_id,max_rows+1)))
                     more=len(selected)>max_rows;selected=selected[:max_rows]
+                    # Whole-export size at the fixed frontier (index-only), so the
+                    # product can size or refuse the export before paging.
+                    total=c.execute('SELECT COUNT(*) FROM q_recent_seen WHERE target_did=? AND observed_us>=? AND observed_us<? AND event_id>? AND event_id<=?',
+                                    (did,micros(start),micros(end),after_id,upper_id)).fetchone()[0] if after_id==0 else None
                 else:
                     selected=list(c.execute('SELECT event_id,observed_us,owner_day FROM q_recent_seen WHERE target_did=? AND observed_us>=? AND observed_us<? ORDER BY observed_us,event_id LIMIT ?', (did,micros(start),micros(end),max_rows)))
-                    more=False
+                    more=False;total=None
                 seen={r[0]:from_micros(r[1]) for r in selected}
                 groups={}
                 for event_id,observed,owner in selected:groups.setdefault(day_name(owner),[]).append(event_id)
@@ -68,6 +77,11 @@ class RecentProvider:
                 active=[owner for owner,status in c.execute('SELECT identity,status FROM q_segments') if status in ('ACTIVE','SEALED')]
                 found={};ids=list(seen);used=0;stopped=False
                 fields=tuple(x for x in FIELDS if x not in ('event_hash','target_did'))
+                pending={}
+                for offset in range(0,len(ids),500):
+                    part=ids[offset:offset+500]
+                    for row in c.execute('SELECT '+','.join('e.'+x for x in fields)+' FROM label_events e JOIN q_pending p ON p.id=e.id WHERE e.id IN ('+','.join('?' for _ in part)+')',part):
+                        pending[row['id']]=dict(row)
                 def admit(value):
                     nonlocal used,stopped,more
                     if value['id'] in found:raise RuntimeError('duplicate retained event identity')
@@ -85,10 +99,14 @@ class RecentProvider:
                         hot=connect(self.store.root/(owner+'.sqlite'),readonly=True)
                         try:
                             hot.set_progress_handler(lambda:int(time.monotonic()>deadline),1000)
-                            for row in hot.execute(query,part):
-                                admit(dict(row))
-                                if stopped:break
+                            merged={row['id']:dict(row) for row in hot.execute(query,part)}
                         finally:hot.close()
+                        # A row pending at the snapshot may since have been flushed: once only.
+                        for event_id in part:
+                            if event_id not in merged and event_id in pending:merged[event_id]=dict(pending[event_id])
+                        for event_id in sorted(merged):
+                            admit(merged[event_id])
+                            if stopped:break
                     for candidate,path in archives:
                         if stopped:break
                         if candidate!=owner:continue
@@ -111,4 +129,4 @@ class RecentProvider:
             finally:timer.cancel();duck.close();c.close()
         yield {'rows':rows,'frontier':hashlib.sha256(json.dumps([frontier,coverage],sort_keys=True).encode()).hexdigest(),
                'coverage':coverage, 'upper_id':upper_id if prefix else None,
-               'next_after_id':max(seen) if seen else after_id, 'has_more':more}
+               'next_after_id':max(seen) if seen else after_id, 'has_more':more, 'total':total}
