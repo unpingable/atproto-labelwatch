@@ -111,21 +111,35 @@ Three systemd services, one SQLite database (WAL mode):
 └──────────────────┘
 ```
 
-### Current operation (2026-10-03)
+### Current operation: rolling observatory (clean-start epoch)
 
-Generation 2 writes to root; a verified local v3 catalog covers cold history
-and the full archive plus deltas are retained on home NFS. Live floor is
-`2026-08-15T00:00:00Z`; history start is
-`2026-02-24T20:09:49.538634Z`. Bridge exit, Phase 2 and one real
-archive/catalog-extension/trim cycle are accepted. The weekly maintenance
-procedure is [retention-cycle](docs/retention.md).
+**Status (2026-10-08): held.** The public site returns the hold page (HTTP 503)
+while the new observation epoch is prepared. Keep this line until the epoch is
+activated; the rest of this section describes the service as it runs then.
 
-Collector, API, discovery and watcher remain active. Scheduled derive/report
-are disabled (`LABELWATCH_DERIVE_DISABLE=1`); climate/registry answers refuse
-when their cold coverage is incomplete. This diagram describes implemented
-capabilities, not permission to enable every consumer. `report --labeler`
-returns a verified cold/live lifetime total or an explicit refusal, including
-ambiguous quarantined events for that labeler.
+Labelwatch is a rolling observatory. It keeps the most recent 30 days of
+public label observations; older observations expire and are not served.
+The current epoch begins at its recorded acquisition time (the local
+acceptance clock, `q:recent_acquisition.started_at`); anything earlier was not
+observed by this epoch and is shown as "not observed", never as quiet. During
+the first 30 days the site and the estate overview state how many of the 30
+days have been observed. Collection interruptions inside the window are
+disclosed with a reason (`source_unavailable`, `ingest_paused`,
+`cursor_reset`, `maintenance`, `warmup`, `unknown`); no recorded gaps does not
+prove complete coverage. Source-authored label dates are never observation
+times.
+
+Labelwatch records observed application and removal events. It does not know
+whether a label is currently active: current label state is unknown. Account
+views and bounded paginated exports (`/account`, `/exports`, `/download`) cover
+only the window; requests outside it are refused explicitly. An aggregate
+estate overview (`labelwatch.recent-overview.v1`, no subject identities) is
+published by `tools/segmented_qualification/recent_publish.py` for the facts
+API, which serves it only while fresh.
+
+The previous epoch ended on 2026-10-06. Its pages, census, labeler and alert
+reports are withdrawn and are not served; accepted incident and qualification
+evidence is preserved separately.
 
 ## CLI
 
