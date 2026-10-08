@@ -60,13 +60,15 @@ def test_envelope_schema_counts_and_top_labelers(store):
     assert env['top_labelers_7d'] == [{'labeler_did': B, 'count': 2}, {'labeler_did': A, 'count': 1},
                                       {'labeler_did': C, 'count': 1}]
     cov = env['coverage']
-    assert cov['status'] == 'warming_up' and cov['observed_days'] == 7
+    # Unstarted sources: the collector says coverage is unknown, and so does the overview.
+    assert cov['status'] == 'unknown' and cov['observed_days'] == 7
     assert cov['warmup'] == {'start': '2026-08-09T12:30:00.000000Z', 'end': '2026-09-01T00:00:00.000000Z',
                              'reason': 'not_observed'}
     assert cov['gaps'] == [{'start': '2026-09-02T01:00:00.000000Z', 'end': '2026-09-02T02:00:00.000000Z',
                             'reason': 'source_unavailable'}]
     assert cov['sources'] == {'seeded': 3, 'unstarted': 3, 'probing': 0, 'established': 0, 'refused': 0,
-                              'pre_epoch_skipped': 0, 'undated_skipped': 0, 'late_skipped': 0, 'cursor_order_unverified': 0, 'undated_only': 0, 'provider_rejects': 0, 'unavailable': 0}
+                              'pre_epoch_skipped': 0, 'undated_skipped': 0, 'late_skipped': 0, 'cursor_order_unverified': 0, 'undated_only': 0, 'provider_rejects': 0, 'unavailable': 0,
+                              'future_skipped': None}
     assert cov['observed_through'] is None  # ingest() fixtures accept no collector page
     assert stats['last_maintenance']['generation'] == 1
 
@@ -90,7 +92,7 @@ def test_steady_state_has_no_warmup_and_reports_gaps():
     stats = {'acquisition': {'generation_id': '12345678-1234-4234-9234-123456789012',
                              'started_at': '2026-08-01T00:00:00Z', 'basis': 'local_acceptance_clock'},
              'counts': dict.fromkeys(recent_overview.COUNT_KEYS, 0), 'gaps': [],
-             'sources': dict.fromkeys(recent_overview.SOURCE_KEYS, 0),
+             'sources': dict(dict.fromkeys(recent_overview.SOURCE_KEYS, 0), coverage='established_sources_only'),
              'top_labelers_7d': [], 'observed_through': None}
     env = recent_overview.overview(stats, NOW, signature='x')
     assert env['coverage']['warmup'] is None and env['coverage']['observed_days'] == 30
@@ -197,7 +199,8 @@ def test_refused_source_is_counted_publicly_and_its_reason_kept_private(store):
     stats = recent_publish.read_store(store, NOW)
     env = recent_overview.overview(stats, NOW, signature='x')
     assert env['coverage']['sources'] == {'seeded': 3, 'unstarted': 2, 'probing': 0, 'established': 0,
-                                          'refused': 1, 'pre_epoch_skipped': 0, 'undated_skipped': 0, 'late_skipped': 0, 'cursor_order_unverified': 0, 'undated_only': 0, 'provider_rejects': 0, 'unavailable': 0}
+                                          'refused': 1, 'pre_epoch_skipped': 0, 'undated_skipped': 0, 'late_skipped': 0, 'cursor_order_unverified': 0, 'undated_only': 0, 'provider_rejects': 0, 'unavailable': 0,
+                              'future_skipped': None}
     body = json.dumps(env)
     assert 'opaque_cursor' not in body and 'bootstrap_refused' not in body and 'reason": "bootstrap' not in body
     assert stats['refused_sources'] == [{'did': C, 'reason': 'bootstrap_refused:opaque_cursor'}]
@@ -208,7 +211,7 @@ def test_refused_source_is_counted_publicly_and_its_reason_kept_private(store):
     assert health['coverage']['sources']['refused'] == 1
     landing = get(h, '/')[2].decode()
     assert 'opaque_cursor' not in landing
-    assert 'Refused (could not be safely initialised)</th><td>1</td>' in landing
+    assert 'Refused</th><td>1</td>' in landing
 
 
 def test_observed_through_is_the_latest_accepted_page(store):
@@ -290,3 +293,20 @@ def test_unavailable_sources_counted_publicly_and_detailed_for_operators(store):
     landing = get(h, '/')[2].decode()
     assert 'Sources currently unavailable (transient failures, retried with backoff): 1' in landing
     assert 'transport_timeout-secret' not in landing
+
+
+def test_status_carries_the_collector_coverage_verdict(store, monkeypatch):
+    stats = recent_publish.read_store(store, NOW)
+    assert stats['sources']['coverage'] == 'unknown'
+    env = recent_overview.overview(stats, NOW, signature='x')
+    assert env['coverage']['status'] == 'unknown'
+    assert env['coverage']['warmup'] is not None and env['coverage']['gaps']  # still disclosed
+    assert 'coverage' not in env['coverage']['sources']
+    later = datetime(2026, 10, 5, tzinfo=timezone.utc)  # window fully inside the epoch
+    stats['sources']['coverage'] = 'established_sources_only'
+    assert recent_overview.overview(stats, later, signature='x')['coverage']['status'] == 'no_recorded_gaps'
+    stats['sources']['coverage'] = 'unknown'
+    env = recent_overview.overview(stats, later, signature='x')
+    assert env['coverage']['status'] == 'unknown' and env['coverage']['warmup'] is None
+    stats['sources']['future_skipped'] = 4
+    assert recent_overview.overview(stats, later, signature='x')['coverage']['sources']['future_skipped'] == 4

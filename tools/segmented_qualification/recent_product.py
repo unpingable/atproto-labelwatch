@@ -3,7 +3,8 @@
 
 Run only on an admitted RecentStore:
   PYTHONPATH=src:. python tools/segmented_qualification/recent_product.py --store PATH
-Routes: / (landing), /about, /previous-epoch, /health (operator JSON),
+Routes: / (landing), /about, /previous-epoch, /health (operator JSON with source
+DIDs: loopback/operator-only, never routed publicly),
 /lookup (DID or handle -> /account), /account, /exports, /download,
 /instruments/fonts/<file>. Binds 127.0.0.1 only.
 """
@@ -115,7 +116,7 @@ class SiteStatus:
         age = (status["now"] - timestamp(through)).total_seconds() if through else None
         # observed_through is the latest accepted collector page; null until one is accepted.
         state = "unknown" if age is None else "fresh" if age <= self.stale_after else "stale"
-        overall = "ok" if state == "fresh" else "warming_up" if state == "unknown" and cov["status"] == "warming_up" else "degraded"
+        overall = "ok" if state == "fresh" else "warming_up" if state == "unknown" and cov["warmup"] is not None else "degraded"
         return 200, {"status": overall,
                      "window_days": view["window_days"], "acquisition": view["acquisition"],
                      "coverage": {"status": cov["status"], "observed_days": cov["observed_days"], "warmup": cov["warmup"],

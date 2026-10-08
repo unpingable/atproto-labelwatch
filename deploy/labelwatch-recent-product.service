@@ -2,6 +2,10 @@
 # / (landing), /about, /previous-epoch, /health (operator JSON), /lookup,
 # /account, /exports, /download. Caddy routes the public hostname here only
 # after activation; until then the hold page stays in front.
+# /health carries operator DID lists (refused, unavailable, order-unverified,
+# per-source status) and must NOT be routed publicly. Caddy routes only /,
+# /about, /previous-epoch, /account, /exports, /download, /lookup and
+# /instruments/*; /health stays loopback/operator-only.
 # Handle lookup is off: /lookup accepts DIDs only unless --resolve-handles is
 # added (outbound HTTPS to public.api.bsky.app; then drop IPAddressDeny below).
 [Unit]
