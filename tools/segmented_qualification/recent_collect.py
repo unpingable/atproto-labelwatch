@@ -57,6 +57,7 @@ def main(argv=None):
         print(json.dumps({'round':{'status':'refused','reason':(str(exc) or type(exc).__name__)[:160]}},sort_keys=True),flush=True)
         return 1
     print(json.dumps(result,sort_keys=True),flush=True)
+    __import__('recent_publish').write_status_quietly(args.store,result)  # /health reads <store>/STATUS.json
     round_=result['collection'].get('round',{})
     if round_.get('status')!='refused':return 0
     # The expected 00:00 UTC owner hold is not a failure: 75 (EX_TEMPFAIL) is

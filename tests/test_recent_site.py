@@ -1,5 +1,6 @@
 """Rolling-observatory pages over a real RecentStore; account/export routes unchanged."""
 import html
+from datetime import timedelta
 import importlib.util
 import io
 import json
@@ -35,9 +36,13 @@ def get(handler_class, path, accept=None):
     return sent['status'], sent['headers'], request.wfile.getvalue()
 
 
-def site(store, now=NOW, **kwargs):
+def site(store, now=NOW, status=True, **kwargs):
+    """Product over a real store; by default a collection round has just written STATUS.json."""
     mod = module()
     product = RecentObservations(RecentProvider(store), now=lambda: now)
+    if status:
+        import recent_publish
+        recent_publish.write_status(store, {'collection': {'round': {'status': 'completed'}}}, now=now)
     return mod, mod.handler(product, **kwargs)
 
 
@@ -104,7 +109,7 @@ def test_health_reports_acquisition_coverage_maintenance_and_freshness(store):
     assert status == 200 and headers['Cache-Control'] == 'no-store'
     assert health['acquisition']['started_at'] == '2026-09-01T00:00:00.000000Z'
     assert health['coverage']['gaps_count'] == 1 and health['coverage']['observed_days'] == 7
-    assert health['last_maintenance'] == {'generation': 1, 'at': '2026-09-02T00:00:00.000000Z'}
+    assert health['last_maintenance'] == {'generation': 1, 'at': '2026-09-02T00:00:00.000000Z', 'recovery_pending': False}
     # No collector page accepted yet: unknown, never fresh from the init clock.
     assert health['freshness']['state'] == 'unknown' and health['freshness']['observed_through'] is None
     assert health['status'] == 'warming_up'
@@ -195,3 +200,73 @@ def test_health_lists_are_capped_with_totals(store, monkeypatch):
     full = json.loads(get(h, '/health?full=1')[2])['coverage']
     assert len(full['refused_sources']) == 120 and len(full['source_status']) == 3
     assert get(h, '/health?full=yes')[0] == 409
+
+
+def test_health_is_served_from_status_without_touching_the_store(store, monkeypatch):
+    import recent_publish
+    _, h = site(store)
+    def scan(*args, **kwargs):
+        raise AssertionError('health must not read the store')
+    monkeypatch.setattr(recent_publish, 'read_store', scan)
+    monkeypatch.setattr(recent_publish, 'status_snapshot', scan)
+    status, _, body = get(h, '/health')
+    health = json.loads(body)
+    assert status == 200 and health['status_age_seconds'] == 0 and health['round'] == {'status': 'completed'}
+    assert health['status_stale_after_seconds'] == 240 and health['acquisition']['started_at']
+    assert len(json.loads(get(h, '/health?full=1')[2])['coverage']['source_status']) == 3
+
+
+def test_health_status_file_absent_or_old_is_503(store):
+    _, h = site(store, status=False)
+    status, _, body = get(h, '/health')
+    assert status == 503 and json.loads(body)['reason'] == 'status_absent'
+    import recent_publish
+    recent_publish.write_status(store, now=NOW - timedelta(seconds=241))
+    status, _, body = get(h, '/health')
+    assert status == 503 and json.loads(body)['status'] == 'stale' and json.loads(body)['status_age_seconds'] == 241
+    recent_publish.write_status(store, now=NOW - timedelta(seconds=239))
+    assert get(h, '/health')[0] == 200
+
+
+def test_landing_degrades_to_cached_status_when_the_live_read_is_over_budget(store, monkeypatch):
+    import recent_publish
+    _, h = site(store)
+    def slow(*args, **kwargs):
+        raise TimeoutError('recent query deadline')
+    monkeypatch.setattr(recent_publish, 'read_store', slow)
+    status, _, body = get(h, '/')
+    text = body.decode()
+    assert status == 200 and 'Observation summary unavailable' not in text
+    assert 'Live counts are temporarily unavailable; coverage below is from the collector status of' in text
+    assert 'Epoch began' in text and 'Not yet started</th><td>3</td>' in text
+    assert '<strong>unknown</strong><span>Events observed, last 7 days' in text
+
+
+def test_collect_command_writes_status_after_each_round(store, monkeypatch):
+    import recent_collect
+    calls = []
+
+    class Round:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run_round(self, discover=False):
+            return {'collection': {'round': {'status': 'completed'}}}
+
+    class Transport:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(recent_collect, 'Collector', Round)
+    monkeypatch.setattr(recent_collect, 'HTTPTransport', Transport)
+    import recent_publish
+    real = recent_publish.write_status_quietly
+    monkeypatch.setattr(recent_publish, 'write_status_quietly', lambda s, r=None: calls.append(r) or real(s, r))
+    assert recent_collect.main(['--store', str(store.root), '--network']) == 0
+    assert calls == [{'collection': {'round': {'status': 'completed'}}}]
+    status = json.loads((store.root / 'STATUS.json').read_text())
+    assert status['schema'] == 'labelwatch.recent-status.v1' and status['round'] == {'status': 'completed'}
+    assert oct((store.root / 'STATUS.json').stat().st_mode & 0o777) == '0o644'

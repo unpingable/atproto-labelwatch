@@ -749,6 +749,9 @@ def landing_html(view, interval=None, error=None):
                 ('Window', f'{window} days, rolling'),
                 ('Day', f"{_epoch_day(cov['observed_days'], window)} of {window} since epoch start"),
                 ('Recorded gaps', 'overflow' if cov['gap_overflow'] else str(len(cov['gaps'])))]
+        if view.get('status_note'):
+            body.append('<p class="nz-muted">Live counts are temporarily unavailable; coverage below is from the collector status of '
+                        + _esc(_when(view['status_note'])) + '.</p>')
         body.append('<div class="nz-status-rail">' + ''.join('<span>' + _esc(k) + ' <strong>' + _esc(v) + '</strong></span>' for k, v in rail) + '</div>')
         cards = [('Events observed, last 24 hours', counts.get('events_24h')),
                  ('Events observed, last 7 days', counts.get('events_7d')),
