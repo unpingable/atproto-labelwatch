@@ -17,6 +17,24 @@ class RecentProvider:
         self.archive=self.store.root/'archive'
         if archive is not None and Path(archive).resolve()!=self.archive.resolve():raise ValueError('archive mismatch')
 
+    def histogram(self,did,start,end,upper_id,bucket_seconds=3600,timeout_seconds=10):
+        """Row counts per UTC bucket for one account at a fixed event-id frontier.
+
+        Index-only (target_did, observed_us, event_id); used to suggest export
+        intervals that each fit the export cap. Same lease rules as snapshot().
+        """
+        if bucket_seconds not in (3600,86400) or type(upper_id) is not int or not 0<timeout_seconds<=30:raise ValueError('histogram bounds invalid')
+        deadline=time.monotonic()+timeout_seconds;width=bucket_seconds*1000000
+        with lock(self.store.root,'reader.lock',shared=True,timeout=timeout_seconds):
+            c=connect(self.store.state,readonly=True)
+            try:
+                c.execute('BEGIN');self.store.require(c)
+                c.set_progress_handler(lambda:int(time.monotonic()>deadline),1000)
+                rows=c.execute('SELECT observed_us/? AS b,COUNT(*) FROM q_recent_seen WHERE target_did=? AND observed_us>=? AND observed_us<? AND event_id<=? GROUP BY b ORDER BY b',
+                               (width,did,micros(clock(start)),micros(clock(end)),upper_id)).fetchall()
+            finally:c.close()
+        return {from_micros(b*width):n for b,n in rows}
+
     @contextlib.contextmanager
     def snapshot(self,did,start,end,max_rows,timeout_seconds=10,max_bytes=1024**2,*,after_id=None,upper_id=None):
         if not 0<max_rows<=100001 or not 0<timeout_seconds<=30:raise ValueError('query bounds invalid')

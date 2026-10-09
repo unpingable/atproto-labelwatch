@@ -55,7 +55,8 @@ def test_landing_discloses_activity_epoch_coverage_gaps_roster_and_state(store):
                      'Labelers enrolled', 'Rows skipped as authored before this epoch',
                      'Observations older than 30 days expire',
                      'Labelwatch records observed application/removal events; current label state is unknown.',
-                     'action="/lookup"', '/exports?did=', 'href="/about"', 'href="/previous-epoch"',
+                     'action="/lookup"', '/exports?did=',
+                     'Exports are bounded to about 114,000 rows; larger accounts are exported in the narrower intervals the server suggests, each with its own snapshot and coverage statement.', 'href="/about"', 'href="/previous-epoch"',
                      '/instruments/fonts/IBMPlexSans-Regular.woff2'):
         assert expected in text, expected
     assert '<strong>4</strong><span>Events observed, last 7 days' in text
@@ -80,6 +81,7 @@ def test_about_states_verbatim_coverage_and_glossary(store):
     assert coverage_statement('2026-09-01T00:00:00.000000Z', 30) in text
     assert 'Labelwatch keeps a rolling window of the most recent 30 days of public label observations.' in text
     assert 'which ended 2026-10-06, are not part of this service' in text
+    assert 'Exports are bounded to about 114,000 rows' in text
     for reason in ('not_observed', 'source_unavailable', 'ingest_paused', 'cursor_reset', 'maintenance', 'warmup', 'unknown', 'pre_epoch'):
         assert '<code>' + reason + '</code>' in text
     words = coverage_statement('2026-09-01T00:00:00Z').replace('&quot;', '"').split()
