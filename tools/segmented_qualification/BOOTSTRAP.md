@@ -256,6 +256,12 @@ every other refusal needs an explicit operator rule, which does not exist.
 
 ## C4-full fix: readers never stop ingestion (2026-10-09)
 
+* Qualification (run 170d654a, source 63a4bc6, evidence
+  clean-start-20261008/evidence/wal-gate-170d654a-*.json): C4 harness unchanged, 1.2M-event
+  store, 8 reader threads for 60 s, ingest 153.6 ev/s with readers, WAL budget lowered to
+  16 MiB so the gate fires: PASS, 0 torn reads, 0 refusals, 0 pinned checks; state WAL
+  file peak 9.94 MB (budget 16.8 MB); backlog peak 3.90 MB; 15 TRUNCATE gates, longest
+  0.246 s; accept latency p99 1.05 s with readers (0.90 s without).
 * Measurement: after a PASSIVE checkpoint, `PRAGMA wal_checkpoint` reports frames in
   the WAL in use (`log`) and frames checkpointed; the pinned backlog is the
   difference. A large WAL file whose frames are all checkpointed is reused, not
@@ -272,13 +278,16 @@ every other refusal needs an explicit operator rule, which does not exist.
   30 s. Product call sites are unchanged (the gate lives in the shared lock helper);
   lease-free readers (raw read-only connections) are not fenced and only bounded by
   the 250 ms busy timeout.
-* No refusal: when the backlog or the WAL file still exceeds the budget, the page is
+* No refusal: when the un-checkpointed backlog still exceeds the budget, the page is
   accepted and the store records `q:recent_wal_pinned` {since, last, backlog_bytes,
   wal_file_bytes, budget_bytes}, exposed as `wal_pinned` in
-  `collector_bootstrap_summary()` and cleared once a later check is under budget.
-  Daily maintenance still runs TRUNCATE under its exclusive locks. Ingestion refuses
-  only for the filesystem reserve / page ceiling (`check_capacity`).
-  This is a disclosure, not a gap: no observation was lost while pages were accepted.
+  `collector_bootstrap_summary()` and cleared once a later check is under budget, plus
+  one store-level `maintenance` gap per pinned episode (since to last check; same-reason
+  intervals merge). Pages keep being accepted during it, so that gap marks degraded
+  store maintenance, not lost observations. Daily maintenance still runs TRUNCATE under
+  its exclusive locks. Ingestion refuses only for the filesystem reserve / page ceiling
+  (`check_capacity`). The gate's 30 s retry backoff applies only while frames are
+  still pinned.
 * `storage.Store.check_local` (legacy stores) keeps its file-size refusal
   (`check_wal`); `RecentStore` replaces it.
 
