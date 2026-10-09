@@ -292,6 +292,12 @@ def main():
     with (root / "lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         active = root / "ACTIVE.json"
+        superseded = root / "SUPERSEDED.json"
+        if superseded.exists():
+            # The scheduled export/catalog path has been superseded by a later
+            # acquisition epoch. No fresh occurrence and no --resume of the
+            # registered one may run; ACTIVE.json stays as the historical fence.
+            raise TrimRefused("retention path superseded (%s); refusing fresh and resumed occurrences" % superseded)
         if active.exists() and not args.resume:
             prior = json.loads(active.read_text())
             checkpoint = Path(prior["occurrence"]) / "checkpoint.json"
