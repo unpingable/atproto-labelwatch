@@ -291,7 +291,9 @@ class RecentStore(Store):
             before={'wal_bytes':used,'backlog_bytes':backlog}
             gated=None
             retry=getattr(self,'_wal_gate_retry',0.0)
-            if used>budget//2 and _time.monotonic()>=retry:
+            # The backoff only applies while frames are still pinned: with nothing
+            # pinned a TRUNCATE needs no reader to let go.
+            if used>budget//2 and (backlog==0 or _time.monotonic()>=retry):
                 flag=self.root/storage.CHECKPOINT_FLAG
                 flag.touch();t0=_time.monotonic()
                 try:
@@ -313,15 +315,20 @@ class RecentStore(Store):
                 gated={'result':gated,'seconds':round(_time.monotonic()-t0,3)}
             try:size=Path(str(self.state)+'-wal').stat().st_size
             except FileNotFoundError:size=0
-            pinned=backlog>budget or size>budget
+            # Only a growing, un-checkpointed backlog counts; a large but fully
+            # checkpointed WAL file is reused (and truncated at the next reset).
+            pinned=backlog>budget
             previous=db.get_meta(c,'q:recent_wal_pinned')
             if pinned or previous:
                 with lock(self.root):
                     if pinned:
-                        now=iso(dt.datetime.now(UTC))
+                        stamp=dt.datetime.now(UTC);now=iso(stamp)
                         since=json.loads(previous)['since'] if previous else now
                         db.set_meta(c,'q:recent_wal_pinned',json.dumps({'since':since,'last':now,'backlog_bytes':backlog,
                                                                         'wal_file_bytes':size,'budget_bytes':budget},sort_keys=True))
+                        # One store-level maintenance interval per pinned episode
+                        # (same-reason intervals merge); pages are still accepted.
+                        self._record_gap(c,since,iso(max(stamp,clock(since)+dt.timedelta(microseconds=1))),'maintenance')
                     else:c.execute("DELETE FROM meta WHERE key='q:recent_wal_pinned'")
                     c.commit()
             figures={'wal_bytes':used,'backlog_bytes':backlog,'wal_file_bytes':size,'budget_bytes':budget,
