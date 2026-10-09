@@ -27,8 +27,13 @@ def test_sigkilled_round_is_swept_once_and_young_attempts_are_kept(store, tmp_pa
     import storage
     child = subprocess.Popen([sys.executable, '-c', CHILD, str(store.root), tools, str(storage.ROOT)], env=env)
     try:
-        for _ in range(200):
+        # Child start-up imports duckdb/pyarrow; under host load that can exceed
+        # 10 s, so wait up to 90 s for the attempt to register before killing.
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
             if store.collector_bootstrap_summary()['pending_attempts'] == 1:
+                break
+            if child.poll() is not None:
                 break
             time.sleep(.05)
         assert store.collector_bootstrap_summary()['pending_attempts'] == 1
