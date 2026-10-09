@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 
-_FRACTION = re.compile(r'^(?P<head>\d{4}-\d{2}-\d{2}[T t]\d{2}:\d{2}:\d{2})(?P<frac>[.,]\d+)?(?P<tail>.*)$')
+_FRACTION = re.compile(r'^(?P<head>\d{4}-\d{2}-\d{2}[T t]\d{2}:\d{2}:\d{2})(?P<frac>[.,]\d+)?(?P<tail>Z|z|[+-]\d\d:\d\d)$', re.ASCII)
 
 
 def parse_utc(value):
@@ -31,6 +31,8 @@ def parse_utc(value):
     tail = m.group('tail')
     if tail in ('Z', 'z'):
         tail = '+00:00'
+    # Only RFC 3339 offsets (Z or ±HH:MM) are accepted; +0000, +05 or fractional offsets
+    # would parse on 3.12 but not on 3.10, so they are refused on both.
     try:
         parsed = datetime.fromisoformat(m.group('head').replace(' ', 'T') + frac + tail)
     except ValueError:

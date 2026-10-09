@@ -23,6 +23,9 @@ from urllib.parse import urlencode
 
 from .rfc3339 import parse_utc
 
+import re as _re
+_NAIVE = _re.compile(r'^\d{4}-\d{2}-\d{2}[T t]\d{2}:\d{2}:\d{2}([.,]\d+)?$', _re.ASCII)
+
 
 class Refused(ValueError):
     """Explicit public refusal, never a successful empty result."""
@@ -97,12 +100,9 @@ def timestamp(value):
         raise Refused("invalid_timestamp")
     result = parse_utc(value)
     if result is None:
-        # No offset is the only tz-specific refusal the API distinguishes.
-        try:
-            naive = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise Refused("invalid_timestamp") from exc
-        if naive.tzinfo is None:
+        # A well-formed timestamp that merely lacks an offset gets the more specific code;
+        # decided by shape, not by fromisoformat, so 3.10 and 3.12 answer alike.
+        if _NAIVE.match(value.strip()):
             raise Refused("timestamp_requires_timezone")
         raise Refused("invalid_timestamp")
     return result

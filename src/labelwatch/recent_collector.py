@@ -573,8 +573,13 @@ class HTTPTransport:
         if self._loop is None:
             with self:
                 return self.request(operation,params,max_bytes=max_bytes,timeout_seconds=timeout_seconds)
-        return self._loop.run_until_complete(asyncio.wait_for(
-            self._request(operation,params,max_bytes,timeout_seconds),timeout=timeout_seconds))
+        try:
+            return self._loop.run_until_complete(asyncio.wait_for(
+                self._request(operation,params,max_bytes,timeout_seconds),timeout=timeout_seconds))
+        except asyncio.TimeoutError as exc:
+            # On CPython < 3.11 asyncio.TimeoutError is not the builtin TimeoutError;
+            # callers classify on the builtin, so every interpreter raises the same type.
+            raise TimeoutError('request deadline %.3fs exceeded' % timeout_seconds) from exc
 
     async def _public_resolution(self, url):
         """Refuse a name that resolves to a non-public address (best effort; see public_host)."""

@@ -24,6 +24,13 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$sha" ] && [ -n "$root" ] && [ -n "$pubdir" ] && [ -n "$reserves" ] || { echo "usage: --release-sha --admitted-root --pubdir --reserves required" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 2; }
+case "$sha" in *[!0-9a-f]*|"") echo "release sha must be lowercase hex" >&2; exit 2;; esac
+case "$round" in *[!0-9]*|"") echo "round-seconds must be an integer" >&2; exit 2;; esac
+[ "$round" -ge 1 ] && [ "$round" -le 30 ] || { echo "round-seconds must be 1..30 (collector cap)" >&2; exit 2; }
+case "$store_name" in *[!A-Za-z0-9._-]*|""|.|..) echo "store-name must be a plain name" >&2; exit 2;; esac
+for v in "$root" "$pubdir" "$reserves"; do
+  case "$v" in *'#'*|*'&'*|*'\\'*|*$'\n'*|*$'\r'*) echo "refused character in argument: $v" >&2; exit 2;; esac
+done
 rel=/opt/labelwatch/releases/$sha
 [ -d "$rel/source/deploy" ] && [ -x "$rel/venv/bin/python" ] || { echo "release $rel incomplete (source/ and venv/ required)" >&2; exit 2; }
 case "$root" in /*) ;; *) echo "admitted root must be absolute" >&2; exit 2;; esac
@@ -55,15 +62,16 @@ sub "$rel/source/deploy/labelwatch-recent.env.example" \
         -e "s#^LABELWATCH_RECENT_RESERVES=.*#LABELWATCH_RECENT_RESERVES=$reserves#" \
         -e "s#^LABELWATCH_RECENT_ROUND_SECONDS=.*#LABELWATCH_RECENT_ROUND_SECONDS=$round#" > "$tmp"
 grep -q REPLACE_WITH "$tmp" && { echo "unsubstituted placeholder in env" >&2; grep REPLACE_WITH "$tmp" >&2; exit 3; }
-install -m 0640 -o root -g labelwatch "$tmp" /etc/labelwatch-recent.env
+stage=$(mktemp -d); trap 'rm -rf "$tmp" "$stage"' EXIT
+cp "$tmp" "$stage/labelwatch-recent.env"
 
 units="labelwatch-recent-collect.service labelwatch-recent-collect.timer labelwatch-recent-maintain.service labelwatch-recent-maintain.timer labelwatch-recent-overview.service labelwatch-recent-overview.timer labelwatch-recent-product.service"
-stage=$(mktemp -d); trap 'rm -rf "$tmp" "$stage"' EXIT
 for u in $units; do
   sub "$rel/source/deploy/$u" > "$stage/$u"
   grep -q REPLACE_WITH "$stage/$u" && { echo "unsubstituted placeholder in $u" >&2; exit 3; }
 done
-# All seven rendered; now place them together so a half-installed set never exists.
+# Env and all seven units rendered; now place them together so a half-installed set never exists.
+install -m 0640 -o root -g labelwatch "$stage/labelwatch-recent.env" /etc/labelwatch-recent.env
 for u in $units; do install -m 0644 -o root -g root "$stage/$u" "/etc/systemd/system/$u"; done
 systemctl daemon-reload
 # Advisory: verify reports dependency/ordering remarks, not acceptance; failures above are the gate.

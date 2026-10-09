@@ -25,7 +25,8 @@ def test_fractions_of_any_length_parse_identically(value, expected):
     assert utc(value) == expected
 
 
-@pytest.mark.parametrize('value', ['2026-10-07T02:53:59.278503138', '2026-10-07', 'yesterday', '', None, 12, '2026-13-01T00:00:00Z'])
+@pytest.mark.parametrize('value', ['2026-10-07T02:53:59.278503138', '2026-10-07', 'yesterday', '', None, 12, '2026-13-01T00:00:00Z',
+                                   '2026-10-07T02:53:59+0000', '2026-10-07T02:53:59+05', '2026-10-07T02:53:59+00:00.5', '2026-10-07T02:53:59.123Z extra'])
 def test_missing_offset_or_garbage_is_refused_everywhere(value):
     assert parse_utc(value) is None
     assert _source_time(value) is None
@@ -44,3 +45,10 @@ def test_storage_clock_accepts_nanosecond_utc_and_refuses_offsets():
         clock('2026-10-07T02:53:59+02:00')
     with pytest.raises(ValueError):
         clock('2026-10-07T02:53:59')
+
+
+def test_naive_timestamp_gets_the_timezone_refusal_on_every_interpreter():
+    with pytest.raises(Refused, match='timestamp_requires_timezone'):
+        timestamp('2026-10-07T02:53:59.278503138')
+    with pytest.raises(Refused, match='invalid_timestamp'):
+        timestamp('2026-10-07T02:53:59+0000')

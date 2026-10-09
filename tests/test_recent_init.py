@@ -61,7 +61,9 @@ def test_creates_and_seeds_committed_roster(admitted, tmp_path, capsys):
     assert all(s['endpoint'] is None and store.collector_cursor(s['did']) is None for s in sources)
 
 
-def test_receipt_fields_and_acquisition_metadata(admitted, tmp_path):
+def test_receipt_fields_and_acquisition_metadata(admitted, tmp_path, monkeypatch):
+    # An installed release tree has no .git; the unit environment supplies the sha.
+    monkeypatch.setenv('LABELWATCH_GIT_SHA', os.environ.get('LABELWATCH_GIT_SHA') or 'deadbeef' * 5)
     receipt = recent_init.init(admitted / 'store', NOW, roster=roster(tmp_path, ['did:plc:aaaaaaaaaaaaaaaaaaaaaaaa']))
     assert set(receipt) >= {'generation_id', 'started_at', 'basis', 'days', 'roster', 'reserves', 'source', 'versions'}
     assert receipt['days'] == 30 and receipt['basis'] == 'local_acceptance_clock'
