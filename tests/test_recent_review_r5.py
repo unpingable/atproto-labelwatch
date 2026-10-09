@@ -280,8 +280,11 @@ def test_g_pinned_wal_records_one_maintenance_gap_no_source_failure(store):
     finally:
         pin.close()
     print('G2', out['round'], gaps(store))
-    assert out['round']['store_hold'] == 'wal_budget_pinned'
+    # C4-full ruling (2026-10-09) supersedes the r4 round stop: ingest has priority,
+    # the pinned WAL is one store-level maintenance gap plus a wal_pinned disclosure.
+    assert out['round']['status'] == 'ran' and out['round']['store_hold'] is None
     assert [g[2] for g in gaps(store)] == ['maintenance']
+    assert store.collector_bootstrap_summary()['wal_pinned'] is not None
     for d in (A, B):
         row = status(store, d)
         assert row['failures'] == 0 and row['unavailable_since'] is None, row
