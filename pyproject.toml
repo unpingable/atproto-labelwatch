@@ -32,4 +32,4 @@ labelwatch = ["_ops/*.toml", "_instruments/*.css", "_instruments/*.json", "_inst
 
 [tool.pytest.ini_options]
 addopts = "-q"
-pythonpath = ["src"]
+pythonpath = ["src", "."]

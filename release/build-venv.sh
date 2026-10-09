@@ -1,25 +1,32 @@
 #!/usr/bin/env bash
 # Build <release_dir>/venv from exactly the hash-locked set, offline.
 #
-#   WHEELHOUSE=<dir> [PYTHON=/usr/bin/python3.12] release/build-venv.sh <release_dir>
+#   WHEELHOUSE=<dir> [PYTHON=/usr/bin/python3] release/build-venv.sh <release_dir>
 #
 # <release_dir>/source must already hold the release tree (git archive of the
-# release sha). Labelwatch itself is NOT installed into the venv: units run it
+# release sha). The lock is selected by the interpreter's ABI tag: CPython
+# 3.12 uses requirements-cp312-linux-x86_64.lock, CPython 3.10 (the
+# production host, Ubuntu 22.04) uses requirements-cp310-linux-x86_64.lock.
+# Any other interpreter is refused because no reviewed lock exists for it.
+#
+# Labelwatch itself is NOT installed into the venv: units run it
 # from source via PYTHONPATH=<release_dir>/source/src:<release_dir>/source, as
 # deploy/README-recent.md documents. The script finishes by running the
 # collect unit's ExecStartPre dependency gate against the new venv.
 set -euo pipefail
 release=${1:?usage: WHEELHOUSE=<dir> build-venv.sh <release_dir>}
 wheelhouse=${WHEELHOUSE:?WHEELHOUSE must name the reviewed wheelhouse}
-python=${PYTHON:-/usr/bin/python3.12}
+python=${PYTHON:-/usr/bin/python3}
 source_dir=$release/source
-lock=$source_dir/release/requirements-cp312-linux-x86_64.lock
 unit=$source_dir/deploy/labelwatch-recent-collect.service
 
 [ -d "$source_dir" ] || { echo "missing $source_dir" >&2; exit 2; }
+abi=$("$python" -c 'import sys, platform; sys.exit("CPython required") if platform.python_implementation() != "CPython" else print("cp%d%d" % sys.version_info[:2])')
+case "$abi" in cp310|cp312) ;; *) echo "no reviewed lock for $abi ($python)" >&2; exit 2;; esac
+lock=$source_dir/release/requirements-$abi-linux-x86_64.lock
 [ -f "$lock" ] && [ -f "$unit" ] || { echo "release tree lacks lock or unit" >&2; exit 2; }
 [ ! -e "$release/venv" ] || { echo "$release/venv exists; refusing to modify" >&2; exit 2; }
-"$python" -c 'import sys; sys.exit(0 if sys.version_info[:2]==(3,12) else "CPython 3.12 required")'
+echo "lock $(basename "$lock")"
 
 "$python" -m venv "$release/venv"
 venv_py=$release/venv/bin/python

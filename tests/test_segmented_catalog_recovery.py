@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools/segmented_qualification'))
+import storage
 from storage import Store, connect
 from qualify import event
 from tier import VerifiedCatalog, TierSession
@@ -13,7 +14,11 @@ from tier import VerifiedCatalog, TierSession
 
 @pytest.fixture
 def archived(tmp_path):
-    # --basetemp must be within the existing campaign-owned runtime tree.
+    # Store.create admits only campaign-owned or admitted-root children, so
+    # this file needs --basetemp inside the campaign runtime tree (or an
+    # admitted root); elsewhere, including CI, it is skipped rather than errored.
+    if not storage.in_campaign(tmp_path) and storage.admitted_root() is None:
+        pytest.skip('needs --basetemp under a campaign-owned runtime tree')
     store = Store.create(tmp_path / 'store')
     store.ingest([event()], 'fixture-source', '1')
     store.rotate('2026-10-05')
