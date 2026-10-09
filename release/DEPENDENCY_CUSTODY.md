@@ -100,3 +100,9 @@ equal; receipt `clean-start-20261008/evidence/cp310-lock-*.json`), and the
 lock line carries that digest. Native wheels are manylinux_2_17/2_28 x86_64,
 within glibc 2.35. `release/build-venv.sh` selects the lock from the
 interpreter's ABI tag (cp310 or cp312) and refuses any other interpreter.
+
+## 2026-10-09: release archive recipe
+
+Release source archives are produced as `git archive --format=tar --prefix=source/ <sha> | gzip -n`
+(gzip without a name or timestamp). `git archive --format=tar.gz` yields different bytes; reproduce
+with the pipeline form and compare the recorded sha256 in `runtime/release-artifacts-20261009/`.
