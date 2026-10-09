@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -181,6 +182,71 @@ def _labeler_counts(store, plan, upper, deadline):
     return totals
 
 
+STATUS_NAME = 'STATUS.json'
+STATUS_SCHEMA = 'labelwatch.recent-status.v1'
+
+
+def status_snapshot(store, now):
+    """Cheap operator status: metadata, gaps and roster only (no observation scans, no leases)."""
+    store = store if isinstance(store, RecentStore) else RecentStore(store)
+    now = clock(now.isoformat() if isinstance(now, datetime) else now)
+    window_start = iso(now - timedelta(days=recent_overview.WINDOW_DAYS))
+    c = connect(store.state, readonly=True)
+    try:
+        c.execute('BEGIN')
+        store.require(c)
+        meta = {key: db.get_meta(c, 'q:recent_' + key) for key in ('start', 'generation', 'gap_overflow')}
+        acquisition = store.acquisition(c)
+        pending = c.execute('SELECT 1 FROM q_recent_transition').fetchone() is not None
+        observed_through = c.execute('SELECT MAX(last_observed) FROM q_recent_sources').fetchone()[0]
+        gaps = [dict(start=row[0], end=row[1], reason=row[2]) for row in
+                c.execute('SELECT start,end,reason FROM q_recent_gaps WHERE end>? ORDER BY start,end,reason', (window_start,))]
+        c.rollback()
+    finally:
+        c.close()
+    counts, refused, operator = _sources(store)
+    stats = {'acquisition': acquisition, 'gaps': gaps, 'gap_overflow': meta['gap_overflow'] == '1',
+             'observed_through': observed_through, 'sources': counts}
+    generation = meta['generation']
+    return {'schema': STATUS_SCHEMA, 'generated_at': iso(now), 'window_days': recent_overview.WINDOW_DAYS,
+            'acquisition': {k: acquisition[k] for k in ('generation_id', 'started_at', 'basis')},
+            'coverage': recent_overview.coverage(stats, now),
+            'refused_sources': refused, 'operator_sources': operator,
+            'last_maintenance': {'generation': int(generation), 'recovery_pending': pending,
+                                 'at': iso(clock(meta['start']) + timedelta(days=recent_overview.WINDOW_DAYS)) if generation != '0' else None}}
+
+
+def write_status(store, round_result=None, now=None):
+    """Atomically replace <store>/STATUS.json (0644) for the product's /health."""
+    store = store if isinstance(store, RecentStore) else RecentStore(store)
+    now = now or datetime.now(timezone.utc)
+    status = status_snapshot(store, now)
+    if round_result is not None:
+        round_ = (round_result.get('collection') or {}).get('round') or round_result.get('round') or {}
+        status['round'] = {k: round_.get(k) for k in ('status', 'reason', 'store_hold') if k in round_}
+    data = json.dumps(status, sort_keys=True, ensure_ascii=False).encode() + b'\n'
+    target = store.root / STATUS_NAME
+    tmp = store.root / ('.status.tmp-%d' % os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+    try:
+        os.fchmod(fd, 0o644)
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, target)
+    return target
+
+
+def write_status_quietly(store, round_result=None):
+    """Called after every collection round; a status failure never fails the round."""
+    try:
+        return write_status(store, round_result)
+    except Exception as exc:
+        print(json.dumps({'status_written': False, 'reason': (str(exc) or type(exc).__name__)[:160]}), flush=True)
+        return None
+
+
 def read_store(store, now, *, timeout=10.0, budget=120.0, labelers=True):
     """Aggregate store statistics for the overview and the landing page.
 
@@ -231,6 +297,8 @@ def main(argv=None):
             stats = read_store(args.store, now, budget=args.budget_seconds)
             envelope = recent_overview.overview(stats, now)
         target = recent_overview.publish(args.pubdir, envelope)
+        if args.store is not None and not hold:
+            write_status_quietly(args.store)
     except (recent_overview.OverviewRefused, RuntimeError, TimeoutError, OSError, ValueError, sqlite3.Error) as exc:
         print(json.dumps({'published': False, 'error': type(exc).__name__, 'reason': str(exc)[:240]}, sort_keys=True))
         return 2

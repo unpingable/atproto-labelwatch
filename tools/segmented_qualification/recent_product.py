@@ -78,15 +78,36 @@ def one_clock(product):
 
 
 class SiteStatus:
-    """Short-lived cache of the cheap store summary (no payload reads).
+    """Landing summary (short live cache) and operator /health (cached STATUS.json).
 
-    The figures come from the same aggregate reader as the published overview,
-    so the landing page and overview.json cannot disagree in definition.
+    /health never scans the store: it serves <store>/STATUS.json, written
+    atomically after every collection round and every overview publication,
+    and is stale (503) only when that file is older than 2x the collect cadence.
+    The landing page reads the store under a small budget and degrades to the
+    same cached status, never to an error, when that budget is exceeded.
     """
-    def __init__(self, product, ttl=15.0, stale_after=900):
+    HEALTH_LIST_CAP = 50
+
+    def __init__(self, product, ttl=15.0, stale_after=900, collect_cadence=120):
         self.product, self.ttl, self.stale_after = product, ttl, stale_after
+        self.collect_cadence = collect_cadence
         self._lock = threading.Lock()
         self._cached = None
+
+    def cached_status(self):
+        """(status dict, age seconds) from STATUS.json, or (None, reason)."""
+        try:
+            import recent_publish
+            path = Path(self.product.provider.store.root) / recent_publish.STATUS_NAME
+            status = json.loads(path.read_text())
+            if status.get("schema") != recent_publish.STATUS_SCHEMA:
+                return None, "status_schema_unknown"
+            age = (self.product.now() - timestamp(status["generated_at"])).total_seconds()
+            return status, age
+        except FileNotFoundError:
+            return None, "status_absent"
+        except Exception as exc:
+            return None, "status_unreadable:" + type(exc).__name__
 
     def read(self):
         with self._lock:
@@ -99,38 +120,46 @@ class SiteStatus:
                 from labelwatch import recent_overview
                 stats = recent_publish.read_store(self.product.provider.store, now, timeout=2.0, budget=5.0, labelers=False)
                 view = recent_overview.overview(stats, now)
-                result = {"view": view, "maintenance": stats["last_maintenance"], "error": None, "now": now,
-                          "refused_sources": stats["refused_sources"], "operator_sources": stats["operator_sources"]}
-            except Exception as exc:  # summary absence is disclosed, never shown as zero
-                result = {"view": None, "maintenance": None, "error": type(exc).__name__, "now": now}
+                result = {"view": view, "error": None, "now": now}
+            except Exception as exc:  # degrade to the cached collector status; never shown as zero
+                status, age = self.cached_status()
+                if status is None:
+                    result = {"view": None, "error": type(exc).__name__, "now": now}
+                else:
+                    view = {"window_days": status["window_days"], "acquisition": status["acquisition"],
+                            "coverage": status["coverage"], "counts": {}, "top_labelers_7d": [],
+                            "status_note": status["generated_at"]}
+                    result = {"view": view, "error": None, "now": now}
             self._cached = (tick, result)
             return result
 
-    HEALTH_LIST_CAP = 50
-
     def health(self, full=False):
-        """Operator JSON. Per-source lists are capped at 50 (+ totals) unless full."""
-        status = self.read()
-        view = status["view"]
-        if view is None:
-            return 503, {"status": "unavailable", "reason": status["error"], "window_days": self.product.limits.days}
-        cov = view["coverage"]
+        """Operator JSON from STATUS.json (no store scan). Lists capped at 50 (+ totals) unless full."""
+        status, age = self.cached_status()
+        if status is None:
+            return 503, {"status": "unavailable", "reason": age, "window_days": self.product.limits.days}
+        cov = status["coverage"]
         through = cov["observed_through"]
-        age = (status["now"] - timestamp(through)).total_seconds() if through else None
+        now = self.product.now()
+        collection_age = (now - timestamp(through)).total_seconds() if through else None
         # observed_through is the latest accepted collector page; null until one is accepted.
-        state = "unknown" if age is None else "fresh" if age <= self.stale_after else "stale"
+        state = "unknown" if collection_age is None else "fresh" if collection_age <= self.stale_after else "stale"
         overall = "ok" if state == "fresh" else "warming_up" if state == "unknown" and cov["warmup"] is not None else "degraded"
-        return 200, {"status": overall,
-                     "window_days": view["window_days"], "acquisition": view["acquisition"],
-                     "coverage": {"status": cov["status"], "observed_days": cov["observed_days"], "warmup": cov["warmup"],
-                                  "gaps_count": len(cov["gaps"]), "gap_overflow": cov["gap_overflow"], "sources": cov["sources"],
-                                  # Operator detail only; never in the public overview artifact.
-                                  **self._operator_lists(status, full)},
-                     "last_maintenance": status["maintenance"],
-                     "freshness": {"state": state, "basis": "last_accepted_observation", "observed_through": through,
-                                   "age_seconds": None if age is None else round(age, 3), "stale_after_seconds": self.stale_after},
-                     "generated_at": view["generated_at"]}
-
+        stale_status = age > 2 * self.collect_cadence
+        if stale_status:
+            overall = "stale"
+        body = {"status": overall, "status_age_seconds": round(age, 3), "status_stale_after_seconds": 2 * self.collect_cadence,
+                "status_generated_at": status["generated_at"], "round": status.get("round"),
+                "window_days": status["window_days"], "acquisition": status["acquisition"],
+                "coverage": {"status": cov["status"], "observed_days": cov["observed_days"], "warmup": cov["warmup"],
+                             "gaps_count": len(cov["gaps"]), "gap_overflow": cov["gap_overflow"], "sources": cov["sources"],
+                             # Operator detail only; never in the public overview artifact.
+                             **self._operator_lists(status, full)},
+                "last_maintenance": status["last_maintenance"],
+                "freshness": {"state": state, "basis": "last_accepted_observation", "observed_through": through,
+                              "age_seconds": None if collection_age is None else round(collection_age, 3),
+                              "stale_after_seconds": self.stale_after}}
+        return (503 if stale_status else 200), body
 
     def _operator_lists(self, status, full):
         lists = {"refused_sources": status["refused_sources"], **status["operator_sources"]}
@@ -337,6 +366,8 @@ def main(argv=None):
                         help="Only the 30-day candidate is implemented; longer guarantees require qualification.")
     parser.add_argument("--resolve-handles", action="store_true",
                         help="Resolve handles in /lookup via com.atproto.identity.resolveHandle (outbound HTTPS).")
+    parser.add_argument("--collect-cadence-seconds", type=int, default=120,
+                        help="Collect timer cadence; /health is stale when STATUS.json is older than twice this.")
     parser.add_argument("--stale-after-seconds", type=int, default=900,
                         help="/health reports collection as stale when the last accepted observation is older.")
     args = parser.parse_args(argv)
@@ -349,7 +380,7 @@ def main(argv=None):
     if args.resolve_handles:
         from labelwatch.resolve import resolve_handle_to_did
         resolver = lambda handle: resolve_handle_to_did(handle, timeout=3)  # noqa: E731
-    site = SiteStatus(product, stale_after=args.stale_after_seconds)
+    site = SiteStatus(product, stale_after=args.stale_after_seconds, collect_cadence=args.collect_cadence_seconds)
     server = HTTPServer(("127.0.0.1", args.port), handler(product, resolver=resolver, status=site))
     try:
         server.serve_forever()
