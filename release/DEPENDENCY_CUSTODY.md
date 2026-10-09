@@ -82,18 +82,20 @@ for tests.
 The production host (zone, Ubuntu 22.04.5) runs CPython 3.10.12 with glibc
 2.35 and has no 3.12 interpreter; the cp312 lock cannot be installed there.
 `requirements-cp310-linux-x86_64.lock` pins the same 23 distributions at the
-same versions with one exception: `websockets==16.1.1` instead of `17.1`,
-because websockets 17.x requires Python >= 3.11. The recent observatory
+same versions with one exception, `websockets==16.1.1` instead of `17.1`
+(websockets 17.x requires Python >= 3.11), plus one addition,
+`exceptiongroup==1.3.1`, which anyio 4.15.1 requires on Python < 3.11 (the
+first replica build failed `pip check` without it). The recent observatory
 (`src/labelwatch/recent_*.py`, `tools/segmented_qualification/recent_*.py`,
 `storage.py`) imports neither websockets nor atproto; websockets is a
 dependency of the legacy discovery stream only. The collect unit's
 `ExecStartPre` dependency gate names the nine distributions the successor
 actually imports, and those pins are identical in both locks.
 
-Wheelhouse: `runtime/wheelhouse-clean-start-cp310-20261009/` (23 wheels;
+Wheelhouse: `runtime/wheelhouse-clean-start-cp310-20261009/` (24 wheels;
 cp310, cp39-abi3 or pure-Python). Each wheel was fetched once from PyPI with
 `pip download --no-deps --only-binary=:all: --python-version 3.10`, its local
-sha256 compared with the digest PyPI publishes for that filename (23/23
+sha256 compared with the digest PyPI publishes for that filename (24/24
 equal; receipt `clean-start-20261008/evidence/cp310-lock-*.json`), and the
 lock line carries that digest. Native wheels are manylinux_2_17/2_28 x86_64,
 within glibc 2.35. `release/build-venv.sh` selects the lock from the
