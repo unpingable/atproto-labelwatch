@@ -100,11 +100,14 @@ def test_vanished_wal_skip_still_checks_an_over_budget_state_wal(store):
                 db.set_meta(c, 'q:r4_filler_%d' % i, 'x' * 2000)
             c.commit()
         assert (store.root / 'state.sqlite-wal').stat().st_size > 4096
-        with pytest.raises(RuntimeError, match='wal_budget_pinned'):
-            store.check_local()
+        # C4-full ruling (2026-10-09): public readers never stop ingestion. An
+        # over-budget pinned WAL is disclosed (store-level), not refused.
+        store.check_local()
+        assert store.collector_bootstrap_summary()['wal_pinned']['budget_bytes'] == 4096
     finally:
         pin.close()
     store.check_local()
+    assert store.collector_bootstrap_summary()['wal_pinned'] is None
 
 
 class Counted:
