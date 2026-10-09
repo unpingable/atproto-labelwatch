@@ -25,6 +25,62 @@ from urllib.parse import urlencode
 class Refused(ValueError):
     """Explicit public refusal, never a successful empty result."""
 
+    def __init__(self, code, details=None):
+        super().__init__(code)
+        self.details = details  # optional public, aggregate-only refusal detail
+
+
+def suggest_intervals(lo, hi, hourly, max_rows):
+    """Greedy [start, end_exclusive) intervals covering [lo, hi), each <= max_rows.
+
+    hourly maps UTC hour starts (ISO) to row counts at a fixed frontier. Whole
+    UTC days are merged greedily; a day over the cap is split by hour; an hour
+    over the cap cannot be exported and is reported as interval_too_dense.
+    Intervals tile [lo, hi) with no gaps or overlaps; nothing is truncated.
+    """
+    counts = {timestamp(k): int(v) for k, v in hourly.items()}
+    def day_end(t):
+        return min(hi, datetime(t.year, t.month, t.day, tzinfo=timezone.utc) + timedelta(days=1))
+    def hour_end(t):
+        return min(hi, datetime(t.year, t.month, t.day, t.hour, tzinfo=timezone.utc) + timedelta(hours=1))
+    def bucket(a, b):  # hour buckets are counted from max(hour, lo); a and b are hour-aligned except lo/hi
+        return sum(n for h, n in counts.items() if a <= max(h, lo) < b)
+    out, start, acc, t = [], lo, 0, lo
+    def flush(end):
+        nonlocal start, acc
+        if end > start:
+            out.append({'start': iso(start), 'end_exclusive': iso(end), 'rows': acc, 'split': 'day'})
+        start, acc = end, 0
+    while t < hi:
+        end = day_end(t); n = bucket(t, end)
+        if n > max_rows:
+            flush(t)
+            h, hstart, hacc = t, t, 0
+            while h < end:
+                hend = hour_end(h); hn = bucket(h, hend)
+                if hn > max_rows:
+                    if h > hstart:
+                        out.append({'start': iso(hstart), 'end_exclusive': iso(h), 'rows': hacc, 'split': 'hour'})
+                    out.append({'start': iso(h), 'end_exclusive': iso(hend), 'rows': hn, 'split': 'hour',
+                                'status': 'interval_too_dense'})
+                    hstart, hacc = hend, 0
+                elif hacc + hn > max_rows:
+                    out.append({'start': iso(hstart), 'end_exclusive': iso(h), 'rows': hacc, 'split': 'hour'})
+                    hstart, hacc = h, hn
+                else:
+                    hacc += hn
+                h = hend
+            if end > hstart:
+                out.append({'start': iso(hstart), 'end_exclusive': iso(end), 'rows': hacc, 'split': 'hour'})
+            start, acc = end, 0
+        elif acc + n > max_rows:
+            flush(t); acc = n
+        else:
+            acc += n
+        t = end
+    flush(hi)
+    return out
+
 
 BUSY_MESSAGES = ('store lease deadline exceeded', 'recent query deadline', 'interrupted', 'database is locked')
 
@@ -287,6 +343,7 @@ class RecentObservations:
                 raise Refused('invalid_filter')
             lo,hi,now=timestamp(start),timestamp(end),self.now()
             if not now-timedelta(days=self.limits.days)<=lo<hi<=now:raise Refused('out_of_window')
+            self._release_terminal_exports()
             if len(self._snapshots)+len(self._exports)>=self.limits.snapshots:raise Refused('snapshot_concurrency_limit')
             identity=secrets.token_hex(16)
             created=self.monotonic()
@@ -301,7 +358,7 @@ class RecentObservations:
                 pages=max(1,math.ceil(total/self.limits.page_rows))
                 seconds=self.limits.export_base_seconds+self.limits.export_page_seconds*pages
                 if seconds>self.limits.export_cap_seconds:
-                    raise Refused('export_too_large')
+                    raise Refused('export_too_large', self._too_large(did, lo, hi, state['upper'], total))
                 seconds=max(self.limits.ttl_seconds,seconds)
                 state['deadline']=state['created']+seconds
                 sizing={'seconds':seconds,'cap_seconds':self.limits.export_cap_seconds,
@@ -323,6 +380,49 @@ class RecentObservations:
             self._exports[identity]=state
             return {'manifest':manifest,'cursor':self._cursor(identity,0),
                     'instructions':'Request /exports?cursor=<cursor>, then follow next_cursor until terminal=true. An expired or interrupted download is incomplete; the deadline is fixed.'}
+
+    def _release_terminal_exports(self):
+        """A completed export keeps its last page for retries only until a slot is needed.
+
+        Without this, exporting several suggested intervals one after another
+        would hit the concurrency limit on completed (idle) exports.
+        """
+        while len(self._snapshots)+len(self._exports)>=self.limits.snapshots:
+            done=[(state['created'],key) for key,state in self._exports.items()
+                  if state['cache'] is not None and json.loads(state['cache'])['terminal']]
+            if not done:return
+            del self._exports[min(done)[1]]
+
+    def max_export_rows(self):
+        pages = int((self.limits.export_cap_seconds - self.limits.export_base_seconds) // self.limits.export_page_seconds)
+        return max(0, pages) * self.limits.page_rows
+
+    def _too_large(self, did, lo, hi, upper, total):
+        """Aggregate refusal detail: the account stays exportable in narrower intervals."""
+        details = {'rows_in_window': total, 'max_rows_per_export': self.max_export_rows(),
+                   'interval': {'start': iso(lo), 'end_exclusive': iso(hi)},
+                   'next_action': 'Export each suggested interval to completion; together they cover the '
+                                  'requested interval exactly once (end-exclusive). Nothing is truncated.'}
+        histogram = getattr(self.provider, 'histogram', None)
+        if histogram is None:
+            details['suggested_intervals'] = None
+            return details
+        try:
+            hourly = histogram(did, iso(lo), iso(hi), upper, bucket_seconds=3600, timeout_seconds=10)
+        except Exception as exc:
+            if busy(exc):
+                raise Refused('store_busy') from exc
+            raise
+        intervals = suggest_intervals(lo, hi, hourly, self.max_export_rows())
+        details['suggested_intervals'] = intervals
+        dense = [i for i in intervals if i.get('status') == 'interval_too_dense']
+        if any(i['split'] == 'hour' for i in intervals):
+            details['note'] = 'At least one UTC day exceeds the cap and is split by hour.'
+        if dense:
+            details['interval_too_dense'] = dense
+            details['note'] = ('One or more single UTC hours exceed the export cap and cannot be exported as one '
+                               'bounded export; their row counts are stated. Nothing is truncated.')
+        return details
 
     def _export_read(self,state):
         did,start,end=state['query']
@@ -614,11 +714,17 @@ def _account_form(interval=None):
     return form + '</section>'
 
 
+EXPORT_BOUND_SENTENCE = ('Exports are bounded to about {:,} rows; larger accounts are exported in the narrower intervals '
+                         'the server suggests, each with its own snapshot and coverage statement.').format(
+                             int((Limits.export_cap_seconds - Limits.export_base_seconds) // Limits.export_page_seconds) * Limits.page_rows)
+
+
 def _exports_panel():
     return ('<section class="nz-panel"><h2>Exports</h2><p>Every account view links a whole-period JSON download. '
             'For periods larger than the preview budget, <code>/exports?did=…&amp;days=30</code> opens a bounded, '
             'paginated export with a fixed acquisition frontier. Exports are finite consistent snapshots and expire '
-            'after their stated deadline; an interrupted download is incomplete.</p></section>')
+            'after their stated deadline; an interrupted download is incomplete.</p>'
+            '<p>' + EXPORT_BOUND_SENTENCE + '</p></section>')
 
 
 def landing_html(view, interval=None, error=None):
@@ -717,7 +823,8 @@ def about_html(started_at=None, window_days=30):
                      '<p class="nz-eyebrow">About</p><h1>What this observatory covers</h1>'
                      '<section class="nz-panel"><p>' + coverage_statement(started_at, window_days) + '</p></section>'
                      '<h2>Gap reasons</h2><p>Each disclosed interval carries one of these reasons.</p>'
-                     '<table><tbody>' + glossary + '</tbody></table>')
+                     '<table><tbody>' + glossary + '</tbody></table>'
+                     '<h2>Exports</h2><p>' + EXPORT_BOUND_SENTENCE + '</p>')
 
 
 def previous_epoch_html():
@@ -745,9 +852,29 @@ REFUSAL_TEXT = {
 }
 
 
-def refusal_html(code):
-    """Small browser page for an explicit refusal; the JSON form is unchanged."""
+def refusal_html(code, details=None):
+    """Small browser page for an explicit refusal; the JSON form carries the same detail."""
     text = REFUSAL_TEXT.get(code, 'This request was refused.')
+    extra = ''
+    if details:
+        extra = ('<p>Rows in the requested interval: <strong>' + _esc(_number(details.get('rows_in_window')))
+                 + '</strong>. Each export is bounded to about <strong>' + _esc(_number(details.get('max_rows_per_export')))
+                 + '</strong> rows.</p>')
+        intervals = details.get('suggested_intervals')
+        if intervals:
+            items = []
+            for item in intervals:
+                label = _esc(_when(item['start'])) + ' to ' + _esc(_when(item['end_exclusive'])) + ' (end exclusive): ' + _esc(_number(item['rows'])) + ' rows'
+                if item.get('status') == 'interval_too_dense':
+                    items.append('<li>' + label + ' &mdash; <strong>interval_too_dense</strong>: this single hour exceeds the cap and cannot be exported as one bounded export.</li>')
+                elif item.get('export_url'):
+                    items.append('<li><a href="' + _esc(item['export_url']) + '">' + label + '</a></li>')
+                else:
+                    items.append('<li>' + label + '</li>')
+            extra += ('<h2>Export these intervals instead</h2><p>Together they cover the requested interval exactly once; '
+                      'each export has its own snapshot and coverage statement. Nothing is truncated.</p><ol>' + ''.join(items) + '</ol>')
+            if details.get('note'):
+                extra += '<p class="nz-muted">' + _esc(details['note']) + '</p>'
     return page_html('Request refused', '<h1>Request refused</h1><section class="nz-panel"><p>' + _esc(text) + '</p>'
-                     '<p class="nz-muted">Refusal: <code>' + _esc(code) + '</code></p></section>'
+                     '<p class="nz-muted">Refusal: <code>' + _esc(code) + '</code></p>' + extra + '</section>'
                      '<p><a href="/">Return to the rolling observatory</a></p>')

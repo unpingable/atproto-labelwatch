@@ -292,8 +292,16 @@ def handler(product, *, resolver=None, status=None):
                     self.busy()
                     return
                 body = {"error": str(exc), "complete": False}
+                details = getattr(exc, "details", None)
                 if str(exc) == "export_too_large":
                     body["next_action"] = "Request a narrower interval; a bounded export must finish within its stated deadline cap."
+                if details:
+                    details = json.loads(json.dumps(details))
+                    keep = {k: v for k, v in args.items() if k not in ("start", "end", "days", "cursor")}
+                    for item in details.get("suggested_intervals") or []:
+                        if item.get("status") != "interval_too_dense":
+                            item["export_url"] = "/exports?" + urlencode({**keep, "start": item["start"], "end": item["end_exclusive"]})
+                    body.update(details)
                 if str(exc) in ("snapshot_row_limit", "snapshot_byte_limit"):
                     body["next_action"] = "Use the bounded paginated export for this period; reducing time may not separate equal-timestamp observations."
                     body["export_url"] = '/exports?'+urlencode(args)
@@ -302,7 +310,7 @@ def handler(product, *, resolver=None, status=None):
                         return
                 code = 410 if str(exc) == "snapshot_expired_or_unavailable" else 409
                 if self.wants_html():
-                    self.respond(code, refusal_html(str(exc)), "text/html")
+                    self.respond(code, refusal_html(str(exc), details), "text/html")
                     return
                 self.respond(code, body)
             except (KeyError, ValueError):
