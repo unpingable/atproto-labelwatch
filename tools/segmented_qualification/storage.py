@@ -199,14 +199,36 @@ def cut(requested, phase):
     if requested == phase: os._exit(73)
 
 
+# Writer preference for WAL checkpoints. While this file is fresh, NEW shared
+# reader.lock holders wait (at most CHECKPOINT_READER_WAIT seconds, never past
+# their own timeout) so in-flight reads drain and the writer can checkpoint.
+# Readers never block the writer; the writer never waits on readers beyond its
+# own bound (see RecentStore.check_local). A stale file (crashed writer) is ignored.
+CHECKPOINT_FLAG = 'checkpoint.pending'
+CHECKPOINT_READER_WAIT = 2.0
+CHECKPOINT_FLAG_STALE = 10.0
+
+
+def _checkpoint_pending(root):
+    try:
+        return time.time() - (root / CHECKPOINT_FLAG).stat().st_mtime < CHECKPOINT_FLAG_STALE
+    except FileNotFoundError:
+        return False
+
+
 @contextlib.contextmanager
 def lock(root, name='writer.lock', shared=False, timeout=None):
+    started = time.monotonic()
+    if name == 'reader.lock' and shared and _checkpoint_pending(root):
+        until = started + min(CHECKPOINT_READER_WAIT, CHECKPOINT_READER_WAIT if timeout is None else timeout)
+        while _checkpoint_pending(root) and time.monotonic() < until:
+            time.sleep(.01)
     with (root / name).open('a') as f:
         mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
         if timeout is None:
             fcntl.flock(f, mode)
         else:
-            deadline = time.monotonic() + timeout
+            deadline = started + timeout     # the checkpoint wait counts against it
             while True:
                 try:
                     fcntl.flock(f, mode | fcntl.LOCK_NB)
@@ -227,6 +249,9 @@ def connect(path, readonly=False):
         c.execute('PRAGMA recursive_triggers=ON')
         c.execute('PRAGMA journal_mode=WAL'); c.execute('PRAGMA synchronous=FULL')
         c.execute('PRAGMA wal_autocheckpoint=1000')
+        # A fully checkpointed WAL is reset and truncated to this size instead of
+        # being kept at its high-water mark.
+        c.execute('PRAGMA journal_size_limit=67108864')
         # max_page_count is connection-local. Read the persisted owned limit
         # and apply it to every writer, including recovery and metadata writers.
         cap = 2097152 if Path(path).name == 'state.sqlite' else 4194304
@@ -309,6 +334,11 @@ class Store:
         return cls(root)
 
     def check_local(self, injected=None):
+        self.check_capacity(injected)
+        self.check_wal()
+
+    def check_capacity(self, injected=None):
+        """Filesystem reserve and page ceiling: the only ingestion refusals that remain."""
         if injected == 'root_low': raise RuntimeError('local_capacity_below_required_bound')
         self.admit_reserves(paths=(self.root,), message='shared_reserve_unavailable')
         # Finite fixture limits. Adoption limits must be derived from the
@@ -317,6 +347,9 @@ class Store:
             c = connect(self.state)
             cap = int(db.get_meta(c, 'q:state_page_cap') or '2097152')
             c.execute('PRAGMA max_page_count=' + str(cap)); c.close()
+
+    def check_wal(self):
+        """Legacy file-size WAL budget (refuses); RecentStore replaces it."""
         c = connect(self.state, readonly=True)
         try: wal_budget = int(db.get_meta(c, 'q:wal_budget_bytes') or '268435456')
         finally: c.close()
