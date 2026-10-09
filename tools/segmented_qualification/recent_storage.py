@@ -288,6 +288,7 @@ class RecentStore(Store):
         with closing(connect(self.state)) as c:
             budget=int(db.get_meta(c,'q:wal_budget_bytes') or '268435456')
             busy,used,backlog=self.wal_state(c)
+            before={'wal_bytes':used,'backlog_bytes':backlog}
             gated=None
             retry=getattr(self,'_wal_gate_retry',0.0)
             if used>budget//2 and _time.monotonic()>=retry:
@@ -324,7 +325,7 @@ class RecentStore(Store):
                     else:c.execute("DELETE FROM meta WHERE key='q:recent_wal_pinned'")
                     c.commit()
             figures={'wal_bytes':used,'backlog_bytes':backlog,'wal_file_bytes':size,'budget_bytes':budget,
-                     'pinned':pinned,'gate':gated}
+                     'pinned':pinned,'gate':gated,'before':before}
             self._trace_wal(figures)
             return figures
 
@@ -340,6 +341,8 @@ class RecentStore(Store):
         trace['checks']+=1
         for key in ('wal_bytes','backlog_bytes','wal_file_bytes'):
             trace['max'][key]=max(trace['max'].get(key,0),figures[key])
+        for key in ('wal_bytes','backlog_bytes'):
+            trace['max']['before_'+key]=max(trace['max'].get('before_'+key,0),figures['before'][key])
         if figures['gate']:
             name=figures['gate']['result'];trace['gates'][name]=trace['gates'].get(name,0)+1
             trace['max']['gate_seconds']=max(trace['max'].get('gate_seconds',0),figures['gate']['seconds'])
