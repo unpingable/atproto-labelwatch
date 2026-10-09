@@ -19,6 +19,8 @@ import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .rfc3339 import parse_utc
+
 SCHEMA = "labelwatch.recent-overview.v1"
 WINDOW_DAYS = 30
 MAX_GAPS = 128
@@ -49,7 +51,9 @@ def utc(value):
     if isinstance(value, datetime):
         stamp = value
     else:
-        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        stamp = parse_utc(str(value))
+        if stamp is None:
+            raise OverviewRefused("explicit UTC clock required")
     if stamp.tzinfo is None:
         raise OverviewRefused("explicit UTC clock required")
     return stamp.astimezone(timezone.utc)

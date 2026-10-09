@@ -123,7 +123,8 @@ def reserve_policy(root):
         try: entries = json.loads(raw)
         except ValueError as exc: raise RuntimeError('reserve_policy_malformed') from exc
     elif in_campaign(root):
-        entries = [{'mount': '/', 'bytes': RESERVE}, {'mount': '/data', 'bytes': RESERVE}]
+        # The qualified crow pair; a fixture host without /data (CI, a replica) keeps only /.
+        entries = [{'mount': '/', 'bytes': RESERVE}] + ([{'mount': '/data', 'bytes': RESERVE}] if os.path.isdir('/data') else [])
     else:
         raise RuntimeError('reserve_policy_unconfigured')
     if not isinstance(entries, list) or not entries: raise RuntimeError('reserve_policy_malformed')

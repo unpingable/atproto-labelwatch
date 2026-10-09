@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from .ingest import normalize_label, _is_valid_did
 from .db import parse_target_did
+from .rfc3339 import parse_utc
 
 
 class Refused(ValueError):
@@ -59,15 +60,7 @@ def _decimal(value):
 
 def _source_time(value):
     """Source-authored time is used only to refuse pre-epoch rows, never as acquisition time."""
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(timezone.utc)
+    return parse_utc(value)
 
 
 @dataclass(frozen=True)

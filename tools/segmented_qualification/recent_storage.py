@@ -8,11 +8,13 @@ from __future__ import annotations
 import datetime as dt
 from contextlib import closing
 import json
+import re
 import hashlib
 import sqlite3
 import uuid
 from pathlib import Path
 import storage
+from labelwatch.rfc3339 import parse_utc
 from storage import Store, owned, connect, lock, db, custody, ingest, sha, syncdir
 
 # Bounded head establishment (BOOTSTRAP.md). A cursorless new-epoch source
@@ -56,8 +58,9 @@ LIMITS.update({name:10000000 for name in TIMED.keys() | DERIVED})
 
 
 def clock(value):
-    parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
-    if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
+    # The observation clock must be written in UTC itself (Z or +00:00), not merely convertible to it.
+    parsed = parse_utc(value) if isinstance(value, str) and re.search(r'(Z|z|[+-]00:00)$', value.strip()) else None
+    if parsed is None:
         raise ValueError('explicit UTC observation clock required')
     return parsed.astimezone(UTC)
 

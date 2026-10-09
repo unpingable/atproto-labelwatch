@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
+from .rfc3339 import parse_utc
+
 
 class Refused(ValueError):
     """Explicit public refusal, never a successful empty result."""
@@ -93,13 +95,17 @@ def busy(exc):
 def timestamp(value):
     if not isinstance(value, str):
         raise Refused("invalid_timestamp")
-    try:
-        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise Refused("invalid_timestamp") from exc
-    if result.tzinfo is None:
-        raise Refused("timestamp_requires_timezone")
-    return result.astimezone(timezone.utc)
+    result = parse_utc(value)
+    if result is None:
+        # No offset is the only tz-specific refusal the API distinguishes.
+        try:
+            naive = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise Refused("invalid_timestamp") from exc
+        if naive.tzinfo is None:
+            raise Refused("timestamp_requires_timezone")
+        raise Refused("invalid_timestamp")
+    return result
 
 
 def iso(value):
