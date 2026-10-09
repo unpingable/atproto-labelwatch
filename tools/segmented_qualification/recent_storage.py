@@ -12,6 +12,7 @@ import hashlib
 import sqlite3
 import uuid
 from pathlib import Path
+import storage
 from storage import Store, owned, connect, lock, db, custody, ingest, sha, syncdir
 
 # Bounded head establishment (BOOTSTRAP.md). A cursorless new-epoch source
@@ -30,6 +31,8 @@ SOURCE_COLUMNS={'boot_phase','boot_probes','boot_confirm','pre_epoch_skipped','u
                 'future_skipped','accepted_rows','history_streak','cursor_order_unverified','cursor_order_evidence',
                 'provider_rejects','endpoint_resolved_at','rearm_at','rearms','origin','last_request',
                 'unavailable_since','last_failure_at','last_failure_reason'}
+# Seconds before a failed writer-preference checkpoint gate is tried again.
+WAL_GATE_BACKOFF=30
 # Per-source request spacing (seconds), enforced by every claim, probes included.
 SOURCE_MIN_INTERVAL=1
 SCHEDULER_POLICY={'warm_seconds':1,'quiet_seconds':30,'failure_base_seconds':30,'failure_max_seconds':900,'failure_counter_max':6,'hot_streak_max':4}
@@ -250,21 +253,99 @@ class RecentStore(Store):
             finally:c.close()
 
     def check_local(self, injected=None):
-        """Passive checkpoint before the WAL budget bites (lease-free readers pin it).
+        """Ingest admission: only the filesystem reserve/page ceiling can refuse.
 
-        Above half the budget a PASSIVE checkpoint copies what readers allow; the
-        base check then refuses wal_budget_pinned, which the collector records as a
-        store-level maintenance condition, never a per-source failure.
+        WAL pressure is handled, never refused (public readers must not stop
+        collection): see wal_gate. Over-budget backlog is disclosed in
+        q:recent_wal_pinned and left to maintenance's exclusive TRUNCATE.
         """
-        wal=Path(str(self.state)+'-wal')
-        try:size=wal.stat().st_size
-        except FileNotFoundError:size=0
-        if size:
-            with closing(connect(self.state,readonly=True)) as c:
-                budget=int(db.get_meta(c,'q:wal_budget_bytes') or '268435456')
-            if size>budget//2:
-                with closing(connect(self.state)) as c:c.execute('PRAGMA wal_checkpoint(PASSIVE)').fetchone()
-        return super().check_local(injected)
+        self.check_capacity(injected)
+        self.wal_gate()
+
+    def wal_state(self,c):
+        """(busy, wal_bytes, backlog_bytes) after a PASSIVE checkpoint.
+
+        wal_bytes is the WAL in use (frames since its last reset); backlog is the
+        part readers still pin (not yet checkpointed). A large file whose frames
+        are all checkpointed is reused, not growth.
+        """
+        busy,log,done=c.execute('PRAGMA wal_checkpoint(PASSIVE)').fetchone()
+        frame=c.execute('PRAGMA page_size').fetchone()[0]+24
+        log,done=max(log,0),max(done,0)
+        return busy,log*frame,(log-done)*frame
+
+    def wal_gate(self,wait=None):
+        """Writer preference, bounded: never waits on readers longer than `wait`.
+
+        Above half the budget the writer raises the checkpoint flag (new
+        reader.lock holders pause up to CHECKPOINT_READER_WAIT), takes reader.lock
+        exclusively for at most `wait` seconds (in-flight reads drain) and runs a
+        TRUNCATE checkpoint; if readers do not drain in time it proceeds with the
+        PASSIVE result. Returns the measured figures.
+        """
+        import time as _time
+        wait=storage.CHECKPOINT_READER_WAIT if wait is None else wait
+        with closing(connect(self.state)) as c:
+            budget=int(db.get_meta(c,'q:wal_budget_bytes') or '268435456')
+            busy,used,backlog=self.wal_state(c)
+            gated=None
+            retry=getattr(self,'_wal_gate_retry',0.0)
+            if used>budget//2 and _time.monotonic()>=retry:
+                flag=self.root/storage.CHECKPOINT_FLAG
+                flag.touch();t0=_time.monotonic()
+                try:
+                    with lock(self.root,'reader.lock',timeout=wait):
+                        # Lease-free readers are not fenced by reader.lock: do not
+                        # let the busy handler wait on them beyond a short bound.
+                        c.execute('PRAGMA busy_timeout=250')
+                        busy,_,_=c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+                    gated='truncate' if busy==0 else 'truncate_busy'
+                except TimeoutError:
+                    gated='readers_did_not_drain'
+                finally:
+                    try:flag.unlink()
+                    except FileNotFoundError:pass
+                # A failed gate is not retried for WAL_GATE_BACKOFF seconds, so a
+                # pathological reader costs ingest one bounded wait per interval.
+                self._wal_gate_retry=0.0 if gated=='truncate' else _time.monotonic()+WAL_GATE_BACKOFF
+                busy,used,backlog=self.wal_state(c)
+                gated={'result':gated,'seconds':round(_time.monotonic()-t0,3)}
+            try:size=Path(str(self.state)+'-wal').stat().st_size
+            except FileNotFoundError:size=0
+            pinned=backlog>budget or size>budget
+            previous=db.get_meta(c,'q:recent_wal_pinned')
+            if pinned or previous:
+                with lock(self.root):
+                    if pinned:
+                        now=iso(dt.datetime.now(UTC))
+                        since=json.loads(previous)['since'] if previous else now
+                        db.set_meta(c,'q:recent_wal_pinned',json.dumps({'since':since,'last':now,'backlog_bytes':backlog,
+                                                                        'wal_file_bytes':size,'budget_bytes':budget},sort_keys=True))
+                    else:c.execute("DELETE FROM meta WHERE key='q:recent_wal_pinned'")
+                    c.commit()
+            figures={'wal_bytes':used,'backlog_bytes':backlog,'wal_file_bytes':size,'budget_bytes':budget,
+                     'pinned':pinned,'gate':gated}
+            self._trace_wal(figures)
+            return figures
+
+    @staticmethod
+    def _trace_wal(figures):
+        """Qualification-only: LABELWATCH_WAL_TRACE=<file> keeps running maxima (no effect otherwise)."""
+        import os
+        path=os.environ.get('LABELWATCH_WAL_TRACE')
+        if not path:return
+        p=Path(path)
+        try:trace=json.loads(p.read_text())
+        except (FileNotFoundError,ValueError):trace={'checks':0,'gates':{},'max':{}}
+        trace['checks']+=1
+        for key in ('wal_bytes','backlog_bytes','wal_file_bytes'):
+            trace['max'][key]=max(trace['max'].get(key,0),figures[key])
+        if figures['gate']:
+            name=figures['gate']['result'];trace['gates'][name]=trace['gates'].get(name,0)+1
+            trace['max']['gate_seconds']=max(trace['max'].get('gate_seconds',0),figures['gate']['seconds'])
+        trace['pinned_checks']=trace.get('pinned_checks',0)+int(figures['pinned'])
+        trace['budget_bytes']=figures['budget_bytes']
+        tmp=p.with_name(p.name+'.tmp');tmp.write_text(json.dumps(trace,sort_keys=True));tmp.replace(p)
 
     def remember_sources(self,rows,limit=2048,request_cursor=_UNSET,next_cursor=_UNSET):
         discovery=request_cursor is not _UNSET or next_cursor is not _UNSET
@@ -486,6 +567,8 @@ class RecentStore(Store):
                     # Per-source collection runs forward from its establishment, not from the epoch.
                     'established_at':{'earliest':established_at[0],'latest':established_at[1]},
                     'seeded':origins.get('seeded',0),'discovered':origins.get('discovered',0),
+                    # Store-level: lease-free readers pin WAL frames over budget; ingest continues.
+                    'wal_pinned':json.loads(db.get_meta(c,'q:recent_wal_pinned') or 'null'),
                     'pending_attempts':len(pending),'pending_attempts_sources':pending,
                     'coverage':'unknown' if phases['unstarted']+phases['probing']+phases['refused']-positioned>0 or unavailable
                                or unordered or undated_only else 'established_sources_only'}
