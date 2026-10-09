@@ -47,9 +47,14 @@ lock, a source import under the unit `PYTHONPATH`, and the collect unit's
 `wheelhouse-clean-start-20261008` (cp312) and
 `wheelhouse-clean-start-cp310-20261009` (cp310); see release/DEPENDENCY_CUSTODY.md.
 
+`deploy/install-recent.sh --release-sha <sha> --admitted-root <dir> --pubdir <dir>
+--reserves '<json>'` (as root) performs the substitutions below for exactly the
+seven `labelwatch-recent-*` units, writes `/etc/labelwatch-recent.env`, creates
+the admitted root (0750) and the publication directory (0755), reloads systemd
+and verifies the units. It creates no marker and enables nothing.
 Units name the release directory explicitly (`REPLACE_WITH_RELEASE_SHA`); there
-is no `current` symlink, so a release change is a reviewed unit edit plus
-`daemon-reload`. `ReadWritePaths=` must equal `LABELWATCH_RECENT_ADMITTED_ROOT`
+is no `current` symlink, so a release change is a reviewed re-run of the
+installer with the new sha plus the restart of the product service. `ReadWritePaths=` must equal `LABELWATCH_RECENT_ADMITTED_ROOT`
 literally (systemd does not expand environment variables there).
 
 ## Environment and storage admission
