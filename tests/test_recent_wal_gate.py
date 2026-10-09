@@ -107,7 +107,7 @@ def test_pathological_reader_cannot_stop_ingest_beyond_the_bounded_wait(store):
         release.set(); t.join()
     assert slowest <= storage.CHECKPOINT_READER_WAIT + 1, slowest
     assert gated <= 2                                   # one bounded wait per backoff interval
-    assert pinned and pinned['wal_file_bytes'] > pinned['budget_bytes']   # disclosed, store-level
+    assert pinned and pinned['backlog_bytes'] > pinned['budget_bytes']   # disclosed, store-level
     store._wal_gate_retry = 0.0
     store.wal_gate()
     assert store.collector_bootstrap_summary()['wal_pinned'] is None     # cleared once readers let go
