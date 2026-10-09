@@ -2,7 +2,21 @@
 import json, os, signal, sqlite3, subprocess, sys, time
 from pathlib import Path
 
-from test_recent_collector_bootstrap import A, B, store  # noqa: F401
+from test_recent_collector_bootstrap import A, B  # noqa: F401
+import pytest
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    """A store whose active day is the real UTC day: the child collector below runs
+    on the wall clock, and a store created on another day correctly refuses ingestion
+    until its daily owner rotates (which is not what this test exercises)."""
+    from datetime import datetime, timezone
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1]/'tools'/'segmented_qualification'))
+    import storage
+    monkeypatch.setattr(storage, 'ROOT', tmp_path)
+    from recent_storage import RecentStore
+    return RecentStore.create(tmp_path/'store', datetime.now(timezone.utc).isoformat())
 from labelwatch.recent_collector import Collector
 
 CHILD = r'''
@@ -15,7 +29,8 @@ from labelwatch.recent_collector import Collector
 class Hang:
     def request(self, *a, **k):
         time.sleep(300)
-Collector(RecentStore(sys.argv[1]), Hang(), sleep=time.sleep, stale_seconds=2).tick()
+r = Collector(RecentStore(sys.argv[1]), Hang(), sleep=time.sleep, stale_seconds=2).tick()
+print('CHILD TICK', json.dumps(r.get('round')), file=sys.stderr, flush=True)
 '''
 
 
@@ -36,7 +51,7 @@ def test_sigkilled_round_is_swept_once_and_young_attempts_are_kept(store, tmp_pa
             if child.poll() is not None:
                 break
             time.sleep(.05)
-        assert store.collector_bootstrap_summary()['pending_attempts'] == 1
+        assert store.collector_bootstrap_summary()['pending_attempts'] == 1, ('child exit', child.returncode, store.collector_bootstrap_summary())
     finally:
         child.send_signal(signal.SIGKILL); child.wait()
     # A young in-flight attempt (other did) is not swept.
