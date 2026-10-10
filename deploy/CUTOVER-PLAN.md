@@ -1,5 +1,44 @@
 # Labelwatch clean-start cutover and retirement plan — deployment readiness revision 6 (2026-10-10)
 
+## Execution update — 2026-10-10 05:38Z
+
+Disposition: **WAITING_FOR_REAL_OBSERVATION**. Owner explicitly approved the ten-path manifest at
+`ba15c34f686aab1d2e23d073dd3795a91f0581c6`. Retirement run
+`75742698-0f0f-4a4d-be81-aac480cde279` completed at 05:36:49Z after exact metadata/content checks,
+no symlinked parent traversal, and root descriptor/mapped-file checks found no active consumers.
+Exactly two symlinks and eight regular files were removed; no directories or additional historical
+material were removed. Legacy services/timers are masked with original unit files retained.
+The crow retention timer is masked and the existing occurrence has a separate supersession record.
+
+Exact allocated file bytes removed: **50,892,075,008**. Root available bytes increased from
+30,280,138,752 to 81,225,633,792; the extra 53,420,032-byte difference is concurrent filesystem change,
+not attributed to retirement. After held installation root had **80,735,043,584 bytes** and
+9,193,602 free inodes; the existing 32 GiB reserve is unchanged.
+
+Installed Labelwatch `397d98e00213a0bd787872f5d5d8b5a6d64c9b62` and Facts API
+`f320f8e2cb4794a2539542f8e89e65b982c88f36` from verified immutable archives. Offline Python 3.10
+installation passed exact 24-package lock, dependency and import gates. Seven successor units are
+installed. Only the overview timer is enabled to refresh explicit held status every 30 minutes;
+collection and maintenance timers remain disabled. Facts API was replaced with its qualified source and existing reviewed
+drop-in; its previous source/configuration and Caddy configuration are retained for rollback.
+Public instruments at 05:38:23Z report Labelwatch PRESENT with freshness_state held; weatherwatch
+remains PRESENT. No collection, production store initialization, activation marker, hold removal or
+public product-route cutover occurred. Historical recovery custody remains available independently.
+
+The original replica observer is active, with 115 samples, 19,755,008-byte observed store peak and
+145,865,311 network bytes at 05:37:43Z. Its required authentic maintenance is due
+**2026-10-11T00:05Z (October 10, 8:05 p.m. EDT)**; terminal observation is expected by 01:20Z.
+Do not restart, duplicate or accelerate it. Inspect its actual maintenance/horizon/terminal receipts,
+then resume the existing conditionally authorized activation and public checks after acceptance and
+fresh admission. No new owner approval is required for that already-authorized path.
+
+Detailed private evidence: existing campaign `final-qualification-20261009/retirement-75742698-0f0f-4a4d-be81-aac480cde279/`
+(`RESULT.json`, `run.log`, `ADMISSION.json`, `INSTALL-RESULT.json`, `install.log`, `HELD-POSTCHECK.txt`,
+`PUBLIC-FACTS-HELD.json`). Master `RECOVERY.json` records exact recovery/supervision instructions.
+Runtime/recovery artifacts remain retained for activation and rollback; this is an interim custody
+handoff, not whole-campaign cleanup. Only sanitized status is published to GitHub.
+
+
 Retirement execution scope is now the exact [verified manifest](RETIREMENT-MANIFEST.md) and its bound
 JSON target list. Generation-2 backup and local recovery completed at 2026-10-10T05:21Z; cold catalog and
 state recovery passed. No historical production deletion has occurred. The owner's approval of that
