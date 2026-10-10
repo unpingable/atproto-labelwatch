@@ -1,0 +1,50 @@
+# TEMPORARY substitute monitor (README.md). Exists only while Constellation NQ #27 / Monitor #18
+# block native enrollment; retire it by the README's retirement condition. Not installed by any
+# installer. One finite evaluation per invocation; failed obligations never fail the unit.
+[Unit]
+Description=Labelwatch recent observatory: temporary obligation watcher (L1-L10, NC control)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=labelwatch-watch
+Group=labelwatch-watch
+# labelwatch: read-only traversal to STATUS.json and /etc/labelwatch-recent.env (0640 root:labelwatch).
+# systemd-journal: journalctl -u labelwatch-recent-maintain for the L3/L5 reason.
+SupplementaryGroups=labelwatch systemd-journal
+# Optional, 0640 root:labelwatch-watch. Delivery stays OFF unless it sets WATCH_SLACK_WEBHOOK_URL
+# and/or WATCH_PAGERDUTY_ROUTING_KEY (see README "Alert destinations").
+EnvironmentFile=-/etc/labelwatch-recent-watch.env
+ExecStart=/usr/bin/python3 -I /opt/labelwatch-recent-watch/labelwatch-recent-watch.py
+# L10 self-visibility: one Slack line when the run itself failed ($SERVICE_RESULT != success).
+ExecStopPost=-/usr/bin/python3 -I /opt/labelwatch-recent-watch/labelwatch-recent-watch.py --report-failure
+StateDirectory=labelwatch-recent-watch
+StateDirectoryMode=0750
+UMask=0027
+TimeoutStartSec=120
+Restart=no
+MemoryMax=256M
+CPUQuota=25%
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+# Read-only views of the store and the publication directory (ProtectSystem=strict already makes
+# them read-only; listing them documents the dependency). "-" tolerates an absent path.
+ReadOnlyPaths=-/REPLACE_WITH_ADMITTED_RECENT_ROOT -/REPLACE_WITH_PUBLIC_OVERVIEW_DIR
+# Loopback only (product 127.0.0.1:8431, facts API 127.0.0.1:8425, systemd-resolved stub).
+# With delivery configured, add the README drop-in delivery.conf; nothing else opens egress.
+IPAddressDeny=any
+IPAddressAllow=localhost
+StandardOutput=journal
+StandardError=journal

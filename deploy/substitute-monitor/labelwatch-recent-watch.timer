@@ -1,0 +1,13 @@
+# TEMPORARY substitute monitor (README.md). Every 5 minutes; a missed run is not replayed
+# (L10 reports a gap of more than three cadences on the next run).
+[Unit]
+Description=Labelwatch recent observatory: temporary obligation watcher every 5 min
+
+[Timer]
+OnCalendar=*-*-* *:01/5:00 UTC
+AccuracySec=5s
+Persistent=false
+Unit=labelwatch-recent-watch.service
+
+[Install]
+WantedBy=timers.target
