@@ -1,8 +1,21 @@
-# Labelwatch clean-start cutover and retirement plan — deployment readiness revision 5 (2026-10-10), awaiting owner authorization
+# Labelwatch clean-start cutover and retirement plan — deployment readiness revision 6 (2026-10-10)
 
 Status: engineering lanes `lane/labelwatch-clean-start-20261008` (labelwatch) and `lane/labelwatch-freshness-20261008`
-(facts API). **No step below is authorized by this document.** Each production step needs the owner's explicit approval
-recorded as a receipt under `clean-start-20261008/evidence/` before execution. Production mutations so far: NONE.
+(facts API). **This document does not grant authority.** The owner's overnight mandate now authorizes routine
+operational acceptance. It also authorizes a non-destructive cutover only after all eight stated acceptance
+conditions pass.
+`final-qualification-20261009/OVERNIGHT-OWNER-AUTHORITY.json` records that mandate. References below to
+separate approval for non-destructive work are subject to that later mandate; they do not require repeated
+permission for already authorized work. Historical production deletion and destructive retirement remain
+separate owner-only gates. Production mutations so far: NONE.
+
+Current admission is **REFUSED**: the 2026-10-10T02:48:03Z read-only preflight measured
+30,266,048,512 bytes available on Zone `/`, below its established 32 GiB reserve by 4,093,689,856 bytes.
+Even the bounded 2 GiB held installation requires 36,507,222,016 bytes free, a 6,241,173,504-byte shortfall.
+See `STAGED-AUTHORIZATION.md` and the timestamped production receipts. The conditional cutover authority
+does not waive this gate. No historical data may be removed to make the arithmetic pass without approval.
+PagerDuty must use the owner's **one shared escalation policy**; no second policy or paid plan is required
+or authorized. Provider HTTP acceptance alone does not establish operator delivery.
 Revision 2 folds in the Phase D acceptance review (`REVIEW-PHASE-D-OPUS-20261009.md`, 12 corrections), the target-host
 facts (`CAPACITY-ADMISSION-20261009.md`) and the release engineering of 2026-10-09 (cp310 lock, installer).
 
@@ -49,7 +62,7 @@ target-host sustained capacity. Record final bounded tests and their limits rath
 | P2 | NQ #27 resolved or an explicitly accepted bounded substitute operator path | NQ #27 closure or substitute receipt | OPEN — separate NQ #27 remains open; historical crash-loop evidence is not a current recovery receipt |
 | P3 | Monitor #18 obligations enrolled for the successor with a proven negative control | `PHASE-C-NQ-MONITOR-RECONCILIATION-20261009.md` + receipt | OPEN |
 | P4 | Generation-2 final NFS snapshot complete and verified (step 1) | `MANIFEST.json`, `VERIFY.txt`, `VERIFY-POSTCHECK.txt` | prepared; revised script's dry run asserts every precondition (2026-10-09 14:50Z: hold marker present, six legacy units inactive/failed, no descriptors, stat record captured) |
-| P5 | Owner approval of this exact plan, per approval class (snapshot/staged, retirement, activation) | signed receipts | OPEN |
+| P5 | Authority for the exact action, with admission and acceptance conditions satisfied | overnight mandate and action receipts; separate destructive approval | Conditional non-destructive authority received; conditions remain open; retirement NOT authorized |
 
 ## 1. Generation-2 NFS snapshot (non-destructive; a production READ and a 45.4 GB egress)
 Procedure: `LABELWATCH_SNAPSHOT_AUTHORIZED=<approval receipt path> generation2-nfs-snapshot.sh --execute`. The receipt
@@ -175,9 +188,11 @@ use the campaign-approved durable execution mechanism and recovery checkpoint na
 execution identity, artifacts/logs, expected terminal records and next authorized action. Verify evidence
 collection survives supervisor loss; do not duplicate the producer after interruption.
 
-## 7. Selection / activation (the one deliberate, reviewed step — its own approval class)
-Precondition: P1–P5. Before any hold removal, verify every legacy service/timer and crow retention timer
-is masked, inactive and has no in-flight consumer. Owner separately authorizes removal of the shared
+## 7. Selection / activation (conditional owner authority; exact action receipt required)
+Precondition: P1–P5 and all A–H conditions in the overnight mandate. Before any hold removal, verify every
+legacy service/timer and crow retention timer is masked, inactive and has no in-flight consumer. Record
+the evidence satisfying those conditions and the exact hold transition under the existing conditional
+authority; do not infer permission from installation success. Remove the shared
 `/etc/labelwatch-operator-safe-hold`; then create `/etc/labelwatch-recent-qualified-activation`
 (content: approval receipt id + init generation_id) and start:
 
@@ -271,10 +286,12 @@ and the qualified hold procedure; do not repeatedly restart a producer or relax 
 Verify exported interval suggestions, expiration refusals, no-store 503 freshness responses and loopback-only
 health against final qualified identities; never claim the historical C2 export criterion passed.
 
-Current blockers: real-host unattended soak and recovery acceptance, final-scale export scope reconciliation,
-Monitor #18/NQ #27 path acceptance,
-fresh owner-confirmed destination reserve/headroom, verified gen-2/cold/unique-evidence custody and
-separate snapshot/staging, fencing/supersession, destructive retirement, activation and publication approvals.
+Current blockers: authentic scheduled maintenance observation, Monitor #18 operator-path acceptance,
+failed numerical production resource admission, and verified gen-2/cold/unique-evidence custody.
+Full-scale exports and installed refusal/recovery controls are accepted; see `QUALIFICATION-20261010.md`
+and the exact campaign receipts. NQ #27 remains separate; an accepted bounded substitute must satisfy
+the recorded monitoring gate before activation. The owner has authorized conditional non-destructive
+work, but destructive retirement still requires an exact separate decision.
 The seven-day observation and 30-day warm-up declarations are future milestones, not completed qualifications.
 This plan executes none of these actions.
 

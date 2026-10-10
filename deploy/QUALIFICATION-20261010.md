@@ -3,6 +3,13 @@
 **BLOCKED_WITH_EXACT_OBLIGATIONS. Production unchanged.** This is a checkpoint while the existing
 durable overnight producer remains active, not acceptance or campaign closeout.
 
+Operational update at 2026-10-10T03:07Z: conditional non-destructive cutover authority is recorded in
+`OVERNIGHT-OWNER-AUTHORITY.json`; historical production retirement remains unauthorized. Production
+root free space measured at 02:48:03Z is 30,266,048,512 bytes, below the existing 32 GiB reserve. The public
+Facts API returned Labelwatch `UNAVAILABLE` at 03:07:27Z (`PUBLIC-FACTS-PREFLIGHT-20261010.json`). The operator reports repairing PagerDuty plan eligibility;
+one escalation policy must serve both services. Actual incident visibility and acknowledgement remain
+unverified. HTTP 202 for test run `9682993e` establishes provider acceptance only.
+
 ## Immutable inputs
 
 | Repository | Branch | Identity |
@@ -33,7 +40,7 @@ GitHub Projects remains the execution tracker.
 | Full-scale account exports |39.2Mretained substitution store;543589rows/5440pages over6intervals passed raw-input oracle; no original-store mutation or product-migration claim | `exports-full-resume-f8f3c5f9-703c-4c31-812e-20cdcba14716/`; acceptance `0e88916b` |
 | Predictive capacity / retention conditions |90fixture cases; real310s+311s samples, projected-budget notice, monitor-only exhaustion page, unknown incident retention, six deterministic forecast controls; L3missed deadline/L4stalled retirement covered by fixtures | `.lanes/monitor_reconcile/11d74c2d-86d0-4160-9faf-1be46080d0ee/` |
 | Installed refusal to monitor |exact failed collect journal evaluated by exact monitor source yielded local PAGE; live failed-invocation sampling window was missed, so this is receipt substitution | same profile `RESERVE-RECEIPT-EVALUATION.json` |
-| Unattended controls |NC1failure, NC4real missing-evidence interval, NC5recovery and NC2overdue observed; NC3hold interval still active and NC6requires reconciliation | `.lanes/monitor_reconcile/9f5c6b94-1a12-4895-a803-915cd6036b86/RECOVERY.json` |
+| Unattended controls |Actual NC1 failure, 16-minute missing-evidence and overdue intervals, fresh recovery, and 31-minute held interval accepted. Original terminal FAIL is preserved: final NC6 command could not find runuser. Separate NC6-only successor passed four fixture cases; no earlier observation was repeated | `.lanes/monitor_reconcile/9f5c6b94-1a12-4895-a803-915cd6036b86/`; successor `c1cfbcb8-6a54-4de6-a1c6-fe3ca5cb478d`; acceptance `23e6e6cd-6097-4c44-8e88-295761575c8d` |
 | Actual UTC maintenance / sustained soak |pending real2026-10-11T00:05Z maintenance; guarded observation ends01:20Z; no fabricated clock acceptance | `live-soak/`, `RECOVERY.json` |
 | External operator delivery / enrollment |not earned; local intents do not establish provider delivery or human acknowledgement | Monitor#18 remains OPEN |
 
@@ -63,9 +70,9 @@ historical exact-source scope. No expensive constructor was repeated.
 
 ## Exact remaining obligations
 
-1. Reconcile original NC3/NC6 producer at its natural terminal around2026-10-10T03:04Z. Its sealed protocol
-   has a known bare`runuser` pathname issue in NC6. Do not alter or replay NC1–5; after observing terminal,
-   use prepared NC6-only successor`c1cfbcb8-6a54-4de6-a1c6-fe3ca5cb478d` under its dispatch precondition.
+1. Preserve the accepted original NC1–5 receipts, original harness-failure terminal, and NC6-only successor
+   terminal with acceptance `23e6e6cd`. Both producers are terminal; do not relaunch. Retained control
+   configuration has a named custody dependency pending campaign closeout.
 2. Observe the existing VM/guard through actual UTC maintenance and inspect terminal/journal/coverage,
    generation advancement, retention and resource evidence. No extra approval is needed for this admitted
    offproduction work. Never duplicate or restart the unresolved producer after supervisor loss.
@@ -74,8 +81,9 @@ historical exact-source scope. No expensive constructor was repeated.
    NQ#27 is a separate hosting concern; neither issue closes on local watcher evidence.
 4. Confirm production store/WAL budgets, applicable filesystem reserves and fresh aggregate admission.
    Replica2GiB/256MiB settings are not production values. Fixed30day coverage never shrinks silently.
-5. Complete verified gen2/cold/unique-evidence custody, then obtain separate cutover and destructive
-   retirement approvals. Snapshot/staging/fencing/publication steps retain their exact plan gates.
+5. Complete verified gen2/cold/unique-evidence custody. Non-destructive cutover is conditionally authorized
+   by the overnight mandate only after all A–H conditions pass. Destructive historical retirement still
+   requires separate exact owner approval. Snapshot/staging/fencing/publication retain their safety gates.
 6. Finish storage closeout:17.18GB of exact temporary fixtures are disposal candidates with protocols,
    results, seals and small custody receipts retained. Full consumer inspection was blocked by326
    inaccessible process-FD directories and unavailable sudo authentication. Retain pending an authorized
@@ -84,4 +92,6 @@ historical exact-source scope. No expensive constructor was repeated.
 Deployment, rollback, unsafe-restore conditions, interruption and retirement prerequisites are in
 [CUTOVER-PLAN.md](CUTOVER-PLAN.md). The installed DNS allowance and collector capacity correction are bounded
 fixes; the predictive watcher adds observations without changing retention or installing automatic actions.
-No production operation, external notification, snapshot destruction or data retirement was performed.
+Production inspection was read-only. One authorized test-service PagerDuty trigger received HTTP 202;
+operator visibility is not yet established. No production mutation, snapshot destruction or data retirement
+was performed.
