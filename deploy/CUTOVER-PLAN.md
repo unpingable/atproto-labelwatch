@@ -1,4 +1,4 @@
-# Labelwatch clean-start cutover and retirement plan — deployment readiness revision 4 (2026-10-10), awaiting owner authorization
+# Labelwatch clean-start cutover and retirement plan — deployment readiness revision 5 (2026-10-10), awaiting owner authorization
 
 Status: engineering lanes `lane/labelwatch-clean-start-20261008` (labelwatch) and `lane/labelwatch-freshness-20261008`
 (facts API). **No step below is authorized by this document.** Each production step needs the owner's explicit approval
@@ -6,7 +6,7 @@ recorded as a receipt under `clean-start-20261008/evidence/` before execution. P
 Revision 2 folds in the Phase D acceptance review (`REVIEW-PHASE-D-OPUS-20261009.md`, 12 corrections), the target-host
 facts (`CAPACITY-ADMISSION-20261009.md`) and the release engineering of 2026-10-09 (cp310 lock, installer).
 
-Candidate runtime and installed-unit source: Labelwatch `63c9e5c73af53f5541db210b510daccba7c4668d`,
+Candidate runtime and installed-unit source: Labelwatch `397d98e00213a0bd787872f5d5d8b5a6d64c9b62`,
 branch `lane/labelwatch-final-qualification-20261009`, based on the historical clean-start lane at
 `7c96c6407cf490416b97ac0e2f57749053d6c0a5`. Facts API remains
 `f320f8e2cb4794a2539542f8e89e65b982c88f36`. Bind any subsequent documentation-only commit and its
@@ -19,8 +19,13 @@ resolver configuration before staging rather than broadening the network policy 
 Final-qualification evidence is under the existing private campaign's
 `clean-start-20261008/final-qualification-20261009/`. The CPython 3.10.12 / SQLite 3.37.2 replica passed
 387 Labelwatch tests and 90 Facts API tests (28 external-surface skips), installed from the hash-locked
-24-wheel environment. Source3c92f465 carried the same runtime modules as this candidate; the later
+24-wheel environment. Source3c92f465 carried the same runtime modules as installed63c9e5c; the later
 installed-unit and draft-monitor deltas have separate regression and independent-review receipts.
+A demonstrated replica reserve refusal exposed collector misclassification: per-source errors and
+round exit zero. Candidate397d98e corrects only trusted store-capacity refusal classification and
+pre-network admission. Sixteen focused regressions passed independently and on CPython3.10 (5.20s);
+installed-refusal successor e132637e passed with exit1, exact reason and unchanged1,178events/index/cursors. The broader host collector suite
+was interrupted after demonstrated stalled progress (exit130); its partial output is not a pass.
 The accepted export run `87e663cd-1cb0-45b7-89c5-39b815698048` completed four default-cap intervals,
 355,600 rows total, with independent row/count/hash correspondence. Its 121,769,984-byte fixture and
 377,114,624-byte RSS peak do not establish full-store latency. Replica initialization and held Facts API
@@ -197,6 +202,32 @@ for exports; everything else 404; `/health` and the legacy tree are not served);
 See `PHASE-C-NQ-MONITOR-RECONCILIATION-20261009.md` for the obligation table (seven distinctions), the negative-control chain
 and the temporary-monitor proposal if NQ #27 stays blocked.
 
+### Fixed-window capacity and retention-health gate
+
+Before activation, bind the exact watcher source and independently accepted receipts for all four
+conditions: L4 stalled window/retirement advancement, L3 missed maintenance deadline, L11 projected
+budget breach, and L5/L11 exhausted capacity. Unknown or held evidence cannot resolve an incident.
+The current substitute monitor source is included in candidate397d98e; 90 deterministic cases passed
+at6228bf5, with unchanged monitor bytes in the candidate. Offproduction local intents establish no
+external delivery, native enrollment or production-route acceptance. Monitor #18 remains open.
+
+Record owner-admitted `WATCH_STORE_BUDGET_BYTES`, `WATCH_WAL_BUDGET_BYTES`, per-filesystem reserve and
+inode floors, and `WATCH_CAPACITY_LOOKAHEAD_SECONDS` (default86400) before enrollment. The replica's
+2GiB store/256MiB WAL settings are qualification policy, never production sizing. An unset or
+unidentifiable policy yields unknown. Monitor budget observations do not install an ingestion gate;
+physical reserve admission supplies the collector refusal. Operators must intervene on forecast
+warnings before reaching that hard boundary.
+
+The fixed30-day estimate uses current visible allocated blocks plus recent positive net growth over
+30days, with no future-retirement credit. It excludes open-unlinked/outside-root allocations; use
+measured transition peaks and shared filesystem headroom separately. Record accepted-row velocity,
+WAL usage and conditional time to each ceiling. A projected breach raises notice, escalating to page
+within lookahead; actual exhaustion pages. Keep the30-day contract: do not shorten retention or sample
+observations to quiet alerts. On a forecast breach, verify source rate, inventory and filesystem
+consumers, admit additional capacity or use the qualified hold/refusal procedure. On maintenance
+failure or stalled retirement, retain exact occurrence/journal evidence and hold if headroom cannot
+cover recovery. No automatic resize, restart or retirement follows a monitor verdict.
+
 ## 10. Acceptance soak and declaration
 7 days after step 7: first UTC rotation observed; first maintenance occurrence seen as an operator condition; bootstrap
 terminal for all reachable sources; steady-state bytes vs reserve recorded daily; no gap overflow; then "serving (warming
@@ -250,7 +281,7 @@ This plan executes none of these actions.
 Formalization consideration: marker transition claim is bounded to systemd start conditions: held or
 unactivated skips collect/maintain/product; removal of a shared hold cannot release legacy work only if
 all legacy consumers were separately fenced. Conditions do not stop running services, hence explicit
-full-stop rollback. Reviewed source identity is candidate63c9e5c, whose collection-unit and draft-monitor corrections have
+full-stop rollback. Reviewed source identity is candidate397d98e, whose collection-unit and draft-monitor corrections have
 separate regression/acceptance receipts; exact plan result identity is its immutable documentation commit/notice. Counterexamples
 include unmasked legacy units, in-flight work, sequential partial installation and insufficient restore space.
 Practical source inspection, target-VM marker tests and review suffice for this operational plan; no new
