@@ -725,3 +725,37 @@ def test_l4_invalid_current_generation_does_not_advance_valid_baseline():
     f['status']['last_maintenance']['generation'] = None
     assert step(st, f, now)[0]['L4']['verdict'] == 'unknown'
     assert st['l4_days']['2026-10-08']['advanced'] is None
+
+
+def test_gather_corroboration_matches_actual_facts_api_route_table(monkeypatch, tmp_path):
+    # Cross-repository integration qualification supplies the actual selected source.
+    # Standalone fixture runs still verify the canonical request below.
+    import ast
+    routes_source = os.environ.get('FACTS_API_ROUTES_SOURCE')
+    routes = {'/atproto/v1/instruments': 'instruments',
+              '/atproto/v1/labelwatch/overview': 'labelwatch_overview'}
+    if routes_source:
+        namespace = {}
+        tree = ast.parse(Path(routes_source).read_text())
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+                if node.targets[0].id in ('NAMESPACE', 'API_PREFIX', 'FACT_ROUTES'):
+                    exec(compile(ast.Module(body=[node], type_ignores=[]), routes_source, 'exec'), {}, namespace)
+        routes = namespace['FACT_ROUTES']
+    seen = []
+    def get(url, **kw):
+        from urllib.parse import urlsplit
+        path = urlsplit(url).path
+        seen.append(path)
+        if path == '/health':
+            return 200, b'{}'
+        assert path in routes, 'monitor requests path absent from actual Facts API table'
+        return 503 if routes[path] == 'labelwatch_overview' else 200, b'{"error":{"code":"UNAVAILABLE"}}'
+    monkeypatch.setattr(w, 'http_get', get)
+    monkeypatch.setattr(w, 'run_cmd', lambda *a, **kw: b'LoadState=loaded\nResult=success\n')
+    cfg = dict(w.DEFAULTS, WATCH_RECENT_ENV=str(tmp_path / 'absent'), WATCH_STORE=str(tmp_path),
+               WATCH_PUBDIR=str(tmp_path), WATCH_RESERVES='[]')
+    f = w.gather(cfg, NOW)
+    assert '/atproto/v1/labelwatch/overview' in seen
+    assert f['facts']['overview_http'] == 503
+    assert f['facts']['overview_code'] == 'UNAVAILABLE'

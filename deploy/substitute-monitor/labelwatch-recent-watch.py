@@ -346,7 +346,7 @@ def gather(cfg, now):
     try:  # timeout and connection refused are both unknown for L7, not "unavailable"
         code, body = http_get(base + '/atproto/v1/instruments')
         f['facts'] = {'http': code, 'body': json.loads(body)}
-        code, obody = http_get(base + '/atproto/labelwatch/overview')  # corroboration: route status and error.code
+        code, obody = http_get(base + '/atproto/v1/labelwatch/overview')  # corroboration: route status and error.code
         f['facts'].update(overview_http=code, overview_code=(json.loads(obody or b'{}').get('error') or {}).get('code'))
     except Exception as e: err = None if f['facts'] else type(e).__name__
     note('facts:instruments', base + '/atproto/v1/instruments', body, err)

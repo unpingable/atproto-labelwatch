@@ -80,7 +80,7 @@ Resource budgets (units): collect `MemoryMax=2G`, maintain `4G`, product `2G`, o
 - Product `/health.freshness.state`: `fresh` while the last accepted page is younger than 900 s, `stale` beyond,
   `unknown` until the first accepted page. `/health` itself returns 503 `stale` when `STATUS.json` is older than two
   collection cadences (the collector stopped writing).
-- facts API (`/atproto/labelwatch/overview`): 200 only for `fresh` or `warming_up` (epoch younger than 30 days); 503
+- facts API (`/atproto/v1/labelwatch/overview`): 200 only for `fresh` or `warming_up` (epoch younger than 30 days); 503
   `source_stale` (artifact older than 2 h or collection stalled), `source_held` (hold artifact), `source_unavailable`
   (no readable artifact), all `Cache-Control: no-store`.
 
