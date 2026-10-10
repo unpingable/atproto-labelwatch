@@ -1,7 +1,7 @@
 # Recent observatory units (clean-start successor)
 
-Everything here is an example. Nothing in this directory installs, enables or
-starts a unit, and no install step creates or removes a marker file.
+The unit and environment files are templates. `install-recent.sh` installs them
+for a named release; it enables or starts no unit and changes no marker file.
 
 ## Files
 
@@ -54,7 +54,10 @@ the admitted root (0750) and the publication directory (0755), reloads systemd
 and verifies the units. It creates no marker and enables nothing.
 Units name the release directory explicitly (`REPLACE_WITH_RELEASE_SHA`); there
 is no `current` symlink, so a release change is a reviewed re-run of the
-installer with the new sha plus the restart of the product service. `ReadWritePaths=` must equal `LABELWATCH_RECENT_ADMITTED_ROOT`
+installer with the new sha plus the restart of the product service.
+Placement of env and units is sequential, not atomic. Stop the timers and
+services before an update; if installation is interrupted, complete it before
+starting any service. `ReadWritePaths=` must equal `LABELWATCH_RECENT_ADMITTED_ROOT`
 literally (systemd does not expand environment variables there).
 
 ## Environment and storage admission
@@ -92,7 +95,6 @@ literally (systemd does not expand environment variables there).
 ```
 systemd-run --wait --pipe --uid=labelwatch --gid=labelwatch \
   -p EnvironmentFile=/etc/labelwatch-recent.env \
-  -p ConditionPathExists=!/etc/labelwatch-operator-safe-hold \
   /opt/labelwatch/releases/<sha>/venv/bin/python \
   /opt/labelwatch/releases/<sha>/source/tools/segmented_qualification/recent_init.py \
   --root <admitted root>/epoch-2 --now <UTC Z> \
@@ -100,6 +102,8 @@ systemd-run --wait --pipe --uid=labelwatch --gid=labelwatch \
   --receipt <evidence dir>/epoch-2-init-receipt.json
 ```
 
+Initialisation is permitted while held: leave the hold and activation markers
+unchanged. It creates the store without starting collection or publication.
 Running under `EnvironmentFile=` keeps the reserves JSON intact (shell
 sourcing would strip its quotes). Paths are passed literally.
 It refuses a non-empty root, and refuses `--now` more than 300 s from the
@@ -114,15 +118,17 @@ unknown coverage until the collector bootstraps it. No history is imported.
 
 ## Hold and activation markers
 
-Every unit carries both conditions:
+The collect, maintain and product services carry both conditions:
 
 ```
 ConditionPathExists=!/etc/labelwatch-operator-safe-hold
 ConditionPathExists=/etc/labelwatch-recent-qualified-activation
 ```
 
-A unit starts only when the hold marker is absent **and** the activation
-marker is present. A failed condition skips the start (logged, not a unit
+These three services start only when the hold marker is absent **and** the
+activation marker is present. The timers are ungated. The overview service is
+also ungated: it publishes `hold:true` without reading the store whenever the
+hold marker exists or the activation marker is absent. A failed condition skips the start (logged, not a unit
 failure); timers keep firing and keep skipping. Conditions are evaluated only
 at start: creating the hold marker stops new collection and maintenance
 rounds but does not stop a running product server or an in-flight round; the

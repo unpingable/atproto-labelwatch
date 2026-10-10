@@ -70,7 +70,9 @@ for u in $units; do
   sub "$rel/source/deploy/$u" > "$stage/$u"
   grep -q REPLACE_WITH "$stage/$u" && { echo "unsubstituted placeholder in $u" >&2; exit 3; }
 done
-# Env and all seven units rendered; now place them together so a half-installed set never exists.
+# Env and all seven units rendered before placement. Placement is sequential,
+# not atomic: keep services stopped during a release update; an interrupted
+# installation must be completed before any service is started.
 install -m 0640 -o root -g labelwatch "$stage/labelwatch-recent.env" /etc/labelwatch-recent.env
 for u in $units; do install -m 0644 -o root -g root "$stage/$u" "/etc/systemd/system/$u"; done
 systemctl daemon-reload

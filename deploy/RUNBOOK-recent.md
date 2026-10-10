@@ -10,20 +10,24 @@ and `release/DEPENDENCY_CUSTODY.md` (locks). No historical migration exists and 
 |---|---|---|---|
 | `labelwatch-recent-collect.timer/.service` | every 2 min (`Persistent=false`) | one finite collection round: bounded discovery page, bootstrap probes for new sources, cursor pages for established ones, status write | `Result=success`; exit 75 (lock held by maintenance) counts as success |
 | `labelwatch-recent-maintain.timer/.service` | 00:05 UTC daily (`Persistent=true`) | rotate the daily owner, archive yesterday's vessels, expire days older than 30, release blocks | `Result=success`, `last_maintenance.at` advances in `/health` |
-| `labelwatch-recent-overview.timer/.service` | every 30 min | publish `<pubdir>/overview.json` (`labelwatch.recent-overview.v1`) for the facts API; while held it publishes an explicit `hold:true` artifact | file mtime advances; facts API serves 200 `fresh`/`warming_up` |
+| `labelwatch-recent-overview.timer/.service` | every 30 min | publish `<pubdir>/overview.json` (`labelwatch.recent-overview.v1`) for the facts API; while held it publishes an explicit `hold:true` artifact | file mtime advances; facts API serves 200 `fresh`/`warming_up`, or 503 `source_held` while held |
 | `labelwatch-recent-product.service` | always on, 127.0.0.1:8431 | read-only site: `/`, `/about`, `/previous-epoch`, `/account`, `/lookup`, `/exports`, `/download`, `/instruments/*`; operator `/health` (loopback only, never routed) | `active (running)`; `/health` 200 with `status: ok` |
 
-All units carry `ConditionPathExists=!/etc/labelwatch-operator-safe-hold` and
+The collect, maintain and product services carry
+`ConditionPathExists=!/etc/labelwatch-operator-safe-hold` and
 `ConditionPathExists=/etc/labelwatch-recent-qualified-activation`. A failed condition is a skipped start, not a failure.
+Timers and the overview service are ungated; the overview publishes `hold:true`
+when the hold marker exists or the activation marker is absent.
 
 ## Start, stop, restart
 
 ```
 systemctl status 'labelwatch-recent-*'                       # all four services and three timers
 systemctl restart labelwatch-recent-product.service           # safe at any time; readers reconnect
-systemctl start labelwatch-recent-collect.service             # one extra round now (waits for units.lock)
+systemctl start labelwatch-recent-collect.service             # one extra round now (skips if units.lock is held)
 systemctl start labelwatch-recent-overview.service            # republish the overview now
-systemctl stop labelwatch-recent-collect.timer labelwatch-recent-maintain.timer labelwatch-recent-overview.timer labelwatch-recent-product.service   # full stop (markers untouched)
+systemctl stop labelwatch-recent-collect.timer labelwatch-recent-maintain.timer labelwatch-recent-overview.timer  # prevent new scheduled starts
+systemctl stop labelwatch-recent-collect.service labelwatch-recent-maintain.service labelwatch-recent-overview.service labelwatch-recent-product.service  # stop any running work (markers untouched)
 ```
 
 Never `kill -9` maintenance by hand: it is idempotent per UTC day and resumes an interrupted expiry journal on the
@@ -36,9 +40,12 @@ attempt is swept at the next round start and disclosed as one store-wide `unknow
 touch /etc/labelwatch-operator-safe-hold      # new rounds, maintenance and product starts are skipped
 systemctl stop labelwatch-recent-product.service   # also stop the running product if the hold must be total
 systemctl start labelwatch-recent-overview.service # publishes hold:true immediately (facts API → 503 source_held)
-rm /etc/labelwatch-operator-safe-hold              # resume; cursors continue, the held interval is a disclosed gap
+# Resume only after owner approval and verification that legacy units are masked:
+rm /etc/labelwatch-operator-safe-hold              # activation marker must also be present
+systemctl start labelwatch-recent-product.service # a stopped product needs an explicit start
 ```
 
+The held interval is a disclosed gap; cursors continue on the next collection round.
 The hold marker is shared with the legacy units; removing it never re-enables them (they are masked after retirement).
 
 ## Expected behaviour
@@ -105,8 +112,10 @@ The previous epochs' archives on NFS are custody only, never restorable into thi
 1. Review and merge the change; run the acceptance subset on the cp312 lock and the cp310 replica.
 2. `git archive` the sha, build `/opt/labelwatch/releases/<sha>/venv` with `release/build-venv.sh` from the reviewed
    wheelhouse (the lock is selected by interpreter ABI; any new pin needs a custody entry).
-3. `deploy/install-recent.sh --release-sha <sha> …` (rewrites units and env; store untouched; no marker change), then
-   `systemctl restart labelwatch-recent-product.service`. Timers pick up the new sha at their next elapse.
+3. Stop timers and services using the full-stop commands above. Run
+   `deploy/install-recent.sh --release-sha <sha> …` (rewrites units and env sequentially; store untouched; no marker change).
+   If interrupted, complete installation before any start. After verifying the installed release, restart the three
+   timers and product service; marker conditions still apply.
 4. Rollback = re-run the installer with the previous sha. Schema migrations are forward-only (v8 today); an older
    release refuses a newer store rather than corrupting it.
 
