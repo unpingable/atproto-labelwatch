@@ -49,12 +49,18 @@ def main(argv=None):
     # Exit 1 for whole-round failure: store refused (open, reserve, recovery) or
     # nothing was attempted before the deadline.
     try:
+        store = RecentStore(args.store)
+        # Refuse the current filesystem reserve before discovery, requests or
+        # bootstrap metadata writes; policy parsing alone is not admission.
+        store.check_capacity()
         with HTTPTransport() as transport:
-            collector=Collector(RecentStore(args.store),transport,limits=limits(),sleep=time.sleep,
+            collector=Collector(store,transport,limits=limits(),sleep=time.sleep,
                                 stale_seconds=_env_seconds('LABELWATCH_RECENT_STALE_SECONDS',60,3600))
             result=collector.run_round(discover=args.discover)
     except Exception as exc:
-        print(json.dumps({'round':{'status':'refused','reason':(str(exc) or type(exc).__name__)[:160]}},sort_keys=True),flush=True)
+        result = {'round': {'status': 'refused', 'reason': (str(exc) or type(exc).__name__)[:160]}}
+        print(json.dumps(result, sort_keys=True), flush=True)
+        __import__('recent_publish').write_status_quietly(args.store, result)
         return 1
     print(json.dumps(result,sort_keys=True),flush=True)
     __import__('recent_publish').write_status_quietly(args.store,result)  # /health reads <store>/STATUS.json

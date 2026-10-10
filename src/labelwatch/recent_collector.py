@@ -32,6 +32,13 @@ LATE_ALLOWANCE = timedelta(hours=48)
 STORE_HOLD = 'rotate daily observation owner before ingestion'
 WAL_PINNED = 'wal_budget_pinned'
 STORE_CONDITIONS = (STORE_HOLD, WAL_PINNED)
+CAPACITY_REASONS = ('shared_reserve_unavailable',
+                    'shared_reserve_unavailable: filesystem without configured reserve')
+
+
+class _StoreCapacityRefused(RuntimeError):
+    """Private control flow: exact capacity reason observed at a store call."""
+
 ENDPOINT_TTL = timedelta(hours=24)
 FUTURE_ALLOWANCE = timedelta(seconds=300)
 # Verified id-ordered providers advance about one id per row (mod.bsky.app 50-61 ids
@@ -174,13 +181,43 @@ class Collector:
             raise Refused('response object required')
         return value
 
+    def _store_call(self, operation, *args, **kwargs):
+        try:
+            return operation(*args, **kwargs)
+        except RuntimeError as exc:
+            if type(exc) is RuntimeError and str(exc) in CAPACITY_REASONS:
+                raise _StoreCapacityRefused(str(exc)) from exc
+            raise
+
+    def _capacity_refusal(self, exc, results=(), lost=(), attempt=None):
+        reason = str(exc)
+        errors = []
+        stamp = attempt[2] if attempt else self.now()
+        end = max(self.now(), stamp + timedelta(microseconds=1))
+        try:
+            self.store.record_gap(stamp.isoformat(), end.isoformat(), 'ingest_paused')
+        except Exception as cleanup:
+            errors.append({'operation': 'record_gap', 'reason': str(cleanup)[:160]})
+        if attempt:
+            try:
+                self.store.finish_source_attempt(attempt[0], attempt[1], observed_at=end.isoformat(), failure=False)
+            except Exception as cleanup:
+                errors.append({'operation': 'finish_source_attempt', 'reason': str(cleanup)[:160]})
+        attempted = [row for row in results if row['source'] is not None]
+        return {'attempted': len(attempted), 'results': list(results) + [
+                    {'source': None, 'status': 'refused', 'scope': 'store', 'reason': reason}],
+                'round': {'status': 'refused', 'reason': reason, 'store_hold': reason,
+                          'lost_attempts': len(lost), 'cleanup_errors': errors},
+                'refused_sources': [row['source'] for row in attempted if row['status'] == 'refused'],
+                'coverage': 'unknown'}
+
     def discover(self):
         """One bounded discovery page; store atomically checkpoints its continuation.
 
         An incomplete/refused discovery never replaces the sticky source roster.
         Discovery is not evidence that a source is reachable or fully observed.
         """
-        continuation = cursor(self.store.collector_discovery_cursor())
+        continuation = cursor(self._store_call(self.store.collector_discovery_cursor))
         value = self._request('discover', {'cursor': continuation, 'limit': self.limits.page_rows},
                               self.monotonic()+self.limits.seconds)
         rows = value.get('sources')
@@ -192,7 +229,7 @@ class Collector:
         next_cursor = cursor(value.get('cursor'))
         if next_cursor is not None and next_cursor == continuation:
             raise Refused('discovery continuation did not advance')
-        self.store.remember_sources(rows, limit=self.limits.sources,
+        self._store_call(self.store.remember_sources, rows, limit=self.limits.sources,
                                     request_cursor=continuation, next_cursor=next_cursor)
         return {'discovered': len(rows), 'cursor': next_cursor, 'terminal': next_cursor is None}
 
@@ -202,13 +239,26 @@ class Collector:
         if discover:
             started=self.now()
             try:discovery={'status':'accepted',**self.discover()}
+            except _StoreCapacityRefused as exc:
+                return {'discovery': {'status': 'refused', 'scope': 'store', 'reason': str(exc)},
+                        'collection': self._capacity_refusal(exc)}
             except Exception as exc:
                 ended=max(self.now(),started+timedelta(microseconds=1))
-                self.store.record_gap(started.isoformat(),ended.isoformat(),'source_unavailable')
                 discovery={'status':'refused','reason':str(exc)[:160] if isinstance(exc,Refused) else type(exc).__name__}
+                try:
+                    self._store_call(self.store.record_gap, started.isoformat(),ended.isoformat(),'source_unavailable')
+                except _StoreCapacityRefused as capacity:
+                    return {'discovery': discovery, 'collection': self._capacity_refusal(capacity)}
         return {'discovery':discovery,'collection':self.tick()}
 
     def tick(self):
+        state = {'results': [], 'lost': [], 'attempt': None}
+        try:
+            return self._tick(state)
+        except _StoreCapacityRefused as exc:
+            return self._capacity_refusal(exc, state['results'], state['lost'], state['attempt'])
+
+    def _tick(self, state):
         """Finite pages per invocation; persisted per-attempt claims preserve fairness.
 
         Store.collector_claim_source atomically advances the bounded scheduling
@@ -224,7 +274,7 @@ class Collector:
         Limits.bootstrap_probes per source per tick, TOTAL_PROBES ever).
         Probes share the tick's page budget and deadline with ready sources.
         """
-        rows = self.store.collector_sources(limit=self.limits.sources+1)
+        rows = self._store_call(self.store.collector_sources, limit=self.limits.sources+1)
         if len(rows) > self.limits.sources:
             raise Refused('source roster ceiling')
         rows = sorted((source(row) for row in rows), key=lambda row: row['did'])
@@ -232,14 +282,15 @@ class Collector:
             raise Refused('duplicate roster source')
         if not rows:
             return {'attempted': 0, 'results': [], 'coverage': 'unknown'}
-        floor = _source_time(self.store.collector_epoch())
+        floor = _source_time(self._store_call(self.store.collector_epoch))
         if floor is None:
             raise Refused('acquisition epoch unavailable')
         floor -= LATE_ALLOWANCE
         deadline = self.monotonic()+self.limits.seconds
         sweep = getattr(self.store, 'collector_sweep_attempts', None)
-        lost = sweep(self.now().isoformat(), self.stale_seconds) if sweep else []
-        results, probes, capped, held = [], {}, 0, None
+        lost = state['lost']
+        lost.extend(self._store_call(sweep, self.now().isoformat(), self.stale_seconds) if sweep else [])
+        results, probes, capped, held = state['results'], {}, 0, None
         # Reserved share: at least ceil(attempts/3) of a tick's attempts are claimed
         # for bootstrapping sources. The store orders that claim in-progress first
         # (most probes used), then unstarted round-robin, so a source mid-search
@@ -258,23 +309,23 @@ class Collector:
             if stamp.tzinfo is None or stamp.utcoffset() != timedelta(0):
                 raise Refused('UTC observation clock required')
             admission = getattr(self.store, 'collector_admission', None)
-            held = admission(stamp.isoformat()) if admission else None
+            held = self._store_call(admission, stamp.isoformat()) if admission else None
             if held:
                 self._maintenance_gap(stamp, reason=held)
                 break
             item, shared = None, False
             extra = {'exclude': sorted(excluded)} if excluded else {}
             if probe_attempts*3 < attempts+1:
-                item = self.store.collector_claim_source(limit=self.limits.sources, observed_at=stamp.isoformat(),
+                item = self._store_call(self.store.collector_claim_source, limit=self.limits.sources, observed_at=stamp.isoformat(),
                                                          probing=True, **extra)
                 shared = item is not None
             if item is None:
-                item = self.store.collector_claim_source(limit=self.limits.sources,observed_at=stamp.isoformat(), **extra)
+                item = self._store_call(self.store.collector_claim_source, limit=self.limits.sources,observed_at=stamp.isoformat(), **extra)
             if item is None:
                 # Nothing due (per-source spacing, quiet backoff): wait for the next
                 # due source if it falls inside this round's deadline, else stop.
                 next_due = getattr(self.store, 'collector_next_due', None)
-                due = _source_time(next_due()) if next_due else None
+                due = _source_time(self._store_call(next_due)) if next_due else None
                 wait = (due-stamp).total_seconds() if due is not None else None
                 if self.sleep is None or wait is None or wait <= 0 or self.monotonic()+wait >= deadline \
                         or waits >= self.limits.pages:
@@ -283,11 +334,11 @@ class Collector:
                 slots, waits = slots+1, waits+1
                 continue
             item = source(item)
-            state = self.store.collector_source_state(item['did'])
-            resolved = _source_time(state.get('endpoint_resolved_at'))
+            source_state = self._store_call(self.store.collector_source_state, item['did'])
+            resolved = _source_time(source_state.get('endpoint_resolved_at'))
             if resolved is not None and stamp-resolved >= ENDPOINT_TTL:
                 item = {**item, 'endpoint': None}     # re-resolve a cached endpoint daily
-            booting = state['cursor'] is None and state['phase'] in ('unstarted', 'probing')
+            booting = source_state['cursor'] is None and source_state['phase'] in ('unstarted', 'probing')
             if booting and probes.get(item['did'], 0) >= self.limits.bootstrap_probes:
                 excluded.add(item['did'])
                 capped += 1   # Per-tick probe share spent; yield the slot, never loop.
@@ -302,20 +353,26 @@ class Collector:
                 probes[item['did']] = probes.get(item['did'], 0)+1
                 if probes[item['did']] >= self.limits.bootstrap_probes:
                     excluded.add(item['did'])
-            attempt = self.store.begin_source_attempt(item['did'], stamp.isoformat())
+            attempt = self._store_call(self.store.begin_source_attempt, item['did'], stamp.isoformat())
+            state['attempt'] = (item['did'], attempt, stamp)
             try:
                 if booting:
-                    results.append(self._bootstrap(item, state, attempt, stamp, deadline, floor))
+                    results.append(self._bootstrap(item, source_state, attempt, stamp, deadline, floor))
+                    state['attempt'] = None
                     continue
-                position = cursor(state['cursor'])
+                position = cursor(source_state['cursor'])
                 page = self._request('labels', {**item, 'cursor': position, 'limit': self.limits.page_rows}, deadline)
                 normalized, next_cursor = self._page(item, page, self.limits.page_rows)
                 if self._endpoint_changed(item):
-                    self.store.finish_source_attempt(item['did'], attempt, observed_at=self.now().isoformat(), failure=False)
+                    self._store_call(self.store.finish_source_attempt, item['did'], attempt, observed_at=self.now().isoformat(), failure=False)
                     results.append({'source': item['did'], 'status': 'endpoint_changed'})
+                    state['attempt'] = None
                     continue
                 results.append(self._accept(item, normalized, position, next_cursor, attempt, stamp, deadline, floor,
                                             self.limits.page_rows))
+                state['attempt'] = None
+            except _StoreCapacityRefused:
+                raise
             except Exception as exc:
                 end = max(self.now(), stamp+timedelta(microseconds=1))
                 reason = str(exc)[:160] if isinstance(exc, Refused) else type(exc).__name__
@@ -324,8 +381,9 @@ class Collector:
                     # The store, not the source, refused (UTC rotation window, or a WAL
                     # pinned by readers): one store-level maintenance gap, round stops.
                     self._maintenance_gap(stamp, end, reason=condition)
-                    self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat(), failure=False)
+                    self._store_call(self.store.finish_source_attempt, item['did'], attempt, observed_at=end.isoformat(), failure=False)
                     held = condition
+                    state['attempt'] = None
                     break
                 # One source's failure is per-source state, never a store-wide gap.
                 # Our own resolution is kept even when the labels request failed.
@@ -333,8 +391,9 @@ class Collector:
                 excluded.add(item['did'])     # backoff applies; never re-claimed this tick
                 rejected = _deterministic(reason)
                 extra = {'rejected': rejected} if rejected else {}
-                self.store.finish_source_attempt(item['did'], attempt, observed_at=end.isoformat(), reason=reason, **extra)
+                self._store_call(self.store.finish_source_attempt, item['did'], attempt, observed_at=end.isoformat(), reason=reason, **extra)
                 results.append({'source': item['did'], 'status': 'refused', 'reason': reason})
+                state['attempt'] = None
         summary = getattr(self.store, 'collector_bootstrap_summary', None)
         if held:
             results.append({'source': None, 'status': 'refused', 'scope': 'store', 'reason': held[:160]})
@@ -342,7 +401,7 @@ class Collector:
         round_status = 'refused' if held and not attempted else 'ran'
         return {'attempted': len(attempted), 'deferred': len(rows)-len({row['source'] for row in attempted}), 'results': results,
                 'round': {'status': round_status, 'store_hold': held, 'lost_attempts': len(lost)}, 'refused_sources': [row['source'] for row in attempted if row['status'] == 'refused'],
-                'bootstrap': summary() if summary else None, 'coverage': 'unknown'}
+                'bootstrap': self._store_call(summary) if summary else None, 'coverage': 'unknown'}
 
     def _endpoint_changed(self, item):
         """Persist our own DID resolution; True when the provider namespace changed.
@@ -355,7 +414,7 @@ class Collector:
         persist = getattr(self.store, 'collector_resolved_endpoint', None)
         if endpoint is None or persist is None:
             return False
-        return persist(item['did'], source({'did': item['did'], 'endpoint': endpoint})['endpoint'],
+        return self._store_call(persist, item['did'], source({'did': item['did'], 'endpoint': endpoint})['endpoint'],
                        self.now().isoformat())['changed']
 
     def _maintenance_gap(self, stamp, end=None, reason=STORE_HOLD):
@@ -366,7 +425,7 @@ class Collector:
         """
         start = stamp.replace(hour=0, minute=0, second=0, microsecond=0) if reason == STORE_HOLD else stamp
         end = max(end or stamp, start+timedelta(microseconds=1))
-        self.store.record_gap(start.isoformat(), end.isoformat(), 'maintenance')
+        self._store_call(self.store.record_gap, start.isoformat(), end.isoformat(), 'maintenance')
 
     def _page(self, item, page, rows):
         labels = page.get('labels')
@@ -431,7 +490,7 @@ class Collector:
             # Disclosure heuristic, not a loss detector: ids skipped by the provider.
             extra['order_evidence'] = {'kind': 'cursor_jump', 'request': position, 'next': next_cursor,
                                        'rows': len(normalized)}
-        result = self.store.accept_page(kept, source=item['did'], request_cursor=position,
+        result = self._store_call(self.store.accept_page, kept, source=item['did'], request_cursor=position,
                                         next_cursor=next_cursor, observed_at=accepted_at.isoformat(), attempt_token=attempt, **extra)
         return {'source': item['did'], 'status': 'accepted', 'rows': len(kept), 'pre_epoch_skipped': pre_epoch,
                 'late_skipped': late, 'undated_skipped': undated, 'future_skipped': future, 'terminal': next_cursor is None, 'result': result}
@@ -456,7 +515,7 @@ class Collector:
         hi = _decimal(state['hi']) if state['hi'] is not None else None
         if state['phase'] == 'probing' and ((lo is None and 'next' not in conf) or (state['hi'] is not None and hi is None)):
             raise RuntimeError('persisted bootstrap bracket invalid')
-        step = lambda **kw: self.store.bootstrap_step(item['did'], attempt, self.now().isoformat(), expect, **kw)
+        step = lambda **kw: self._store_call(self.store.bootstrap_step, item['did'], attempt, self.now().isoformat(), expect, **kw)
         report = lambda value, **kw: {'source': item['did'], 'status': 'bootstrap', 'phase': value['phase'],
                                       'probes': value['probes'], **kw}
         keep = lambda extra=None: json.dumps({**({'cap': cap} if cap else {}), **(extra or {})}, sort_keys=True) \
