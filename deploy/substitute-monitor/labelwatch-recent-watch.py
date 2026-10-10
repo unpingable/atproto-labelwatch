@@ -128,15 +128,19 @@ def l4(f, st, now, l3r):
     if s is None: return res('unknown', reason='STATUS.json unreadable or stale')
     lm, days = s.get('last_maintenance') or {}, st.setdefault('l4_days', {})
     prev, at = days.get(max((k for k in days if k < day), default='')), ts(lm.get('at'))
-    advanced = bool(at and at.date().isoformat() == day and prev is not None and (lm.get('generation') or 0) > prev['generation'])
-    days[day] = rec = {'generation': lm.get('generation') or 0, 'at': lm.get('at'), 'recovery_pending': bool(lm.get('recovery_pending')),
-                       'advanced': advanced if prev is not None else None}
+    generation = lm.get('generation')
+    valid_generation = lambda value: type(value) is int and value >= 0
+    baseline_valid = prev is not None and valid_generation(prev.get('generation'))
+    generations_valid = valid_generation(generation) and baseline_valid
+    advanced = bool(at and at.date().isoformat() == day and generations_valid and generation > prev['generation'])
+    days[day] = rec = {'generation': generation if valid_generation(generation) else None, 'at': lm.get('at'), 'recovery_pending': bool(lm.get('recovery_pending')),
+                       'advanced': advanced if generations_valid else None}
     for k in sorted(days)[:-7]: del days[k]
     ids = {'unit': P + '-maintain.service', 'status_generated_at': s['generated_at']}
     if rec['recovery_pending'] and prev and prev['recovery_pending']:
         return cond('expiry-stalled', 'window expiry recovery-pending across two daily runs', P + '-maintain', 0, ids=ids, **rec)
-    if prev is None:
-        return res('unknown', reason='prior generation baseline unavailable', **rec)
+    if not generations_valid:
+        return res('unknown', reason='current or prior observed generation unavailable or invalid', **rec)
     qualified_days = [k for k in sorted(days, reverse=True) if days[k]['advanced'] is not None]
     n = next((i for i, k in enumerate(qualified_days) if days[k]['advanced']), len(qualified_days))
     if n:

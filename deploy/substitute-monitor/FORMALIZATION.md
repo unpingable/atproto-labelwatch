@@ -25,3 +25,9 @@ Propositions: journal reason attributed only to exact valid maintenance Invocati
 }
 
 Qualification: 37 existing and regression fixture tests passed (exit 0) with existing locked venv and pytest, cache/bytecode disabled. Provider transport mocked; CLI refused-input uses only loopback port 9. Earlier sandbox run had 2 environment failures (EPERM instead of refusal); approved local run outside sandbox passed. No services installed or provider delivery. Regression cases bind current journal InvocationID and reject missing identity; cold-start baseline remains unknown until a later generation. Independent review pending.
+
+Reviewer correction against commit 353ea6f: absent/malformed generation formerly became inferred zero. Current and prior generation must now be observed nonnegative integers (bool excluded); otherwise L4 unknown and no advancement claim. Two-day absence/malformed regressions plus invalid-current case qualify this same bounded baseline proposition. 44 fixture tests passed exit 0, mocked delivery and loopback refusal only. Independent rereview pending. Exact corrected source/test identities:
+{
+  "labelwatch-recent-watch.py": "e0d9b9e32855ba2f1d9b0ee63b48a75e3f432fe02e11b70998a2d57df1f8ad1f",
+  "tests/test_watch.py": "9d7b403530766d495726c841b7ae0f38203632204f76f5982285aa71004f7b41"
+}

@@ -699,3 +699,29 @@ def test_gather_missing_invocation_does_not_attribute_journal(monkeypatch, tmp_p
     f = w.gather(cfg, NOW)
     assert f['journal'] is None
     assert not any(a[0] == 'journal-fixture' for a in calls)
+
+
+@pytest.mark.parametrize('bad_generation', [None, '3', True, -1, {}, 3.5])
+def test_l4_invalid_generation_cannot_establish_next_day_baseline(bad_generation):
+    st = {}
+    now, f = day_facts(7, 3)
+    if bad_generation is None:
+        f['status']['last_maintenance'] = {}
+    else:
+        f['status']['last_maintenance']['generation'] = bad_generation
+    assert step(st, f, now)[0]['L4']['verdict'] == 'unknown'
+    assert st['l4_days']['2026-10-07']['generation'] is None
+    now, f = day_facts(8, 4)
+    assert step(st, f, now)[0]['L4']['verdict'] == 'unknown'
+    assert st['l4_days']['2026-10-08']['advanced'] is None
+    now, f = day_facts(9, 5)
+    assert step(st, f, now)[0]['L4']['verdict'] == 'ok'
+
+def test_l4_invalid_current_generation_does_not_advance_valid_baseline():
+    st = {}
+    now, f = day_facts(7, 3)
+    step(st, f, now)
+    now, f = day_facts(8, 4)
+    f['status']['last_maintenance']['generation'] = None
+    assert step(st, f, now)[0]['L4']['verdict'] == 'unknown'
+    assert st['l4_days']['2026-10-08']['advanced'] is None
