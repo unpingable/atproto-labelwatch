@@ -59,7 +59,8 @@ def unit(f, short): return f['units'].get(P + '-' + short)
 def status_doc(f, now, max_age=600):
     s = f.get('status')
     if not isinstance(s, dict) or s.get('schema') != STATUS_SCHEMA or ts(s.get('generated_at')) is None: return None
-    return s if max_age is None or secs(now - ts(s['generated_at'])) <= max_age else None
+    age = (now - ts(s['generated_at'])).total_seconds()
+    return s if age >= 0 and (max_age is None or age <= max_age) else None
 def occurrences(st, key, u):
     """Last 5 observed (sampled every 5 min) occurrences, one per InvocationID once it has exited."""
     hist, u = st.setdefault('occurrences', {}).setdefault(key, []), u or {}
@@ -173,7 +174,7 @@ def l5(f, st, now):
     if mounts is not None and [m for m in mounts if m['free_bytes'] < m['reserve_bytes'] or m['free_inodes'] < m['inode_floor']]:
         return cond('capacity-exhausted', 'configured reserve or inode floor exhausted (%s); new allocation is not admitted' % where,
                     P + '-reserve', 0, mounts=mounts)
-    if mounts is None or s is None or u is None or (maint_failed and f.get('journal') is None) or (collect_failed and f.get('collect_journal') is None):
+    if not mounts or s is None or u is None or (maint_failed and f.get('journal') is None) or (collect_failed and f.get('collect_journal') is None):
         return res('unknown', reason='reserve policy/statvfs, STATUS.json, unit or occurrence-bound journal unreadable')
     if [m for m in mounts if m['free_bytes'] < m['reserve_bytes'] + 2 * GIB or m['free_inodes'] < m['inode_floor']]:
         return cond('reserve-headroom-low', 'free space within 2 GiB of the reserve, or inodes under the floor (%s)' % where, P + '-reserve',
@@ -182,7 +183,7 @@ def l5(f, st, now):
 def l11(f, st, now):
     """Observed capacity and a conditional estimate; never a 30-day qualification claim."""
     c, s, mounts = f.get('capacity'), status_doc(f, now), f.get('reserves')
-    if c is None or mounts is None:
+    if c is None or not isinstance(mounts, list) or not mounts:
         st.pop('capacity_baseline', None)
         return res('unknown', reason='capacity measurement, fresh STATUS or reserve observations unavailable')
     facts = dict(c, reserves=mounts, window_days=30,
@@ -192,6 +193,13 @@ def l11(f, st, now):
     if any(not integer(c.get(k)) for k in ('allocated_bytes', 'wal_allocated_bytes', 'wal_logical_bytes')):
         st.pop('capacity_baseline', None)
         return res('unknown', reason='invalid measured capacity', **facts)
+    if not integer(c.get('device')) or not integer(c.get('inode')) or any(
+        not isinstance(m, dict) or not isinstance(m.get('mount'), str) or not m['mount'] or
+        any(not integer(m.get(k)) for k in ('device', 'free_bytes', 'reserve_bytes', 'free_inodes', 'inode_floor')) or
+        m['reserve_bytes'] == 0 or m['inode_floor'] == 0 for m in mounts) or len({m['mount'] for m in mounts}) != len(mounts) or not any(
+            m['device'] == c['device'] for m in mounts):
+        st.pop('capacity_baseline', None)
+        return res('unknown', reason='valid nonempty reserves covering exact store device required', **facts)
     # Physical exhaustion remains observable even with absent policy/baseline/round.
     exhausted = [m['mount'] for m in mounts if m['free_bytes'] < m['reserve_bytes'] or m['free_inodes'] < m['inode_floor']]
     reasons = (['filesystem reserve/inodes: ' + ', '.join(exhausted)] if exhausted else [])
@@ -220,15 +228,17 @@ def l11(f, st, now):
                 'mounts': [[m['mount'], m.get('device'), m['reserve_bytes'], m['inode_floor']] for m in mounts]}
     facts.update(ingestion_rows_per_second=None, net_allocated_bytes_per_second=None,
                  projected_30day_allocated_bytes=None, seconds_to_store_budget=None, filesystem_forecasts=None,
-                 forecast_state='unknown')
+                 forecast_state='unknown', store_forecast_state='unknown', filesystem_forecast_state='unknown')
     if not isinstance(acquisition, str) or not acquisition or not integer(generation) or not complete:
         st.pop('capacity_baseline', None)
         return res('unknown', reason='acquisition/generation or complete enrolled-source counters unavailable', **facts)
     current = {'at': iso(now), 'identity': identity, 'allocated_bytes': c['allocated_bytes'], 'accepted_rows': accepted,
+               'accepted_by_source': {row['did']: row['accepted_rows'] for row in rows},
                'free_bytes': [m['free_bytes'] for m in mounts]}
     prev = st.get('capacity_baseline')
     elapsed = secs(now - ts(prev['at'])) if prev and ts(prev.get('at')) else None
-    if not prev or prev.get('identity') != identity or elapsed is None or elapsed <= 0 or elapsed > 900 or accepted < prev['accepted_rows']:
+    if not prev or prev.get('identity') != identity or elapsed is None or elapsed <= 0 or elapsed > 900 or accepted < prev['accepted_rows'] or prev.get('accepted_by_source') is None or any(
+            value < prev['accepted_by_source'].get(did, value) for did, value in current['accepted_by_source'].items()):
         st['capacity_baseline'] = current
         return res('unknown', reason='comparable historical baseline unavailable/reset', **facts)
     facts['sample_seconds'] = elapsed
@@ -242,14 +252,21 @@ def l11(f, st, now):
     for m, before in zip(mounts, prev['free_bytes']):
         rate = (before - m['free_bytes']) / elapsed
         forecasts.append({'mount': m['mount'], 'free_depletion_bytes_per_second': rate,
-                          'seconds_to_reserve': (m['free_bytes'] - m['reserve_bytes']) / rate if rate > 0 else None})
+                          'seconds_to_reserve': (m['free_bytes'] - m['reserve_bytes']) / rate if rate > 0 else None,
+                          'forecast_state': 'conditional_estimate' if rate > 0 else 'unknown'})
     facts['filesystem_forecasts'] = forecasts
+    facts['filesystem_forecast_state'] = 'conditional_estimate' if any(x['forecast_state'] == 'conditional_estimate' for x in forecasts) else 'unknown'
+    filesystem_urgent = any(x['seconds_to_reserve'] is not None and x['seconds_to_reserve'] <= lookahead for x in forecasts)
+    if net <= 0 and filesystem_urgent:
+        facts['forecast_state'] = 'partial_conditional_estimate'
+        return cond('projected-budget-breach', 'observed filesystem depletion projects reserve breach within lookahead; '
+                    'store growth/30-day footprint unknown; other tenant consumption is not attributed to this store', P + '-capacity', 0, **facts)
     if net <= 0:
         return res('unknown', reason='nonpositive net allocation: future ingestion/retirement footprint not identifiable', **facts)
     projected = c['allocated_bytes'] + net * 30 * 86400
     crossing = (budget - c['allocated_bytes']) / net
-    facts.update(projected_30day_allocated_bytes=projected, seconds_to_store_budget=crossing, forecast_state='conditional_estimate')
-    urgent = crossing <= lookahead or any(x['seconds_to_reserve'] is not None and x['seconds_to_reserve'] <= lookahead for x in forecasts)
+    facts.update(projected_30day_allocated_bytes=projected, seconds_to_store_budget=crossing, forecast_state='conditional_estimate', store_forecast_state='conditional_estimate')
+    urgent = crossing <= lookahead or filesystem_urgent
     if projected >= budget or urgent:
         return cond('projected-budget-breach', 'conditional fixed 30-day footprint %.1f GiB vs admitted %.1f GiB; store budget in %.1f hours; '
                     'linear recent rate, future retirement uncredited; review ingestion/allocation/retirement' % (projected / GIB, budget / GIB, crossing / 3600),
@@ -489,7 +506,7 @@ def gather(cfg, now):
                          'wal_allocated_bytes': sum(x['allocated_bytes'] for x in inventory if x['kind'] == 'file' and x['path'].endswith('-wal')),
                          'wal_logical_bytes': sum(x['logical_bytes'] for x in inventory if x['kind'] == 'file' and x['path'].endswith('-wal')),
                          'store_budget_bytes': policy('WATCH_STORE_BUDGET_BYTES'), 'wal_budget_bytes': policy('WATCH_WAL_BUDGET_BYTES'),
-                         'lookahead_seconds': policy('WATCH_CAPACITY_LOOKAHEAD_SECONDS', 86400), 'inventory_entries': entries, 'allocation_scope': 'regular-file and directory blocks, distinct inode identities'}
+                         'lookahead_seconds': policy('WATCH_CAPACITY_LOOKAHEAD_SECONDS', 86400), 'inventory_entries': entries, 'allocation_scope': 'visible namespace regular-file/directory blocks, distinct inode identities; excludes open-unlinked scratch and allocation outside configured store'}
         data = json.dumps(sorted(inventory, key=lambda x: x['path']), sort_keys=True).encode()
     except (OSError, ValueError, TypeError) as e: err = type(e).__name__
     note('capacity', 'stat inventory: ' + str(store_path), data, err)

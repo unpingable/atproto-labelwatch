@@ -44,3 +44,10 @@ Formalization decision: practical bounded deterministic transition fixtures and 
   "tests/test_watch.py": "72ec00f81951067f68a4f9895089c3dacc8741ceb1ceaff0fa95542f43d76740",
   "README.md": "66760d44746268a28ee3de01d36c74ef8ecfb8bbb7985777e24fe36b7a934596"
 }
+
+Independent counterexamples against598aa0e corrected: empty/uncovered reserve observations, invalid store/mount identities, individually decreasing source counters masked by aggregate growth, and future-generated STATUS cannot yield an ok forecast. Filesystem reserve crossing retains its known urgency under nonpositive store growth, with store component explicitly unknown. Visible namespace allocation excludes open-unlinked scratch/outside-root allocation; qualified peak and admission headroom remain separate.86fixture tests passed exit0; exact follow-up result identities:
+{
+  "labelwatch-recent-watch.py": "cdf6142ae70181f57b74c94c180b2969f9a789345d363243cd2c715a11f0d21f",
+  "tests/test_watch.py": "bce8df478ad1ac9bd980724b0603e0cea2f87e89f6cf8b0654968a5dfb4c7fb7",
+  "README.md": "df8c55759b05c929352308312dfef958395da81a76dd5f9375d83eb123b7a85f"
+}

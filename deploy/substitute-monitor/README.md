@@ -288,3 +288,17 @@ hold, round overwrite, exact journal identity and persisted observation/intent c
 transport is mocked. The earlier replica NC1–NC6 producer remains pinned to its original committed
 source; those receipts do not qualify this new forecast observation. No provider acceptance or native
 Monitor #18 closure is implied.
+
+Independent review refinements: reserve observations must be nonempty and cover the exact validated
+store device; device/inode identities and per-source counters are validated. An individual counter
+decrease resets the baseline even if other sources mask it in the aggregate. A future-generated
+STATUS is unknown. Filesystem and store estimates have separate explicit states: an urgent observed
+filesystem depletion estimate pages even when nonpositive store growth leaves the store footprint
+unknown. No store estimate is invented in that case.
+
+The allocation observation counts **visible namespace blocks** only. It excludes open-unlinked
+scratch and allocations outside the configured store; it is not total campaign allocation. The prior
+C2 qualification's measured29.49GB peak versus24.3GB visible inventory illustrates this limitation.
+Shared filesystem free-space depletion captures aggregate consumption without assigning an owner.
+Prior qualified peak demand and admission headroom remain separate prerequisites; a stat inventory
+and recent linear forecast cannot establish future full-window capacity.

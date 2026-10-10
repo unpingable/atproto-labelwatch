@@ -75,7 +75,7 @@ def facts(now=NOW):
         'health': {'http': 200, 'body': {'status': 'ok', 'freshness': {'state': 'fresh'}, 'status_age_seconds': 30}},
         'facts': {'http': 200, 'body': {'instruments': [{'instrument': 'labelwatch', 'state': 'PRESENT', 'freshness_state': 'fresh',
                                                          'generated_at': iso(ago(now, minutes=5))}]}},
-        'reserves': [{'mount': '/', 'reserve_bytes': 20 * GIB, 'free_bytes': 29 * GIB, 'free_inodes': 5000000, 'inode_floor': 1000000}],
+        'reserves': [{'mount': '/', 'device': 1, 'reserve_bytes': 20 * GIB, 'free_bytes': 29 * GIB, 'free_inodes': 5000000, 'inode_floor': 1000000}],
     }
 
 
@@ -940,3 +940,47 @@ def test_gather_collect_refusal_uses_own_invocation_not_maintenance(monkeypatch,
     assert f['collect_journal']=='shared_reserve_unavailable: current collect'
     assert f['journal']=='other maintain failure'
     assert collect_id in f['sources']['journal:labelwatch-recent-collect']['source']
+
+
+@pytest.mark.parametrize('which', ['empty','uncovered','missing_device','future_status','counter_masked'])
+def test_l11_independent_counterexamples_are_unknown(which):
+    st={};first=capacity_facts()
+    if which=='counter_masked':
+        first['status']['coverage']['sources']['enrolled']=2
+        first['status']['operator_sources']['source_status']=[{'did':'one','accepted_rows':100},{'did':'two','accepted_rows':100}]
+    step(st,first)
+    now=NOW+timedelta(seconds=300);second=capacity_facts(now,allocated=GIB+300,accepted=101)
+    if which=='empty': second['reserves']=[]
+    if which=='uncovered': second['capacity']['device']=777
+    if which=='missing_device': second['reserves'][0].pop('device')
+    if which=='future_status': second['status']['generated_at']=iso(now+timedelta(days=2))
+    if which=='counter_masked':
+        second['status']['coverage']['sources']['enrolled']=2
+        second['status']['operator_sources']['source_status']=[{'did':'one','accepted_rows':0},{'did':'two','accepted_rows':201}]
+    assert step(st,second,now)[0]['L11']['verdict']=='unknown'
+
+@pytest.mark.parametrize('growth', [0,-300])
+def test_l11_urgent_shared_filesystem_forecast_survives_unknown_store_forecast(growth):
+    st={};step(st,capacity_facts())
+    now=NOW+timedelta(seconds=300);f=capacity_facts(now,allocated=GIB+growth)
+    f['reserves'][0]['free_bytes']=28*GIB
+    r,i=step(st,f,now);v=r['L11']
+    assert v['verdict']=='projected-budget-breach'
+    assert ('L11','projected-budget-breach','trigger','page') in kinds(i)
+    assert v['facts']['store_forecast_state']=='unknown'
+    assert v['facts']['projected_30day_allocated_bytes'] is None
+    assert v['facts']['seconds_to_store_budget'] is None
+    assert v['facts']['filesystem_forecast_state']=='conditional_estimate'
+
+def test_future_status_is_unknown_for_progress_and_enrollment():
+    f=facts();f['status']['generated_at']=iso(NOW+timedelta(days=2))
+    r,i=step({},f)
+    assert r['L1']['verdict']=='unknown' and r['L3']['verdict']=='unknown'
+
+
+@pytest.mark.parametrize('field', ['device','inode'])
+@pytest.mark.parametrize('value', [None,'1',True,-1])
+def test_l11_invalid_store_identity_cannot_establish_forecast(field,value):
+    st={};f=capacity_facts();f['capacity'][field]=value
+    assert step(st,f)[0]['L11']['verdict']=='unknown'
+    assert 'capacity_baseline' not in st
