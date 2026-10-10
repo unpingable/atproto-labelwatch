@@ -1,5 +1,12 @@
 # Labelwatch clean-start cutover and retirement plan — deployment readiness revision 6 (2026-10-10)
 
+Retirement execution scope is now the exact [verified manifest](RETIREMENT-MANIFEST.md) and its bound
+JSON target list. Generation-2 backup and local recovery completed at 2026-10-10T05:21Z; cold catalog and
+state recovery passed. No historical production deletion has occurred. The owner's approval of that
+manifest is required before removing its ten enumerated paths; older directory-total estimates below
+do not authorize broader removal. Recheck actual root free space against the existing 32 GiB threshold
+after approved retirement, then resume this qualified deployment procedure under the existing authority.
+
 **Owner scope amendment, 2026-10-10: closure mode.** No new integrations, investigations, or acceptance
 gates. Existing Constellation Slack notifications are retained; the owner supplied visible trigger and
 resolve messages and accepts that channel. PagerDuty enrollment, incident acknowledgement and test
@@ -71,7 +78,7 @@ target-host sustained capacity. Record final bounded tests and their limits rath
 | P1 | Successor independently accepted off-production (controls, C1, C2 capacity, C3-full, C4-full) and on the Ubuntu 22.04 / CPython 3.10 replica (host soak) | receipts under `evidence/`, `host-soak/` | OPEN — Python3.10 tests, original producer reconciliation and targeted export acceptance complete; real-host soak and controls pending; retain historical limits above |
 | P2 | NQ #27 resolved or an explicitly accepted bounded substitute operator path | NQ #27 closure or substitute receipt | OPEN — separate NQ #27 remains open; historical crash-loop evidence is not a current recovery receipt |
 | P3 | Monitor #18 obligations enrolled for the successor with a proven negative control | `PHASE-C-NQ-MONITOR-RECONCILIATION-20261009.md` + receipt | OPEN |
-| P4 | Generation-2 final NFS snapshot complete and verified (step 1) | `MANIFEST.json`, `VERIFY.txt`, `VERIFY-POSTCHECK.txt` | prepared; revised script's dry run asserts every precondition (2026-10-09 14:50Z: hold marker present, six legacy units inactive/failed, no descriptors, stat record captured) |
+| P4 | Generation-2 final NFS snapshot complete and verified (step 1) | Final NAS `MANIFEST.json` SHA256 `af9b1d738d53b335fb62e02fce0ac549247951f4e85da865bd9092afcaa692bb`; both verification records; local recovery | PASS at 2026-10-10T05:21Z, continuation `6bf6b04e`; prior setup failures preserved; retirement separately awaits approval |
 | P5 | Authority for the exact action, with admission and acceptance conditions satisfied | overnight mandate and action receipts; separate destructive approval | Conditional non-destructive authority received; conditions remain open; retirement NOT authorized |
 
 ## 1. Generation-2 NFS snapshot (non-destructive; a production READ and a 45.4 GB egress)

@@ -3,6 +3,12 @@
 **BLOCKED_WITH_EXACT_OBLIGATIONS. Production unchanged.** This is a checkpoint while the existing
 durable overnight producer remains active, not acceptance or campaign closeout.
 
+Custody update, 2026-10-10T05:21Z: generation-2 backup is verified on the separate NAS and recovery on
+crow passed for 45,137,618 events. State and cold-catalog recovery also passed. The exact ten-path
+[retirement manifest](RETIREMENT-MANIFEST.md) proposes 50,892,075,008 bytes of reclamation; **owner
+approval is still required and nothing has been deleted**. Production remains held. The original real
+maintenance observation remains scheduled for 2026-10-11T00:05Z; no new qualification is added.
+
 **Latest owner amendment: closure mode.** Keep the existing Constellation Slack route, whose trigger and
 resolve messages the owner supplied and confirmed visible. No new notification integration or further
 delivery tests. PagerDuty-specific enrollment/acknowledgement gates are withdrawn, not passed. Native
