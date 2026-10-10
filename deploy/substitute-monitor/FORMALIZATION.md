@@ -51,3 +51,9 @@ Independent counterexamples against598aa0e corrected: empty/uncovered reserve ob
   "tests/test_watch.py": "bce8df478ad1ac9bd980724b0603e0cea2f87e89f6cf8b0654968a5dfb4c7fb7",
   "README.md": "df8c55759b05c929352308312dfef958395da81a76dd5f9375d83eb123b7a85f"
 }
+
+Narrow L3 precedence correction from independent review: a known terminal failed daily occurrence remains maintenance-failed even when enrollment STATUS is missing/stale. Enrollment evidence still governs missing/pre-enrollment occurrence classification and successful occurrence acceptance. Four missing/stale status negative cases added;90tests pass. Exact corrected source/test identities:
+{
+  "labelwatch-recent-watch.py": "39cf477fcbf1a840c07a97f9459e7dbb4444c050457d5c8559f398b3f39bee0c",
+  "tests/test_watch.py": "4fc97a8e1a0c76bcc1b113e8ebcf8dd79a006639f92553b16202653c6005ebb6"
+}

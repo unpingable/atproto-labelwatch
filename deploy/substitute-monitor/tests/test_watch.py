@@ -984,3 +984,21 @@ def test_l11_invalid_store_identity_cannot_establish_forecast(field,value):
     st={};f=capacity_facts();f['capacity'][field]=value
     assert step(st,f)[0]['L11']['verdict']=='unknown'
     assert 'capacity_baseline' not in st
+
+
+@pytest.mark.parametrize('unavailable', ['missing','stale'])
+def test_l3_known_failed_occurrence_visible_without_enrollment_evidence(unavailable):
+    f=maint(facts(),exit_at=datetime(2026,10,9,0,9,tzinfo=UTC),result='exit-code',status='1',inv='a'*32)
+    if unavailable=='missing': f['status']=None
+    else: f['status']['generated_at']=iso(NOW-timedelta(hours=1))
+    f['journal']='current maintenance failed'
+    r,i=step({},f)
+    assert r['L3']['verdict']=='maintenance-failed'
+    assert ('L3','maintenance-failed','trigger','page') in kinds(i)
+
+@pytest.mark.parametrize('unavailable', ['missing','stale'])
+def test_l3_missing_occurrence_still_requires_enrollment_evidence(unavailable):
+    f=facts();f['units']['labelwatch-recent-maintain.service']=svc(None,inv='')
+    if unavailable=='missing': f['status']=None
+    else: f['status']['generated_at']=iso(NOW-timedelta(hours=1))
+    assert step({},f)[0]['L3']['verdict']=='unknown'

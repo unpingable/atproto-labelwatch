@@ -111,6 +111,10 @@ def l3(f, st, now):
     due, exit_at, tgt = datetime.combine(day, dtime(0, 5), UTC), ts(u.get('ExecMainExitTimestamp')), P + '-maintain'
     facts = dict(day=day.isoformat(), result=u.get('Result'), exit_status=u.get('ExecMainStatus'), exit_at=u.get('ExecMainExitTimestamp'))
     ids = {'unit': P + '-maintain.service', 'invocation_id': u.get('InvocationID')}
+    if u.get('ActiveState') != 'activating' and exit_at and exit_at >= due and not (
+            u.get('Result') == 'success' and u.get('ExecMainStatus') == '0'):
+        return cond('maintenance-failed', 'daily window maintenance failed: %s; expiry did not run, store grows' % journal_reason(f), tgt, 0,
+                    ids=ids, **facts)
     s = status_doc(f, now)
     started = ts(((s or {}).get('acquisition') or {}).get('started_at'))
     if started is None:
