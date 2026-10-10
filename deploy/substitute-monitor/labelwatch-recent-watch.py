@@ -6,7 +6,7 @@ Evaluates L1-L10 of PHASE-C-NQ-MONITOR-RECONCILIATION-20261009 section 3.2 plus 
 appends observations.jsonl, rewrites state.json/report.json and retains one intent file per transition.
 Exits non-zero only on an internal error, never on a verdict. Python 3.10, stdlib only.
 """
-import argparse, hashlib, json, os, re, socket, subprocess, sys, urllib.error, urllib.request
+import argparse, hashlib, json, os, re, socket, stat, subprocess, sys, urllib.error, urllib.request
 from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
@@ -34,6 +34,7 @@ OBLIGATIONS = {'version': 1,
     'L8': {'name': 'hold-and-activation', 'rule': 'hold gates everything and never pages; hold-incomplete notice'},
     'L9': {'name': 'product-reachability', 'rule': 'refused page at 300 s; 503 health-stale notice; timeout unknown'},
     'L10': {'name': 'evidence-presence', 'rule': 'no evaluation for 900 s notice; daily digest at 00:40Z'},
+    'L11': {'name': 'fixed-window-capacity', 'rule': 'explicit budgets; exhausted page; projected 30-day footprint breach notice, crossing within lookahead page; insufficient forecast unknown'},
     'C1': {'name': 'control-occurrence', 'rule': 'NC1: failed within 900 s or no occurrence for 900 s: page'},
     'evidence': {'name': 'evidence-unavailable', 'rule': 'input unreadable/stale for 900 s: one notice per input'}}
 DIGEST = hashlib.sha256(json.dumps(OBLIGATIONS, sort_keys=True).encode()).hexdigest()
@@ -109,6 +110,12 @@ def l3(f, st, now):
     due, exit_at, tgt = datetime.combine(day, dtime(0, 5), UTC), ts(u.get('ExecMainExitTimestamp')), P + '-maintain'
     facts = dict(day=day.isoformat(), result=u.get('Result'), exit_status=u.get('ExecMainStatus'), exit_at=u.get('ExecMainExitTimestamp'))
     ids = {'unit': P + '-maintain.service', 'invocation_id': u.get('InvocationID')}
+    s = status_doc(f, now)
+    started = ts(((s or {}).get('acquisition') or {}).get('started_at'))
+    if started is None:
+        return res('unknown', reason='fresh acquisition.started_at enrollment basis unavailable', **facts)
+    if started > due:
+        return res('skip', reason='scheduled due preceded acquisition enrollment; first due not yet eligible', **facts)
     if u.get('ActiveState') == 'activating':  # running-late becomes failed or succeeded on exit (2 h unit timeout)
         late = now.time() >= dtime(0, 35)
         return cond('maintenance-running-late', 'daily maintenance still running after 00:35Z', tgt, ids=ids) if late else res('skip')
@@ -152,6 +159,10 @@ def l5(f, st, now):
     rnd, refusals = (s or {}).get('round') or {}, []
     if rnd.get('status') == 'refused' and RESERVE_RE.search(str(rnd.get('reason'))):
         refusals.append({'refusal_source': 'collect', 'reason': rnd['reason']})
+    collect = unit(f, 'collect.service')
+    collect_failed = (collect or {}).get('Result') not in (None, 'success')
+    collect_hit = RESERVE_RE.search(f.get('collect_journal') or '') if collect_failed else None
+    if collect_hit: refusals.append({'refusal_source': 'collect', 'reason': collect_hit.group(0), 'invocation_id': collect.get('InvocationID')})
     maint_failed = (u or {}).get('Result') not in (None, 'success')
     hit = MAINT_RESERVE_RE.search(f.get('journal') or '') if maint_failed else None
     if hit: refusals.append({'refusal_source': 'maintain', 'reason': hit.group(0)})
@@ -159,12 +170,93 @@ def l5(f, st, now):
     if refusals:
         return cond('reserve-refused', 'collection/maintenance refused by the configured reserve (%s): %s' % (where or 'free unknown',
                     ', '.join(r['reason'] for r in refusals)), P + '-reserve', 0, refusals=refusals, mounts=mounts)
-    if mounts is None or s is None or u is None or (maint_failed and f.get('journal') is None):
-        return res('unknown', reason='reserve policy/statvfs, STATUS.json, maintain unit or journal unreadable')
+    if mounts is not None and [m for m in mounts if m['free_bytes'] < m['reserve_bytes'] or m['free_inodes'] < m['inode_floor']]:
+        return cond('capacity-exhausted', 'configured reserve or inode floor exhausted (%s); new allocation is not admitted' % where,
+                    P + '-reserve', 0, mounts=mounts)
+    if mounts is None or s is None or u is None or (maint_failed and f.get('journal') is None) or (collect_failed and f.get('collect_journal') is None):
+        return res('unknown', reason='reserve policy/statvfs, STATUS.json, unit or occurrence-bound journal unreadable')
     if [m for m in mounts if m['free_bytes'] < m['reserve_bytes'] + 2 * GIB or m['free_inodes'] < m['inode_floor']]:
         return cond('reserve-headroom-low', 'free space within 2 GiB of the reserve, or inodes under the floor (%s)' % where, P + '-reserve',
                     mounts=mounts)
     return res('ok', mounts=mounts)
+def l11(f, st, now):
+    """Observed capacity and a conditional estimate; never a 30-day qualification claim."""
+    c, s, mounts = f.get('capacity'), status_doc(f, now), f.get('reserves')
+    if c is None or mounts is None:
+        st.pop('capacity_baseline', None)
+        return res('unknown', reason='capacity measurement, fresh STATUS or reserve observations unavailable')
+    facts = dict(c, reserves=mounts, window_days=30,
+                 estimate_assumptions='linear recent net allocation/free-space change; no credit for future unobserved retirement; filesystem depletion includes other tenants')
+    budget, wal_budget, lookahead = c.get('store_budget_bytes'), c.get('wal_budget_bytes'), c.get('lookahead_seconds')
+    integer = lambda v: type(v) is int and v >= 0
+    if any(not integer(c.get(k)) for k in ('allocated_bytes', 'wal_allocated_bytes', 'wal_logical_bytes')):
+        st.pop('capacity_baseline', None)
+        return res('unknown', reason='invalid measured capacity', **facts)
+    # Physical exhaustion remains observable even with absent policy/baseline/round.
+    exhausted = [m['mount'] for m in mounts if m['free_bytes'] < m['reserve_bytes'] or m['free_inodes'] < m['inode_floor']]
+    reasons = (['filesystem reserve/inodes: ' + ', '.join(exhausted)] if exhausted else [])
+    if integer(budget) and budget > 0 and c['allocated_bytes'] >= budget: reasons.append('admitted store budget exhausted')
+    if integer(wal_budget) and wal_budget > 0 and c['wal_logical_bytes'] >= wal_budget: reasons.append('admitted aggregate WAL budget exhausted')
+    if reasons:
+        st.pop('capacity_baseline', None)
+        return cond('capacity-exhausted', '; '.join(reasons) + '; operator allocation review required', P + '-capacity', 0, **facts)
+    if any(not integer(v) or v == 0 for v in (budget, wal_budget, lookahead)):
+        st.pop('capacity_baseline', None)
+        return res('unknown', reason='explicit admitted store/WAL budgets and positive lookahead required', **facts)
+    if s is None:
+        st.pop('capacity_baseline', None)
+        return res('unknown', reason='fresh STATUS needed for comparable forecast identity', **facts)
+    acquisition = (s.get('acquisition') or {}).get('generation_id')
+    generation = (s.get('last_maintenance') or {}).get('generation')
+    rows = (s.get('operator_sources') or {}).get('source_status')
+    enrolled = ((s.get('coverage') or {}).get('sources') or {}).get('enrolled')
+    complete = isinstance(rows, list) and integer(enrolled) and len(rows) == enrolled and all(
+        isinstance(row, dict) and isinstance(row.get('did'), str) and integer(row.get('accepted_rows')) for row in rows)
+    roster = sorted(row['did'] for row in rows) if complete else None
+    complete = complete and len(set(roster)) == len(roster)
+    accepted = sum(row['accepted_rows'] for row in rows) if complete else None
+    identity = {'store': c.get('store'), 'device': c.get('device'), 'inode': c.get('inode'), 'acquisition': acquisition,
+                'generation': generation, 'roster': roster, 'policy': [budget, wal_budget, lookahead],
+                'mounts': [[m['mount'], m.get('device'), m['reserve_bytes'], m['inode_floor']] for m in mounts]}
+    facts.update(ingestion_rows_per_second=None, net_allocated_bytes_per_second=None,
+                 projected_30day_allocated_bytes=None, seconds_to_store_budget=None, filesystem_forecasts=None,
+                 forecast_state='unknown')
+    if not isinstance(acquisition, str) or not acquisition or not integer(generation) or not complete:
+        st.pop('capacity_baseline', None)
+        return res('unknown', reason='acquisition/generation or complete enrolled-source counters unavailable', **facts)
+    current = {'at': iso(now), 'identity': identity, 'allocated_bytes': c['allocated_bytes'], 'accepted_rows': accepted,
+               'free_bytes': [m['free_bytes'] for m in mounts]}
+    prev = st.get('capacity_baseline')
+    elapsed = secs(now - ts(prev['at'])) if prev and ts(prev.get('at')) else None
+    if not prev or prev.get('identity') != identity or elapsed is None or elapsed <= 0 or elapsed > 900 or accepted < prev['accepted_rows']:
+        st['capacity_baseline'] = current
+        return res('unknown', reason='comparable historical baseline unavailable/reset', **facts)
+    facts['sample_seconds'] = elapsed
+    if elapsed < 300:
+        return res('unknown', reason='baseline shorter than 300 seconds; original baseline preserved', **facts)
+    st['capacity_baseline'] = current
+    net = (c['allocated_bytes'] - prev['allocated_bytes']) / elapsed
+    facts['ingestion_rows_per_second'] = (accepted - prev['accepted_rows']) / elapsed
+    facts['net_allocated_bytes_per_second'] = net
+    forecasts = []
+    for m, before in zip(mounts, prev['free_bytes']):
+        rate = (before - m['free_bytes']) / elapsed
+        forecasts.append({'mount': m['mount'], 'free_depletion_bytes_per_second': rate,
+                          'seconds_to_reserve': (m['free_bytes'] - m['reserve_bytes']) / rate if rate > 0 else None})
+    facts['filesystem_forecasts'] = forecasts
+    if net <= 0:
+        return res('unknown', reason='nonpositive net allocation: future ingestion/retirement footprint not identifiable', **facts)
+    projected = c['allocated_bytes'] + net * 30 * 86400
+    crossing = (budget - c['allocated_bytes']) / net
+    facts.update(projected_30day_allocated_bytes=projected, seconds_to_store_budget=crossing, forecast_state='conditional_estimate')
+    urgent = crossing <= lookahead or any(x['seconds_to_reserve'] is not None and x['seconds_to_reserve'] <= lookahead for x in forecasts)
+    if projected >= budget or urgent:
+        return cond('projected-budget-breach', 'conditional fixed 30-day footprint %.1f GiB vs admitted %.1f GiB; store budget in %.1f hours; '
+                    'linear recent rate, future retirement uncredited; review ingestion/allocation/retirement' % (projected / GIB, budget / GIB, crossing / 3600),
+                    P + '-capacity', 0 if urgent else None, **facts)
+    # Below-budget estimates are still conditional; ok resolves only this capacity observation, not fixed-window qualification.
+    return res('ok', **facts)
+
 def l6(f, st, now):
     o, occ, tgt = f.get('overview'), occurrences(st, 'L6', unit(f, 'overview.service')), P + '-overview'
     gen = ts(o.get('generated_at')) if isinstance(o, dict) else None
@@ -274,7 +366,7 @@ def evaluate(f, st, now, cfg):
     m = f['markers']
     st.setdefault('hold_seen', {}).update({sc: iso(now) for sc, key in (('prod', 'hold'), ('control', 'control_hold')) if m.get(key)})
     gates, out = {'prod': gate(m, 'hold', 'activation'), 'control': None}, {'L8': l8(f, st, now)}
-    for oid, fn in (('L1', l1), ('L2', l2), ('L3', l3), ('L4', lambda *a: l4(*a, out['L3'])), ('L5', l5), ('L6', l6), ('L7', l7), ('L9', l9)):
+    for oid, fn in (('L1', l1), ('L2', l2), ('L3', l3), ('L4', lambda *a: l4(*a, out['L3'])), ('L5', l5), ('L6', l6), ('L7', l7), ('L9', l9), ('L11', l11)):
         out[oid] = res(gates['prod']) if gates['prod'] else fn(f, st, now)
     if cfg.get('WATCH_CONTROL_UNIT'):
         gates['control'] = gate(m, 'control_hold', 'control_activation')
@@ -314,17 +406,19 @@ def gather(cfg, now):
         except (OSError, subprocess.SubprocessError, UnicodeDecodeError) as e: err = type(e).__name__
         f['units'][n] = d if err is None else None
         note('systemd:' + n, 'systemctl show ' + n, out, err)
-    if (f['units'].get(P + '-maintain.service') or {}).get('Result') not in (None, 'success'):  # L3/L5 reason
-        out, err, f['journal'] = None, None, None
-        invocation = f['units'][P + '-maintain.service'].get('InvocationID')
-        try:
-            if not invocation or not re.fullmatch(r'[0-9a-fA-F]{32}', invocation):
-                raise ValueError('maintenance invocation identity unavailable')
-            out = run_cmd([cfg['WATCH_JOURNALCTL'], '-u', P + '-maintain.service',
-                           '_SYSTEMD_INVOCATION_ID=' + invocation, '-n', '50', '-o', 'cat', '--no-pager'])
-        except (OSError, subprocess.SubprocessError, ValueError) as e: err = type(e).__name__
-        f['journal'] = out.decode(errors='replace') if out is not None else None
-        note('journal:' + P + '-maintain', 'journalctl -u %s-maintain.service _SYSTEMD_INVOCATION_ID=%s -n 50' % (P, invocation or 'unavailable'), out, err)
+    for short, field in (('maintain', 'journal'), ('collect', 'collect_journal')):
+        n = P + '-' + short + '.service'
+        if (f['units'].get(n) or {}).get('Result') not in (None, 'success'):
+            out, err, f[field] = None, None, None
+            invocation = f['units'][n].get('InvocationID')
+            try:
+                if not invocation or not re.fullmatch(r'[0-9a-fA-F]{32}', invocation):
+                    raise ValueError('occurrence invocation identity unavailable')
+                out = run_cmd([cfg['WATCH_JOURNALCTL'], '-u', n, '_SYSTEMD_INVOCATION_ID=' + invocation,
+                               '-n', '50', '-o', 'cat', '--all', '--no-pager'])
+            except (OSError, subprocess.SubprocessError, ValueError) as e: err = type(e).__name__
+            f[field] = out.decode(errors='replace') if out is not None else None
+            note('journal:' + P + '-' + short, 'journalctl -u %s _SYSTEMD_INVOCATION_ID=%s -n 50' % (n, invocation or 'unavailable'), out, err)
     for key, var, name in (('status', 'STORE', 'STATUS.json'), ('overview', 'PUBDIR', 'overview.json')):
         base = cfg.get('WATCH_' + var) or recent.get('LABELWATCH_RECENT_' + var)
         path, data, doc, err = base and os.path.join(base, name), None, None, None
@@ -357,9 +451,48 @@ def gather(cfg, now):
         for item in json.loads(spec):
             sv = os.statvfs(item['mount'])
             f['reserves'].append({'mount': item['mount'], 'reserve_bytes': int(item['bytes']), 'free_bytes': sv.f_bavail * sv.f_frsize,
-                                  'free_inodes': sv.f_favail, 'inode_floor': floor})
+                                  'free_inodes': sv.f_favail, 'inode_floor': floor, 'device': os.stat(item['mount']).st_dev})
     except (OSError, TypeError, ValueError, KeyError) as e: f['reserves'], err = None, type(e).__name__
     note('reserves', 'LABELWATCH_RECENT_RESERVES + statvfs', (spec or '').encode(), err)
+    f['capacity'], data, err = None, None, None
+    store_path = cfg.get('WATCH_STORE') or recent.get('LABELWATCH_RECENT_STORE')
+    try:
+        root = Path(store_path)
+        if root.is_symlink() or root.resolve() != root: raise ValueError('store pathname is not canonical')
+        ri = root.stat()
+        seen, inventory, entries = {(ri.st_dev, ri.st_ino)}, [{'path': '.', 'device': ri.st_dev, 'inode': ri.st_ino,
+            'allocated_bytes': ri.st_blocks * 512, 'logical_bytes': ri.st_size, 'kind': 'directory'}], 0
+        def scan_error(error): raise error
+        for directory, dirs, files in os.walk(root, followlinks=False, onerror=scan_error):
+            for name in dirs + files:
+                entries += 1
+                if entries > 4096: raise ValueError('capacity inventory exceeds 4096 entries')
+                path = Path(directory) / name
+                info = path.lstat()
+                if stat.S_ISLNK(info.st_mode): raise ValueError('capacity inventory contains symlink')
+                if not stat.S_ISREG(info.st_mode) and not stat.S_ISDIR(info.st_mode):
+                    raise ValueError('capacity inventory contains unsupported file type')
+                identity = (info.st_dev, info.st_ino)
+                if identity in seen: continue
+                seen.add(identity)
+                inventory.append({'path': str(path.relative_to(root)), 'device': info.st_dev, 'inode': info.st_ino,
+                                  'allocated_bytes': info.st_blocks * 512, 'logical_bytes': info.st_size,
+                                  'kind': 'file' if stat.S_ISREG(info.st_mode) else 'directory'})
+        if not stat.S_ISDIR(ri.st_mode): raise ValueError('capacity store not a directory')
+        def policy(key, default=None):
+            try:
+                value = int(cfg.get(key) or default)
+                return value if value > 0 else None
+            except (ValueError, TypeError): return None
+        f['capacity'] = {'store': str(root), 'device': ri.st_dev, 'inode': ri.st_ino,
+                         'allocated_bytes': sum(x['allocated_bytes'] for x in inventory),
+                         'wal_allocated_bytes': sum(x['allocated_bytes'] for x in inventory if x['kind'] == 'file' and x['path'].endswith('-wal')),
+                         'wal_logical_bytes': sum(x['logical_bytes'] for x in inventory if x['kind'] == 'file' and x['path'].endswith('-wal')),
+                         'store_budget_bytes': policy('WATCH_STORE_BUDGET_BYTES'), 'wal_budget_bytes': policy('WATCH_WAL_BUDGET_BYTES'),
+                         'lookahead_seconds': policy('WATCH_CAPACITY_LOOKAHEAD_SECONDS', 86400), 'inventory_entries': entries, 'allocation_scope': 'regular-file and directory blocks, distinct inode identities'}
+        data = json.dumps(sorted(inventory, key=lambda x: x['path']), sort_keys=True).encode()
+    except (OSError, ValueError, TypeError) as e: err = type(e).__name__
+    note('capacity', 'stat inventory: ' + str(store_path), data, err)
     return f
 def post(url, body, timeout=10):
     try:

@@ -66,6 +66,7 @@ def facts(now=NOW):
             CTL + '.timer': {'LoadState': 'loaded', 'ActiveState': 'active'},
         },
         'status': {'schema': 'labelwatch.recent-status.v1', 'generated_at': iso(ago(now, seconds=60)),
+                   'acquisition': {'generation_id': 'fixture-acquisition', 'started_at': '2026-10-01T00:00:00Z'},
                    'coverage': {'status': 'warming_up', 'observed_through': iso(ago(now, seconds=120))},
                    'last_maintenance': {'generation': 5, 'recovery_pending': False, 'at': iso(today_maint)},
                    'round': {'status': 'ok', 'reason': None, 'store_hold': None}},
@@ -89,8 +90,8 @@ def kinds(intents):
 
 def test_healthy_baseline_is_ok_everywhere_and_silent():
     results, intents = step({}, facts())
-    assert {k: v['verdict'] for k, v in results.items()} == {k: 'unknown' if k == 'L4' else 'ok' for k in results}
-    assert set(results) == {'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'C1'}
+    assert {k: v['verdict'] for k, v in results.items()} == {k: 'unknown' if k in ('L4', 'L11') else 'ok' for k in results}
+    assert set(results) == {'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L11', 'C1'}
     assert intents == []
 
 
@@ -759,3 +760,183 @@ def test_gather_corroboration_matches_actual_facts_api_route_table(monkeypatch, 
     assert '/atproto/v1/labelwatch/overview' in seen
     assert f['facts']['overview_http'] == 503
     assert f['facts']['overview_code'] == 'UNAVAILABLE'
+
+
+def capacity_facts(now=NOW, allocated=GIB, accepted=100, budget=10*GIB, generation=1):
+    f = facts(now)
+    f['capacity'] = {'store': '/fixture/store', 'device': 1, 'inode': 2, 'allocated_bytes': allocated,
+                     'wal_allocated_bytes': 4096, 'wal_logical_bytes': 4096, 'store_budget_bytes': budget,
+                     'wal_budget_bytes': 256*1024*1024, 'lookahead_seconds': 86400}
+    f['status']['acquisition']['generation_id'] = 'fixture-acquisition'
+    f['status']['last_maintenance']['generation'] = generation
+    f['status']['coverage']['sources'] = {'enrolled': 1}
+    f['status']['operator_sources'] = {'source_status': [{'did': 'did:fixture', 'accepted_rows': accepted}]}
+    return f
+
+def test_l11_cold_short_baseline_unknown_preserves_baseline_then_forecasts():
+    st = {}
+    assert step(st, capacity_facts())[0]['L11']['verdict'] == 'unknown'
+    baseline = dict(st['capacity_baseline'])
+    for seconds in (60, 120, 240):
+        now = NOW + timedelta(seconds=seconds)
+        assert step(st, capacity_facts(now, allocated=GIB+seconds, accepted=101), now)[0]['L11']['verdict'] == 'unknown'
+        assert st['capacity_baseline'] == baseline
+    now = NOW + timedelta(seconds=300)
+    r, i = step(st, capacity_facts(now, allocated=GIB+300, accepted=103), now)
+    assert r['L11']['verdict'] == 'ok'
+    assert r['L11']['facts']['ingestion_rows_per_second'] == .01
+    assert r['L11']['facts']['projected_30day_allocated_bytes'] == GIB+300+30*86400
+
+def test_l11_projected_30day_breach_warns_outside_lookahead_and_urgent_pages():
+    st = {}
+    step(st, capacity_facts(budget=2*GIB))
+    now = NOW + timedelta(seconds=300)
+    # 1000 B/s crosses store budget in ~12 days, still a 30-day estimate warning.
+    r, i = step(st, capacity_facts(now, allocated=GIB+300000, budget=2*GIB), now)
+    assert r['L11']['verdict'] == 'projected-budget-breach'
+    assert r['L11']['facts']['seconds_to_store_budget'] > 86400
+    assert ('L11','projected-budget-breach','trigger','notice') in kinds(i)
+    now += timedelta(seconds=300)
+    r, i = step(st, capacity_facts(now, allocated=GIB+300000+300*100000, budget=2*GIB), now)
+    assert ('L11','projected-budget-breach','trigger','page') in kinds(i)
+
+@pytest.mark.parametrize('which', ['store', 'wal', 'reserve', 'inodes'])
+def test_l11_exhaustion_distinct_from_projection_even_without_round(which):
+    f = capacity_facts(); f['status'].pop('round')
+    if which == 'store': f['capacity']['allocated_bytes'] = f['capacity']['store_budget_bytes']
+    if which == 'wal': f['capacity']['wal_logical_bytes'] = f['capacity']['wal_budget_bytes']
+    if which == 'reserve': f['reserves'][0]['free_bytes'] = f['reserves'][0]['reserve_bytes'] - 1
+    if which == 'inodes': f['reserves'][0]['free_inodes'] = 0
+    r, i = step({}, f)
+    assert r['L11']['verdict'] == 'capacity-exhausted'
+    assert ('L11','capacity-exhausted','trigger','page') in kinds(i)
+    if which in ('reserve','inodes'): assert r['L5']['verdict'] == 'capacity-exhausted'
+
+@pytest.mark.parametrize('change', ['identity','generation','counter','roster','policy','stale','nonpositive','missing'])
+def test_l11_noncomparable_or_nonpositive_forecast_is_unknown(change):
+    st = {};step(st, capacity_facts())
+    now = NOW + timedelta(seconds=300 if change != 'stale' else 901)
+    f = capacity_facts(now, allocated=GIB+300000, accepted=101)
+    if change == 'identity': f['status']['acquisition']['generation_id'] = 'new-acquisition'
+    if change == 'generation': f['status']['last_maintenance']['generation'] = 2
+    if change == 'counter': f['status']['operator_sources']['source_status'][0]['accepted_rows'] = 0
+    if change == 'roster': f['status']['operator_sources']['source_status'][0]['did'] = 'other-source'
+    if change == 'policy': f['capacity']['store_budget_bytes'] += 1
+    if change == 'nonpositive': f['capacity']['allocated_bytes'] = GIB
+    if change == 'missing': f['capacity']['store_budget_bytes'] = None
+    assert step(st, f, now)[0]['L11']['verdict'] == 'unknown'
+
+def test_l11_json_roundtrip_baseline_and_unknown_do_not_resolve_projection():
+    st = {};step(st, capacity_facts(budget=2*GIB))
+    st = json.loads(json.dumps(st))
+    now = NOW+timedelta(seconds=300)
+    r,i = step(st,capacity_facts(now,allocated=GIB+300000,budget=2*GIB),now)
+    assert r['L11']['verdict'] == 'projected-budget-breach'
+    now += timedelta(seconds=300)
+    r,i = step(st,capacity_facts(now,allocated=GIB+300000,budget=2*GIB),now)
+    assert r['L11']['verdict'] == 'unknown'
+    assert not any(x['obligation']=='L11' and x['action']=='resolve' for x in i)
+
+def test_l11_filesystem_depletion_forecast_does_not_attribute_to_store():
+    st = {};step(st,capacity_facts())
+    now = NOW+timedelta(seconds=300);f=capacity_facts(now,allocated=GIB+300)
+    f['reserves'][0]['free_bytes'] = 28*GIB
+    r,i = step(st,f,now)
+    assert r['L11']['facts']['net_allocated_bytes_per_second']==1
+    assert r['L11']['facts']['filesystem_forecasts'][0]['free_depletion_bytes_per_second']==GIB/300
+    assert r['L11']['verdict']=='projected-budget-breach'
+
+def test_l11_gather_measures_allocated_and_wal_without_db_access(monkeypatch,tmp_path):
+    (tmp_path/'state.sqlite').write_bytes(b'x'*4096)
+    (tmp_path/'state.sqlite-wal').write_bytes(b'w'*8192)
+    monkeypatch.setattr(w,'run_cmd',lambda *a,**kw:b'LoadState=loaded\nResult=success\n')
+    monkeypatch.setattr(w,'http_get',lambda *a,**kw:(200,b'{}'))
+    cfg=dict(w.DEFAULTS,WATCH_STORE=str(tmp_path),WATCH_PUBDIR=str(tmp_path),WATCH_RECENT_ENV=str(tmp_path/'absent'),
+             WATCH_RESERVES='[]',WATCH_STORE_BUDGET_BYTES=str(2*GIB),WATCH_WAL_BUDGET_BYTES=str(256*1024*1024))
+    f=w.gather(cfg,NOW);c=f['capacity']
+    assert c['allocated_bytes']==tmp_path.stat().st_blocks*512+sum(p.stat().st_blocks*512 for p in tmp_path.iterdir())
+    assert c['wal_logical_bytes']==8192 and c['wal_allocated_bytes']==(tmp_path/'state.sqlite-wal').stat().st_blocks*512
+    assert f['sources']['capacity']['sha256']
+
+def test_l11_missing_budget_and_measurement_unknown_and_hold_quiet():
+    f=capacity_facts();f['capacity']['store_budget_bytes']=None
+    assert step({},f)[0]['L11']['verdict']=='unknown'
+    f['markers']['hold']=True
+    r,i=step({},f)
+    assert r['L11']['verdict']=='held' and not any(x['obligation']=='L11' for x in i)
+
+
+def test_l3_new_acquisition_does_not_miss_pre_enrollment_occurrence():
+    f=facts();f['status']['acquisition']['started_at']='2026-10-09T01:46:00Z'
+    f['units']['labelwatch-recent-maintain.service']=svc(None,inv='')
+    r,i=step({},f)
+    assert r['L3']['verdict']=='skip'
+    assert not any(x['obligation']=='L3' for x in i)
+    tomorrow=NOW+timedelta(days=1);f=facts(tomorrow)
+    f['status']['acquisition']['started_at']='2026-10-09T01:46:00Z'
+    f['units']['labelwatch-recent-maintain.service']=svc(None,inv='')
+    assert step({},f,tomorrow)[0]['L3']['verdict']=='maintenance-overdue'
+
+def test_l3_unknown_enrollment_does_not_assert_missed_occurrence():
+    f=facts();f['status'].pop('acquisition')
+    assert step({},f)[0]['L3']['verdict']=='unknown'
+
+def test_l5_current_collect_refusal_survives_round_overwrite():
+    f=facts();f['status'].pop('round')
+    f['units']['labelwatch-recent-collect.service']=svc(NOW-timedelta(seconds=20),result='exit-code',status='1',inv='a'*32)
+    f['collect_journal']='RuntimeError: shared_reserve_unavailable: local allocation refused'
+    r,i=step({},f)
+    assert r['L5']['verdict']=='reserve-refused'
+    assert r['L5']['facts']['refusals'][0]['invocation_id']=='a'*32
+    f['collect_journal']=None
+    assert step({},f)[0]['L5']['verdict']=='unknown'
+
+
+def test_l11_exhaustion_is_visible_without_fresh_status_or_budget():
+    f=capacity_facts();f['status']=None;f['capacity']['store_budget_bytes']=None
+    f['reserves'][0]['free_bytes']=f['reserves'][0]['reserve_bytes']-1
+    r,i=step({},f)
+    assert r['L5']['verdict']=='capacity-exhausted'
+
+def test_l11_capacity_inventory_rejects_symlink(monkeypatch,tmp_path):
+    (tmp_path/'alias').symlink_to('/tmp')
+    monkeypatch.setattr(w,'run_cmd',lambda *a,**kw:b'LoadState=loaded\nResult=success\n')
+    monkeypatch.setattr(w,'http_get',lambda *a,**kw:(200,b'{}'))
+    cfg=dict(w.DEFAULTS,WATCH_STORE=str(tmp_path),WATCH_PUBDIR=str(tmp_path),WATCH_RECENT_ENV=str(tmp_path/'absent'),WATCH_RESERVES='[]')
+    f=w.gather(cfg,NOW)
+    assert f['capacity'] is None and f['sources']['capacity']['error']=='ValueError'
+
+
+def test_l11_forecast_intent_and_persisted_observation_chain(env):
+    cfg,sd,calls=env
+    run(cfg,capacity_facts(budget=2*GIB),NOW)
+    later=NOW+timedelta(seconds=300)
+    run(cfg,capacity_facts(later,allocated=GIB+300000,budget=2*GIB),later)
+    obs=[json.loads(x) for x in (sd/'observations.jsonl').read_text().splitlines()]
+    assert obs[-1]['obligations']['L11']['verdict']=='projected-budget-breach'
+    assert obs[-1]['obligations']['L11']['facts']['window_days']==30
+    assert obs[-1]['obligations_digest']==w.DIGEST
+    intents=[json.loads(x.read_text()) for x in (sd/'intents').glob('*-L11-*.json')]
+    assert len(intents)==1 and intents[0]['condition']=='projected-budget-breach'
+    assert 'conditional fixed 30-day' in intents[0]['text']
+
+
+def test_gather_collect_refusal_uses_own_invocation_not_maintenance(monkeypatch,tmp_path):
+    collect_id,maint_id='c'*32,'a'*32
+    def command(argv,**kw):
+        if argv[0]=='journal-fixture':
+            name=argv[argv.index('-u')+1]
+            expected=collect_id if name.endswith('collect.service') else maint_id
+            assert '_SYSTEMD_INVOCATION_ID='+expected in argv
+            return b'shared_reserve_unavailable: current collect' if name.endswith('collect.service') else b'other maintain failure'
+        name=argv[2]
+        inv=collect_id if name.endswith('collect.service') else maint_id
+        return ('LoadState=loaded\nResult=exit-code\nInvocationID='+inv+'\n').encode()
+    monkeypatch.setattr(w,'run_cmd',command)
+    monkeypatch.setattr(w,'http_get',lambda *a,**kw:(200,b'{}'))
+    cfg=dict(w.DEFAULTS,WATCH_JOURNALCTL='journal-fixture',WATCH_STORE=str(tmp_path),WATCH_PUBDIR=str(tmp_path),
+             WATCH_RECENT_ENV=str(tmp_path/'absent'),WATCH_RESERVES='[]')
+    f=w.gather(cfg,NOW)
+    assert f['collect_journal']=='shared_reserve_unavailable: current collect'
+    assert f['journal']=='other maintain failure'
+    assert collect_id in f['sources']['journal:labelwatch-recent-collect']['source']

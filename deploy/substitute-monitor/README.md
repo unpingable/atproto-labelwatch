@@ -238,3 +238,53 @@ sha256), plus the `$N/state.json` rows and the `$N/intents/*-L1-…`, `*-L6-…`
 L2, L3, L7 and L9 rows read as `unknown` or `product-down` by construction (`/bin/false` stands in for
 systemctl, and port 9 refuses connections). Those rows are not NC6 evidence. Delivery is off. Remove
 `$F`, `$N` and `/etc/labelwatch-recent-watch-nc6.env` afterwards.
+
+## Draft fixed-window capacity qualification addendum
+
+The authorized predictive-capacity requirement adds L11 to this existing watcher; it remains a draft
+offproduction substitute. The observation contract stays **30 days**. No window change or automatic
+service/storage action follows any verdict. L3 now uses fresh `acquisition.started_at`: a due time
+preceding acquisition enrollment is skipped; missing enrollment evidence is unknown. L4 continues to
+report `window-not-advanced` and `expiry-stalled` separately from maintenance failure and capacity.
+L5 observes physical reserve/inode exhaustion as `capacity-exhausted` (page) even when STATUS.round was
+overwritten; a failed collect occurrence's reserve reason is read from its exact InvocationID journal,
+independently of the exact maintain InvocationID. Missing required journal evidence is unknown.
+
+L11 reads a bounded stat inventory of the configured store (4096 entries maximum; regular files and
+directories counted by distinct inode; symlinks/unsupported entries/read failures → unknown). It
+records allocated blocks, aggregate logical/allocated `*-wal` bytes and the inventory digest, without
+opening a database or scanning observation rows. Filesystem reserves/free blocks/inodes are separate
+observations; the inventory is a sampled estimate under concurrent writes, not an atomic store seal.
+
+Configure only owner-admitted policy: `WATCH_STORE_BUDGET_BYTES` and `WATCH_WAL_BUDGET_BYTES` are unset
+by default, yielding unknown forecasting. `WATCH_CAPACITY_LOOKAHEAD_SECONDS` defaults to 86400.
+The admitted replica values are 2147483648 store bytes and 268435456 aggregate WAL bytes; production
+values require owner confirmation and matching scope. The WAL observation uses aggregate logical WAL
+size, conservatively distinct from SQLite's per-database uncheckpointed-frame guard.
+
+A same-store/acquisition/maintenance-generation/roster/policy baseline of 300–900 seconds is required.
+Short samples preserve the original baseline; identity, roster, maintenance generation, policy,
+counter decrease or a stale gap resets it. Complete enrolled-source accepted_rows counters yield
+ingestion rows/second; missing/truncated roster evidence is unknown. Net allocated bytes/second is a
+separate measurement; it is not gross ingestion cost per row. Nonpositive net growth gives unknown
+forecast, never a healthy-capacity conclusion.
+
+The explicit estimate is `current allocated + observed positive net bytes/second × 30 days`. It
+assumes repetition of the recent rate and gives no credit for future unobserved retirement. It is
+**not measured full-window capacity**, nor proof that the deployment can safely serve 30 days.
+Time to store budget and each same-mount reserve are conditional estimates; filesystem free-space
+depletion includes other tenants and is not attributed to this store.
+
+- `projected-budget-breach`: notice when the 30-day estimate reaches the admitted store budget, even
+  when crossing is beyond one day; page when estimated store/reserve crossing is within lookahead.
+- `capacity-exhausted`: page when actual allocated bytes reach store budget, logical aggregate WAL
+  reaches WAL budget, or physical reserve/inode floor is exhausted.
+- Unknown/cold/short/nonpositive forecasts preserve open conditions. An `ok` conditional estimate
+  resolves only L11's observation, never the independent 30-day capacity qualification.
+
+Deterministic controls retain distinct IDs for missed maintenance (L3), stalled retirement/window
+advancement (L4), projected budget breach (L11) and exhausted capacity (L5/L11), plus baseline/reset,
+hold, round overwrite, exact journal identity and persisted observation/intent checks. All fixture
+transport is mocked. The earlier replica NC1–NC6 producer remains pinned to its original committed
+source; those receipts do not qualify this new forecast observation. No provider acceptance or native
+Monitor #18 closure is implied.

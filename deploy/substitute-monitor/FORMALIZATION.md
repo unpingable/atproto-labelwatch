@@ -31,3 +31,16 @@ Reviewer correction against commit 353ea6f: absent/malformed generation formerly
   "labelwatch-recent-watch.py": "e0d9b9e32855ba2f1d9b0ee63b48a75e3f432fe02e11b70998a2d57df1f8ad1f",
   "tests/test_watch.py": "9d7b403530766d495726c841b7ae0f38203632204f76f5982285aa71004f7b41"
 }
+
+## Authorized predictive-capacity and retention-health addendum
+
+Decision owner Codex /root approved bounded design under user steering; base commit 20de9bc06d57fb322a279e19dea0d2bd8bba4f7b. Current fixed30-day contract and activation boundary preserved. Exact propositions: comparable positive net allocated-rate baseline gives a conditional linear30-day footprint estimate; insufficient/nonpositive/reset baseline remains unknown; actual admitted-store/WAL/reserve exhaustion has a distinct condition; journal reasons bind exact current unit occurrence; scheduled deadlines preceding acquisition.started_at are not missed occurrences. Tests cover estimate outside lookahead, urgent crossing, store/WAL/reserve/inode exhaustion, cold/short/nonpositive/mismatched/stale baseline, roster/counter/generation reset, persisted observations/intents, overwritten round, collector-vs-maintenance invocation and fresh enrollment.
+
+Assumptions/unknowns: stat inventory is bounded sampled metadata under concurrent writes, not coherent sealed allocation; file and directory inode blocks included, hardlinks counted once within inventory. It cannot establish ownership outside configured store or gross bytes/ingested row. Historicalbaseline resets after maintenance or acquisition/roster/policy changes. Accepted-row velocity requires full matching enrolled roster. Forecast repeats observed recent net rate without crediting future unobserved retirement; shared-filesystem depletion includes other tenants. A forecast is not measured full-window capacity or acceptance of30-day service; no adaptive retention or autoactuation. Budgets unset until explicitly admitted. Replica2GiBstore/256MiBaggregateWAL scoped values; production policy remains owner action. Existing original replica NC producer/artifacts not modified or credited to new observation.
+
+Formalization decision: practical bounded deterministic transition fixtures and explicit arithmetic assumptions suffice for this observational change; no stronger storage-growth bound or provider/recovery theorem is claimed. A future model would need actual workload/retirement correspondence and concurrent-filesystem assumptions, separately scoped. Qualification:70fixture tests passed in0.93s, exit0, mocked provider transport and local loopback refusal fixtures. Independent review pending. Exact source/test/document result identities:
+{
+  "labelwatch-recent-watch.py": "ffc06bf8b31d8613a49bf058bb6eabd238d15b872567d01e313e3a5026f7c93c",
+  "tests/test_watch.py": "72ec00f81951067f68a4f9895089c3dacc8741ceb1ceaff0fa95542f43d76740",
+  "README.md": "66760d44746268a28ee3de01d36c74ef8ecfb8bbb7985777e24fe36b7a934596"
+}
