@@ -1,4 +1,4 @@
-# Labelwatch clean-start cutover and retirement plan — deployment readiness revision 3 (2026-10-09), awaiting owner authorization
+# Labelwatch clean-start cutover and retirement plan — deployment readiness revision 4 (2026-10-10), awaiting owner authorization
 
 Status: engineering lanes `lane/labelwatch-clean-start-20261008` (labelwatch) and `lane/labelwatch-freshness-20261008`
 (facts API). **No step below is authorized by this document.** Each production step needs the owner's explicit approval
@@ -6,13 +6,26 @@ recorded as a receipt under `clean-start-20261008/evidence/` before execution. P
 Revision 2 folds in the Phase D acceptance review (`REVIEW-PHASE-D-OPUS-20261009.md`, 12 corrections), the target-host
 facts (`CAPACITY-ADMISSION-20261009.md`) and the release engineering of 2026-10-09 (cp310 lock, installer).
 
-Bound runtime: Labelwatch `7c96c6407cf490416b97ac0e2f57749053d6c0a5`; documentation candidate
-`3c92f465b76020f4936096acc6b26e226e1763b2` plus this plan's subsequent documentation commit.
-Facts API `f320f8e2cb4794a2539542f8e89e65b982c88f36`. Later documentation commit identities must
-come from the owner-reviewed release manifest, not a moving branch. Archive correspondence is verified for
-runtime Labelwatch SHA256 `6c57a24be0c871d04dd86276d2b6bf89e8bb62bdec77d4a8ba3c6836ab6af252`
-and Facts API SHA256 `2822aff0e5886fbccfbf569c70b6efde79242fe8613881b8168bb8bd1d1c4fa5`.
-Root's final tests and independent acceptance remain pending; this plan records readiness, not approval.
+Candidate runtime and installed-unit source: Labelwatch `63c9e5c73af53f5541db210b510daccba7c4668d`,
+branch `lane/labelwatch-final-qualification-20261009`, based on the historical clean-start lane at
+`7c96c6407cf490416b97ac0e2f57749053d6c0a5`. Facts API remains
+`f320f8e2cb4794a2539542f8e89e65b982c88f36`. Bind any subsequent documentation-only commit and its
+archive in the owner-reviewed release manifest; do not deploy a moving branch. The finalization delta
+contains corrected operator procedures, the preserved offproduction substitute-monitor draft and its
+regressions, and the installed collection unit's exact `127.0.0.53/32` DNS-stub allowance. No dependency
+upgrade or store-format change is introduced. The allowance is address-scoped; validate the destination's
+resolver configuration before staging rather than broadening the network policy implicitly.
+
+Final-qualification evidence is under the existing private campaign's
+`clean-start-20261008/final-qualification-20261009/`. The CPython 3.10.12 / SQLite 3.37.2 replica passed
+387 Labelwatch tests and 90 Facts API tests (28 external-surface skips), installed from the hash-locked
+24-wheel environment. Source3c92f465 carried the same runtime modules as this candidate; the later
+installed-unit and draft-monitor deltas have separate regression and independent-review receipts.
+The accepted export run `87e663cd-1cb0-45b7-89c5-39b815698048` completed four default-cap intervals,
+355,600 rows total, with independent row/count/hash correspondence. Its 121,769,984-byte fixture and
+377,114,624-byte RSS peak do not establish full-store latency. Replica initialization and held Facts API
+refusal passed. Corrected installed-unit ingestion, recovery controls and the real UTC maintenance soak
+remain subject to their terminal receipts. These results are qualification evidence, not production approval.
 
 Historical qualification limits: C1 at bd21cf5 observed only ten accepted rows and disclosed bootstrap,
 request-spacing and lost-attempt defects, subsequently fixed with finite tests. It does not prove sustained
@@ -27,8 +40,8 @@ target-host sustained capacity. Record final bounded tests and their limits rath
 
 | # | Precondition | Evidence | Status 2026-10-09 |
 |---|---|---|---|
-| P1 | Successor independently accepted off-production (controls, C1, C2 capacity, C3-full, C4-full) and on the Ubuntu 22.04 / CPython 3.10 replica (host soak) | receipts under `evidence/`, `host-soak/` | OPEN — root final tests, original producer reconciliation and independent acceptance pending; retain historical limits above |
-| P2 | NQ #27 resolved or an explicitly accepted bounded substitute operator path | NQ #27 closure or substitute receipt | OPEN — nqd-ops still XFSZ-looping today (store 1,102,094,336 B > 1 GiB) |
+| P1 | Successor independently accepted off-production (controls, C1, C2 capacity, C3-full, C4-full) and on the Ubuntu 22.04 / CPython 3.10 replica (host soak) | receipts under `evidence/`, `host-soak/` | OPEN — Python3.10 tests, original producer reconciliation and targeted export acceptance complete; real-host soak and controls pending; retain historical limits above |
+| P2 | NQ #27 resolved or an explicitly accepted bounded substitute operator path | NQ #27 closure or substitute receipt | OPEN — separate NQ #27 remains open; historical crash-loop evidence is not a current recovery receipt |
 | P3 | Monitor #18 obligations enrolled for the successor with a proven negative control | `PHASE-C-NQ-MONITOR-RECONCILIATION-20261009.md` + receipt | OPEN |
 | P4 | Generation-2 final NFS snapshot complete and verified (step 1) | `MANIFEST.json`, `VERIFY.txt`, `VERIFY-POSTCHECK.txt` | prepared; revised script's dry run asserts every precondition (2026-10-09 14:50Z: hold marker present, six legacy units inactive/failed, no descriptors, stat record captured) |
 | P5 | Owner approval of this exact plan, per approval class (snapshot/staged, retirement, activation) | signed receipts | OPEN |
@@ -92,16 +105,16 @@ not restorable (hold removal would also un-gate the successor units). Label it s
 
 ## 5. Successor install (non-activating; Python 3.10 host)
 Before staging, the owner-reviewed manifest must bind exact source revisions, archive/wheelhouse hashes,
-lock ABI, evidence receipts, documentation delta and rollback configuration. Resolve immutable source inputs
+lock ABI, evidence receipts, complete admitted delta and rollback configuration. Resolve immutable source inputs
 on the source host; these commands prepare inputs only after allocation admission and staging approval:
 
 ```bash
 LABELWATCH_BASE=$(git -C /data/git/atproto-nutrition/labelwatch rev-parse --verify '7c96c6407cf490416b97ac0e2f57749053d6c0a5^{commit}')
 FACTSAPI_SHA=$(git -C /data/git/atproto-nutrition/factsapi rev-parse --verify 'f320f8e2cb4794a2539542f8e89e65b982c88f36^{commit}')
-# OWNER_REVIEWED_DOC_SHA is the exact full commit from the reviewed manifest.
-LABELWATCH_SHA=$(git -C /data/git/atproto-nutrition/labelwatch rev-parse --verify "${OWNER_REVIEWED_DOC_SHA:?reviewed manifest required}^{commit}")
+# OWNER_REVIEWED_RELEASE_SHA is the exact full commit from the reviewed manifest.
+LABELWATCH_SHA=$(git -C /data/git/atproto-nutrition/labelwatch rev-parse --verify "${OWNER_REVIEWED_RELEASE_SHA:?reviewed manifest required}^{commit}")
 git -C /data/git/atproto-nutrition/labelwatch merge-base --is-ancestor "$LABELWATCH_BASE" "$LABELWATCH_SHA"
-# Reviewer must verify all changes since BASE are the admitted documentation/comments only.
+# Reviewer must match every delta since BASE to the admitted corrections and their qualification receipts.
 git -C /data/git/atproto-nutrition/labelwatch diff --stat "$LABELWATCH_BASE" "$LABELWATCH_SHA"
 git -C /data/git/atproto-nutrition/labelwatch archive --format=tar --prefix=source/ "$LABELWATCH_SHA" | gzip -n > "labelwatch-$LABELWATCH_SHA.tar.gz"
 git -C /data/git/atproto-nutrition/factsapi archive --format=tar --prefix=factsapi/ "$FACTSAPI_SHA" | gzip -n > "factsapi-$FACTSAPI_SHA.tar.gz"
@@ -139,7 +152,7 @@ facts API: stage exact `f320f8e2cb4794a2539542f8e89e65b982c88f36` to `/opt/facts
 
 ## 6. Init (acquisition boundary; non-public)
 As documented in `deploy/README-recent.md` (systemd-run under `EnvironmentFile=`, wall clock ±300 s, roster 580 DIDs only,
-receipt into a separately writable evidence directory outside the admitted root). Init is permitted while held and has no !hold service condition. Leave both markers unchanged. Pass PYTHONPATH and all env settings through the documented transient unit, never shell-source the JSON env. Refuses a non-empty root and a failing reserve policy. Replica rehearsal status requires root reconciliation; it is not asserted complete here.
+receipt into a separately writable evidence directory outside the admitted root). Init is permitted while held and has no !hold service condition. Leave both markers unchanged. Pass PYTHONPATH and all env settings through the documented transient unit, never shell-source the JSON env. Refuses a non-empty root and a failing reserve policy. Replica initialization passed at 2026-10-10T01:46:49Z with a fresh acquisition identity; this does not initialize or qualify production.
 
 ```bash
 systemd-run --wait --pipe --uid=labelwatch --gid=labelwatch \
@@ -227,8 +240,8 @@ and the qualified hold procedure; do not repeatedly restart a producer or relax 
 Verify exported interval suggestions, expiration refusals, no-store 503 freshness responses and loopback-only
 health against final qualified identities; never claim the historical C2 export criterion passed.
 
-Current blockers: final root test results/independent acceptance, original replica execution reconciliation,
-bounded export-fix evidence or explicitly accepted scope limit, Monitor #18/NQ #27 path acceptance,
+Current blockers: real-host unattended soak and recovery acceptance, final-scale export scope reconciliation,
+Monitor #18/NQ #27 path acceptance,
 fresh owner-confirmed destination reserve/headroom, verified gen-2/cold/unique-evidence custody and
 separate snapshot/staging, fencing/supersession, destructive retirement, activation and publication approvals.
 The seven-day observation and 30-day warm-up declarations are future milestones, not completed qualifications.
@@ -237,8 +250,8 @@ This plan executes none of these actions.
 Formalization consideration: marker transition claim is bounded to systemd start conditions: held or
 unactivated skips collect/maintain/product; removal of a shared hold cannot release legacy work only if
 all legacy consumers were separately fenced. Conditions do not stop running services, hence explicit
-full-stop rollback. Reviewed source identity is runtime 7c96c64 plus documented comment-only delta and
-this plan; exact result identity is the subsequent immutable documentation commit/notice. Counterexamples
+full-stop rollback. Reviewed source identity is candidate63c9e5c, whose collection-unit and draft-monitor corrections have
+separate regression/acceptance receipts; exact plan result identity is its immutable documentation commit/notice. Counterexamples
 include unmasked legacy units, in-flight work, sequential partial installation and insufficient restore space.
 Practical source inspection, target-VM marker tests and review suffice for this operational plan; no new
 runtime mechanism is introduced. Decision/acceptance owner is the root supervisor and operator.
