@@ -1,5 +1,15 @@
 # Labelwatch clean-start cutover and retirement plan — deployment readiness revision 6 (2026-10-10)
 
+**Owner scope amendment, 2026-10-10: closure mode.** No new integrations, investigations, or acceptance
+gates. Existing Constellation Slack notifications are retained; the owner supplied visible trigger and
+resolve messages and accepts that channel. PagerDuty enrollment, incident acknowledgement and test
+delivery are removed from Labelwatch readiness requirements, not marked passed. No further PagerDuty
+tests. Native Monitor #18 and NQ #27 work remain with their owning projects and do not block Labelwatch
+on notification infrastructure work. Preserve existing monitoring, predictive warnings, missed-maintenance
+detection, capacity refusal and truthful recovery. Older P2/P3 and Phase C requirements for a new
+notification integration are superseded by this explicit owner decision. Essential production capacity,
+rollback custody, scheduled maintenance and post-cutover health checks remain. Stop after those pass.
+
 Status: engineering lanes `lane/labelwatch-clean-start-20261008` (labelwatch) and `lane/labelwatch-freshness-20261008`
 (facts API). **This document does not grant authority.** The owner's overnight mandate now authorizes routine
 operational acceptance. It also authorizes a non-destructive cutover only after all eight stated acceptance

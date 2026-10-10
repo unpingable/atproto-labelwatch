@@ -3,6 +3,13 @@
 **BLOCKED_WITH_EXACT_OBLIGATIONS. Production unchanged.** This is a checkpoint while the existing
 durable overnight producer remains active, not acceptance or campaign closeout.
 
+**Latest owner amendment: closure mode.** Keep the existing Constellation Slack route, whose trigger and
+resolve messages the owner supplied and confirmed visible. No new notification integration or further
+delivery tests. PagerDuty-specific enrollment/acknowledgement gates are withdrawn, not passed. Native
+Monitor #18/NQ #27 work is not a Labelwatch activation dependency. Existing protective behavior and
+monitoring remain intact. Remaining essential work is production capacity admission, rollback custody,
+the authentic scheduled maintenance observation, and bounded cutover/health verification.
+
 Operational update at 2026-10-10T03:07Z: conditional non-destructive cutover authority is recorded in
 `OVERNIGHT-OWNER-AUTHORITY.json`; historical production retirement remains unauthorized. Production
 root free space measured at 02:48:03Z is 30,266,048,512 bytes, below the existing 32 GiB reserve. The public
@@ -42,7 +49,7 @@ GitHub Projects remains the execution tracker.
 | Installed refusal to monitor |exact failed collect journal evaluated by exact monitor source yielded local PAGE; live failed-invocation sampling window was missed, so this is receipt substitution | same profile `RESERVE-RECEIPT-EVALUATION.json` |
 | Unattended controls |Actual NC1 failure, 16-minute missing-evidence and overdue intervals, fresh recovery, and 31-minute held interval accepted. Original terminal FAIL is preserved: final NC6 command could not find runuser. Separate NC6-only successor passed four fixture cases; no earlier observation was repeated | `.lanes/monitor_reconcile/9f5c6b94-1a12-4895-a803-915cd6036b86/`; successor `c1cfbcb8-6a54-4de6-a1c6-fe3ca5cb478d`; acceptance `23e6e6cd-6097-4c44-8e88-295761575c8d` |
 | Actual UTC maintenance / sustained soak |pending real2026-10-11T00:05Z maintenance; guarded observation ends01:20Z; no fabricated clock acceptance | `live-soak/`, `RECOVERY.json` |
-| External operator delivery / enrollment |not earned; local intents do not establish provider delivery or human acknowledgement | Monitor#18 remains OPEN |
+| Operator notification route |Owner accepts existing Constellation Slack delivery and supplied visible trigger/resolve messages; no new integration or delivery test required. PagerDuty gate withdrawn, not passed | Owner closure-mode amendment; Monitor#18 remains independently OPEN |
 
 Independent acceptance records live under `E/.lanes/evidence_reconcile/<full-run-id>/ACCEPTANCE.json`;
 short IDs above are lookup prefixes, not substitutes for exact recorded identities. The original broad
@@ -76,9 +83,8 @@ historical exact-source scope. No expensive constructor was repeated.
 2. Observe the existing VM/guard through actual UTC maintenance and inspect terminal/journal/coverage,
    generation advancement, retention and resource evidence. No extra approval is needed for this admitted
    offproduction work. Never duplicate or restart the unresolved producer after supervisor loss.
-3. Owner must accept a concrete operator path: native Monitor#18 enrollment or the bounded substitute with
-   the explicit PhaseC amendment, authorized test-route delivery/acknowledgement, and production enrollment.
-   NQ#27 is a separate hosting concern; neither issue closes on local watcher evidence.
+3. Retain the owner-accepted existing Slack notification path and existing monitoring. No PagerDuty
+   enrollment, incident acknowledgement or new integration work; Monitor#18/NQ#27 remain independent.
 4. Confirm production store/WAL budgets, applicable filesystem reserves and fresh aggregate admission.
    Replica2GiB/256MiB settings are not production values. Fixed30day coverage never shrinks silently.
 5. Complete verified gen2/cold/unique-evidence custody. Non-destructive cutover is conditionally authorized
