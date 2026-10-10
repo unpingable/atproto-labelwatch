@@ -138,6 +138,15 @@ operator stops those explicitly. Removing the hold marker and creating the
 activation marker are separate owner acts. Install, upgrade and rollback never
 touch either file.
 
+## Collection DNS prerequisite
+
+The collect unit permits the systemd-resolved stub at `127.0.0.53/32` through
+its address filter. The installed host resolver must use that stub; verify
+`/etc/resolv.conf` and name resolution under the exact installed unit before
+activation. A different resolver requires separately reviewed unit configuration.
+The exception grants no general loopback or private-address access; labeler
+endpoint validation continues to refuse those destinations.
+
 ## Collection round timing
 
 - `LABELWATCH_RECENT_ROUND_SECONDS` (collector default 10, max 30) is the

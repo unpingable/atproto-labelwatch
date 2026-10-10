@@ -125,7 +125,7 @@ def test_network_egress_rules():
     collect = parse('labelwatch-recent-collect.service')['Service']
     assert collect['IPAddressDeny'] == ['link-local multicast localhost 10.0.0.0/8 172.16.0.0/12 '
                                         '192.168.0.0/16 100.64.0.0/10 fc00::/7']
-    assert 'IPAddressAllow' not in collect
+    assert collect['IPAddressAllow'] == ['127.0.0.53/32']
     for name in ('labelwatch-recent-product.service', 'labelwatch-recent-overview.service',
                  'labelwatch-recent-maintain.service'):
         assert parse(name)['Service']['IPAddressDeny'] == ['any'], name

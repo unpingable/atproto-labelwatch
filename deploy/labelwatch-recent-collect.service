@@ -44,6 +44,9 @@ LockPersonality=yes
 # Public internet only: labeler endpoints are untrusted, so private,
 # loopback, link-local and multicast destinations are refused.
 IPAddressDeny=link-local multicast localhost 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 fc00::/7
+# Permit only the systemd-resolved DNS stub used by /etc/resolv.conf.
+# Endpoint validation still refuses private and loopback labeler destinations.
+IPAddressAllow=127.0.0.53/32
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
