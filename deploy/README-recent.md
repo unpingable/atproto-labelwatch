@@ -95,6 +95,7 @@ literally (systemd does not expand environment variables there).
 ```
 systemd-run --wait --pipe --uid=labelwatch --gid=labelwatch \
   -p EnvironmentFile=/etc/labelwatch-recent.env \
+  -p Environment=PYTHONPATH=/opt/labelwatch/releases/<sha>/source/src:/opt/labelwatch/releases/<sha>/source \
   /opt/labelwatch/releases/<sha>/venv/bin/python \
   /opt/labelwatch/releases/<sha>/source/tools/segmented_qualification/recent_init.py \
   --root <admitted root>/epoch-2 --now <UTC Z> \
@@ -105,7 +106,8 @@ systemd-run --wait --pipe --uid=labelwatch --gid=labelwatch \
 Initialisation is permitted while held: leave the hold and activation markers
 unchanged. It creates the store without starting collection or publication.
 Running under `EnvironmentFile=` keeps the reserves JSON intact (shell
-sourcing would strip its quotes). Paths are passed literally.
+sourcing would strip its quotes). `PYTHONPATH` makes the archived source
+importable without installing the package. Paths are passed literally.
 It refuses a non-empty root, and refuses `--now` more than 300 s from the
 wall clock in either direction: a backdated start would erase warm-up and
 claim a fully observed window. `--allow-clock-skew-seconds N` admits up to N s
