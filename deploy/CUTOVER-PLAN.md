@@ -1,5 +1,42 @@
 # Labelwatch clean-start cutover and retirement plan — deployment readiness revision 6 (2026-10-10)
 
+## Scheduled failure and bounded correction — 2026-10-11 02:31Z
+
+**WAITING_FOR_REAL_OBSERVATION.** The original replica timer fired at 00:05Z, invocation
+`276537e3b7ca46878cd6c9212835a37a`, and exited 1. Installed `RecentStore.archive` reached the base
+campaign-only archive destination lookup; `ARCHIVE-DESTINATION.json` was absent. No successful
+maintenance or advancement was earned by that occurrence. The 702-sample terminal and failure
+journal remain intact (216,346,624-byte sampled store peak; 586,979,585 network bytes).
+
+Correction `aef40df17c17ef9746e4d03cd080ad096808945c` confines recent archives to the exact admitted
+store/archive directory without reading the campaign receipt. Base campaign validation remains
+unchanged. Thirty-six focused tests passed locally and on installed CPython 3.10, including a store
+outside the campaign with its receipt absent and foreign/symlink refusal cases. Independent source
+review accepted the bounded change. The requested static sibling check across five runtime entrypoints,
+their 24-module import closure and Facts runtime found no other mandatory development-file dependency;
+this is a scoped static result, not a claim about every repository file.
+
+Manual recovery of the original failed replica store passed at 02:28:14Z, after preserving its stopped
+216,338,432-byte copy. It archived/retired the October 10 segment, persisted maintenance generation 1
+and frontier `2026-09-11T02:28:03.334974Z`; current store allocation became 69,541,888 bytes.
+Receipt `maintenance-recovery-f5739b4f-b383-4fe3-b273-40b64070af6d/` and independent acceptance
+`.lanes/evidence_reconcile/cbfcb7ae-16a2-45b4-a67e-66a31e77d0d2/ACCEPTANCE.json` establish **manual recovery only**.
+
+Corrected source is installed on production under the unchanged hold; offline lock/import/dependency
+checks passed. Facts remains `f320f8e2cb4794a2539542f8e89e65b982c88f36`. Collection/maintenance timers remain
+disabled; held overview refresh remains active. Root free after correction: **80,592,015,360 bytes**.
+Previous source/configuration and verified historical recovery custody remain retained.
+
+The next genuine replica maintenance is **2026-10-12T00:05Z (October 11, 8:05 p.m. EDT)**.
+Existing sampler reused as occurrence `0d0b39db-3f6c-4870-a10a-7d644d495bc6`; unit
+`labelwatch-maintenance-followup-0d0b39db.service`, invocation `a0d8e86e98824a56b0354bea75562685`.
+It ends 01:20Z with unchanged 2 GiB store/4 GiB network limits and host reserve guards. Original VM PID
+909951 remains, with finite runtime extended to 50 hours from its original start, without restart.
+No new VM, key or framework. `CURRENT-MAINTENANCE-FOLLOWUP.json` and master `RECOVERY.json` bind
+admission, producer and resumption instructions. Preserve the prior failed occurrence. Once real
+scheduled success is accepted, resume the existing authorized cutover; manual recovery is not its substitute.
+
+
 ## Execution update — 2026-10-10 05:38Z
 
 Disposition: **WAITING_FOR_REAL_OBSERVATION**. Owner explicitly approved the ten-path manifest at
