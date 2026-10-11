@@ -477,16 +477,19 @@ class Store:
         with lock(self.root, lock_name or ('archive-' + identity + '.lock')), lock(self.root, 'reader.lock', shared=True):
             return self._archive(identity, destination, death, injected)
 
-    def _archive(self, identity, destination, death=None, injected=None):
-        dt.date.fromisoformat(identity)
-        self.check_local(injected)
-        destination = Path(destination)
+    def _check_archive_destination(self, destination):
         # Only this campaign's verified NFS root or its exact local negative fixtures.
         archive_root = Path(json.loads((ROOT.parent / 'evidence/ARCHIVE-DESTINATION.json').read_text())['campaign_archive'])
         horizon = ROOT.parent.parent / 'labelwatch-segmented-horizon-capacity-20261005' / 'runtime'
         repair = ROOT.parent.parent / 'labelwatch-global-lifetime-custody-20261005' / 'runtime'
         if destination.resolve() != archive_root.resolve() and archive_root.resolve() not in destination.resolve().parents and ROOT not in destination.resolve().parents and horizon not in destination.resolve().parents and repair not in destination.resolve().parents:
             raise ValueError('unowned archive path')
+
+    def _archive(self, identity, destination, death=None, injected=None):
+        dt.date.fromisoformat(identity)
+        self.check_local(injected)
+        destination = Path(destination)
+        self._check_archive_destination(destination)
         if injected in ('archive_unavailable', 'archive_read_only', 'archive_full'):
             raise OSError(injected)
         destination.mkdir(exist_ok=True)

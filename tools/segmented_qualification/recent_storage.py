@@ -789,10 +789,19 @@ class RecentStore(Store):
                 return {'inserted':len(accepted),'accepted_ids':[x[0] for x in accepted],'duplicate_ids':duplicates,'cursor':position}
             finally:c.close()
 
+    def _check_archive_destination(self, destination):
+        # Recent archives stay inside this re-admitted epoch, independent of
+        # the base qualification campaign's NFS destination receipt.
+        root = owned(self.root)
+        dest = root / 'archive'
+        if storage._unlinked(str(dest)) != dest or Path(destination) != dest:
+            raise RuntimeError('recent archive must be owned by this new store')
+
     def archive(self, identity, destination=None, **kwargs):
         dest=self.root/'archive'
         with closing(connect(self.state,readonly=True)) as c:self.require(c)
-        if destination is not None and Path(destination).resolve()!=dest.resolve():
+        self._check_archive_destination(dest)
+        if destination is not None and storage._unlinked(str(destination))!=dest:
             raise RuntimeError('recent archive must be owned by this new store')
         return super().archive(identity,dest,lock_name='archive.lock',**kwargs)
 

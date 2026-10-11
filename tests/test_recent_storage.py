@@ -340,3 +340,55 @@ def test_scheduler_single_empty_warm_grace_and_terminal_tail(store):
     with connect(store.state) as c:assert c.execute('SELECT hot,provider_cursor FROM q_recent_sources').fetchone()[:]==(2,'next')
     store.accept_page([event('newtail')],source=did,request_cursor='next',next_cursor=None,observed_at=iso(stamp))
     with connect(store.state) as c:assert c.execute('SELECT hot FROM q_recent_sources').fetchone()[0]==0
+
+
+@pytest.fixture
+def admitted_store(tmp_path, monkeypatch):
+    import json
+    campaign = tmp_path / 'campaign' / 'runtime'
+    campaign.mkdir(parents=True)
+    monkeypatch.setattr(storage, 'ROOT', campaign)
+    admitted = tmp_path / 'admitted'
+    admitted.mkdir()
+    monkeypatch.setenv(storage.ADMITTED_ENV, str(admitted))
+    monkeypatch.setenv(storage.RESERVES_ENV, json.dumps([{'mount': '/', 'bytes': 1}]))
+    monkeypatch.setenv(storage.INODES_ENV, '0')
+    assert not (campaign.parent / 'evidence/ARCHIVE-DESTINATION.json').exists()
+    return RecentStore.create(admitted / 'epoch', '2026-09-01T00:00:00Z')
+
+
+def test_admitted_daily_archive_without_campaign_receipt(admitted_store):
+    seed(admitted_store)
+    result = admitted_store.advance_day('2026-09-02T00:00:00Z')
+    assert result['retired'] == ['2026-09-01']
+    assert (admitted_store.root / 'archive/2026-09-01.receipt.json').is_file()
+    assert (admitted_store.root / 'archive/2026-09-01.parquet').is_file()
+    assert not (admitted_store.root / '2026-09-01.sqlite').exists()
+
+
+@pytest.mark.parametrize('kind', ['foreign', 'alias', 'archive_symlink'])
+def test_admitted_archive_rejects_foreign_or_symlink(admitted_store, tmp_path, kind):
+    seed(admitted_store)
+    admitted_store.rotate('2026-09-02')
+    dest = admitted_store.root / 'archive'
+    foreign = tmp_path / 'foreign'
+    foreign.mkdir()
+    if kind == 'foreign':
+        dest = foreign
+    elif kind == 'alias':
+        alias = tmp_path / 'alias'
+        alias.symlink_to(dest, target_is_directory=True)
+        dest = alias
+    else:
+        dest.rmdir()
+        dest.symlink_to(foreign, target_is_directory=True)
+    with pytest.raises((ValueError, RuntimeError), match='symlink|owned'):
+        admitted_store.archive('2026-09-01', dest)
+    assert (admitted_store.root / '2026-09-01.sqlite').exists()
+    assert not list(foreign.iterdir())
+
+
+def test_base_archive_still_requires_campaign_destination_receipt(admitted_store):
+    base = storage.Store(admitted_store.root)
+    with pytest.raises(FileNotFoundError, match='ARCHIVE-DESTINATION'):
+        base.archive('2026-09-01', admitted_store.root / 'archive')
