@@ -1,5 +1,15 @@
 # labelwatch
 
+## Current public service and API
+
+The deployed service is a rolling 30-day observatory. Its current public
+contract is documented in the [account/export reference](docs/PUBLIC-API.md),
+[website API guide](https://labelwatch.neutral.zone/api), and
+[aggregate Facts API reference](https://api.neutral.zone/atproto/).
+These describe production; older analysis and CLI capabilities below do not
+imply that all legacy routes or reports are publicly served.
+
+
 An observatory for ATProto's labeling infrastructure. Monitors labeler behavior
 over time and flags integrity-risk patterns (rate spikes, drift, synchronized
 activity, boundary instability). It does not judge content or truth; it produces
