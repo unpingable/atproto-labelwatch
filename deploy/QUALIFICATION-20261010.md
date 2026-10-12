@@ -1,5 +1,7 @@
 # Final qualification checkpoint — 2026-10-10
 
+**Current disposition: PRODUCTION_ACTIVE_AND_VERIFIED, 2026-10-12T00:35Z.** See [production receipt](PRODUCTION-20261012.md) for exact installed revisions, accepted evidence, resource measurements and recovery limitations. Earlier held/failure records below are historical and remain preserved.
+
 ## Scheduled failure and bounded correction — 2026-10-11 02:31Z
 
 **WAITING_FOR_REAL_OBSERVATION.** The original replica timer fired at 00:05Z, invocation
