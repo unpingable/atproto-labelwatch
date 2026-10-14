@@ -159,3 +159,22 @@ def test_reader_against_empty_store_dir_leaves_nothing_and_init_proceeds(admitte
     assert list(root.iterdir()) == []
     assert storage.admitted_root() == admitted
     assert init(root, T1)['predecessor']['recorded'] is False
+
+
+def test_publish_against_missing_store_replaces_overview_with_held(admitted, tmp_path, monkeypatch, capsys):
+    publish = recent_overview.publish
+    monkeypatch.setattr(recent_overview, 'publish', lambda d, e: publish(d, e, ancestors=False))
+    root, pub = admitted / 'epoch', tmp_path / 'pub'
+    init(root, T0)
+    now = iso(T0 + datetime.timedelta(hours=1))
+    assert recent_publish.main(['--store', str(root), '--pubdir', str(pub), '--now', now]) == 0
+    assert json.loads((pub / 'overview.json').read_text())['hold'] is False
+    capsys.readouterr()
+    lose(root)
+    later = iso(T0 + datetime.timedelta(hours=2))
+    assert recent_publish.main(['--store', str(root), '--pubdir', str(pub), '--now', later]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result['published'] is True and result['hold'] is True and result['reason'].startswith('store_unavailable')
+    env = json.loads((pub / 'overview.json').read_text())
+    assert env['hold'] is True and env['acquisition'] is None and env['counts'] == {}
+    assert env['generated_at'] == later.replace('Z', '.000000Z') and not root.exists()

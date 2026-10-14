@@ -10,7 +10,9 @@ transaction snapshots the state (so collection is never stalled), and a shared
 reader lease (which fences retirement and maintenance) is held while counting
 retained event payloads. Every scan runs under a progress-handler deadline. Publication is an atomic replace of <pubdir>/overview.json
 and refuses, with a non-zero exit and no replacement, when the directory or file
-would not be readable by another service account.
+would not be readable by another service account. When the store is missing or
+unreadable, the held artifact replaces the last overview (exit still non-zero),
+so a stale reading is never left standing.
 """
 from __future__ import annotations
 
@@ -287,6 +289,7 @@ def main(argv=None):
     parser.add_argument('--budget-seconds', type=float, default=120.0)
     args = parser.parse_args(argv)
     now = clock(args.now) if args.now else datetime.now(timezone.utc)
+    unavailable = None
     try:
         hold = args.hold or any(marker.exists() for marker in args.hold_marker) or (
             args.activation_marker is not None and not args.activation_marker.exists())
@@ -295,13 +298,27 @@ def main(argv=None):
         else:
             if args.store is None:
                 parser.error('--store is required unless --hold')
-            stats = read_store(args.store, now, budget=args.budget_seconds)
-            envelope = recent_overview.overview(stats, now)
+            try:
+                stats = read_store(args.store, now, budget=args.budget_seconds)
+            except (FileNotFoundError, PermissionError, sqlite3.DatabaseError) as exc:
+                # The store is missing or unreadable: the last overview no longer
+                # describes anything this service holds. Replace it with the
+                # explicit held artifact and still exit non-zero.
+                unavailable = exc
+                hold = True
+                envelope = recent_overview.held(now)
+            else:
+                envelope = recent_overview.overview(stats, now)
         target = recent_overview.publish(args.pubdir, envelope)
         if args.store is not None and not hold:
             write_status_quietly(args.store)
     except (recent_overview.OverviewRefused, RuntimeError, TimeoutError, OSError, ValueError, sqlite3.Error) as exc:
         print(json.dumps({'published': False, 'error': type(exc).__name__, 'reason': str(exc)[:240]}, sort_keys=True))
+        return 2
+    if unavailable is not None:
+        print(json.dumps({'published': True, 'path': str(target), 'hold': True, 'generated_at': envelope['generated_at'],
+                          'error': type(unavailable).__name__, 'reason': 'store_unavailable: ' + str(unavailable)[:200]},
+                         sort_keys=True))
         return 2
     print(json.dumps({'published': True, 'path': str(target), 'hold': envelope['hold'],
                       'generated_at': envelope['generated_at']}, sort_keys=True))
