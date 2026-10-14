@@ -104,9 +104,9 @@ hour; a `held` state is informational.
 
 The store is a 30-day rolling window with a fresh epoch; it is not backed up and no historical archive is kept. Recovery
 from a corrupt or lost store = `recent_init.py` into a new, empty root (new acquisition generation; coverage restarts and
-the public pages say so for 30 days). After a loss, pass `--predecessor-receipt <old init receipt, overview.json or
-STATUS.json>` or `--continuity-break` so the lost interval is shown as observed, then lost; without either, the previous
-epoch is reported as unknown. Readers refuse a store directory without `state.sqlite` and leave nothing in it; a
+the public pages say so for 30 days). Init reads the last `$LABELWATCH_RECENT_PUBDIR/overview.json` and, if it names a generation, records that epoch as
+observed, then lost; otherwise continuity is reported as unknown. Override with `--predecessor-receipt <old init receipt,
+overview.json or STATUS.json>`, `--continuity-break` or `--published-overview PATH`; pass `--first-install` only for a genuine first installation. Readers refuse a store directory without `state.sqlite` and leave nothing in it; a
 `reader.lock` left there by an older release must be removed before re-init. Process interruption and host reboot preserve epoch, cursors and gaps (qualified).
 The previous epochs' archives on NFS are custody only, never restorable into this product.
 

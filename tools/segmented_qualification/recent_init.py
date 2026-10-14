@@ -3,11 +3,15 @@
 Seeded DIDs carry no endpoint and no cursor: their coverage is unknown until
 the collector bootstraps each one.
 
-Every new store records its predecessor. With --predecessor-receipt (the lost
-store's init receipt, overview.json or STATUS.json) or --continuity-break, the
-previous epoch is recorded as observed and then lost, with its known bounds or
-none; otherwise the previous epoch is recorded as unknown. Nothing here enables a unit, touches a hold
-or activation marker, or imports legacy history.
+Every new store records its predecessor. By default init reads the last
+published overview.json (in $LABELWATCH_RECENT_PUBDIR, or --published-overview):
+if it names a generation, that epoch is recorded as observed and then lost up to
+this epoch's start. If it is absent, unreadable, held or carries no generation,
+continuity before this epoch is recorded as unknown. Explicit declarations skip
+discovery: --predecessor-receipt (the lost store's init receipt, overview.json or
+STATUS.json), --continuity-break (lost, extent unknown) or --first-install (no
+previous epoch). Nothing here enables a unit, touches a hold or activation
+marker, or imports legacy history.
 """
 import argparse
 import datetime as dt
@@ -22,7 +26,8 @@ from contextlib import closing
 from importlib import metadata
 
 import storage
-from recent_storage import RecentStore, clock, iso, NO_PREDECESSOR, PREDECESSOR_SCHEMA, predecessor_record
+from recent_storage import (RecentStore, clock, iso, FIRST_INSTALL, UNKNOWN_CONTINUITY, PREDECESSOR_SCHEMA,
+                            predecessor_record)
 from labelwatch.ingest import _is_valid_did
 from labelwatch.utils import get_git_commit
 
@@ -86,6 +91,36 @@ def predecessor_from_receipt(path):
     return lost_predecessor(acquisition['generation_id'], acquisition['started_at'], through, 'predecessor_receipt')
 
 
+PUBDIR_ENV = 'LABELWATCH_RECENT_PUBDIR'  # the directory recent_publish.py --pubdir is given
+OVERVIEW_SCHEMA = 'labelwatch.recent-overview.v1'
+
+
+def discover_predecessor(path, now):
+    """(predecessor, outcome) from the last published overview; unknown continuity unless it names an earlier epoch."""
+    if path is None: return UNKNOWN_CONTINUITY, 'no_publish_location'
+    try:
+        value = json.loads(open(path, 'rb').read())
+    except FileNotFoundError:
+        return UNKNOWN_CONTINUITY, 'absent'
+    except (OSError, ValueError):
+        return UNKNOWN_CONTINUITY, 'unreadable'
+    if not isinstance(value, dict) or value.get('schema_version') != OVERVIEW_SCHEMA:
+        return UNKNOWN_CONTINUITY, 'unreadable'
+    if value.get('hold') is not False:
+        return UNKNOWN_CONTINUITY, 'held'
+    acquisition = value.get('acquisition')
+    if not isinstance(acquisition, dict) or not acquisition.get('generation_id') or not acquisition.get('started_at'):
+        return UNKNOWN_CONTINUITY, 'no_generation'
+    try:
+        coverage = value.get('coverage')
+        through = coverage.get('observed_through') if isinstance(coverage, dict) else None
+        found = lost_predecessor(acquisition['generation_id'], acquisition['started_at'], through, 'published_overview')
+        if clock(found['started_at']) >= clock(now): return UNKNOWN_CONTINUITY, 'not_earlier'
+    except (TypeError, ValueError):
+        return UNKNOWN_CONTINUITY, 'unreadable'
+    return found, 'discovered'
+
+
 MAX_SKEW_SECONDS = 300
 
 
@@ -107,7 +142,7 @@ def acceptance_clock(now, allow_skew_seconds=None, wall=None):
             'allowed_skew_seconds': bound, 'explicit_allowance': allow_skew_seconds is not None}
 
 
-def init(root, now, days=30, roster=None, allow_skew_seconds=None, wall=None, predecessor=None):
+def init(root, now, days=30, roster=None, allow_skew_seconds=None, wall=None, predecessor=None, discovery=None):
     root = storage.owned(root)
     if days != 30: raise ValueError('only 30-day candidate admitted')
     acceptance = acceptance_clock(now, allow_skew_seconds, wall)
@@ -117,7 +152,7 @@ def init(root, now, days=30, roster=None, allow_skew_seconds=None, wall=None, pr
     if root.exists():
         if not root.is_dir() or any(root.iterdir()): raise RuntimeError('store root exists and is not empty')
         root.rmdir()  # Store.create owns the mkdir; an empty placeholder carries nothing.
-    store = RecentStore.create(root, now, days, predecessor=predecessor or NO_PREDECESSOR)
+    store = RecentStore.create(root, now, days, predecessor=predecessor or UNKNOWN_CONTINUITY)
     if dids: store.remember_sources([{'did': d} for d in dids], limit=2048)
     with closing(storage.connect(store.state, readonly=True)) as c:
         acquisition = RecentStore.acquisition(c)
@@ -126,6 +161,7 @@ def init(root, now, days=30, roster=None, allow_skew_seconds=None, wall=None, pr
         seeded = c.execute('SELECT COUNT(*) FROM q_recent_sources WHERE endpoint IS NULL AND provider_cursor IS NULL').fetchone()[0]
     if seeded != len(dids): raise RuntimeError('roster seed count mismatch after enrollment')
     return {'schema': RECEIPT_SCHEMA, 'store': str(root), 'predecessor': recorded_predecessor,
+            'predecessor_discovery': discovery,
             'generation_id': acquisition['generation_id'], 'started_at': acquisition['started_at'],
             'basis': acquisition['basis'], 'days': days,
             'roster': {'path': os.path.abspath(roster) if roster else None, 'sha256': roster_sha,
@@ -146,15 +182,29 @@ def main(argv=None):
                         help="the lost store's init receipt, overview.json or STATUS.json; records its known bounds")
     parser.add_argument('--continuity-break', action='store_true',
                         help='a prior epoch existed and was lost; its extent is unknown')
+    parser.add_argument('--first-install', action='store_true',
+                        help='declare a genuine first installation: no previous epoch existed')
+    parser.add_argument('--published-overview',
+                        help='discover the predecessor from this overview.json instead of $%s/overview.json' % PUBDIR_ENV)
     args = parser.parse_args(argv)
     if args.receipt and os.path.exists(args.receipt): parser.error('receipt path exists')
+    chosen = [flag for flag, given in (('--predecessor-receipt', args.predecessor_receipt), ('--continuity-break', args.continuity_break),
+                                       ('--first-install', args.first_install), ('--published-overview', args.published_overview)) if given]
+    if len(chosen) > 1: parser.error('conflicting predecessor flags: ' + ' '.join(chosen))
+    discovery = None
     if args.predecessor_receipt:
         predecessor = predecessor_from_receipt(args.predecessor_receipt)
     elif args.continuity_break:
         predecessor = lost_predecessor()
+    elif args.first_install:
+        predecessor = FIRST_INSTALL
     else:
-        predecessor = None
-    receipt = init(args.root, args.now, args.days, args.roster, args.allow_clock_skew_seconds, predecessor=predecessor)
+        pubdir = os.environ.get(PUBDIR_ENV)
+        path = args.published_overview or (os.path.join(pubdir, 'overview.json') if pubdir else None)
+        predecessor, outcome = discover_predecessor(path, args.now)
+        discovery = {'path': os.path.abspath(path) if path else None, 'outcome': outcome}
+    receipt = init(args.root, args.now, args.days, args.roster, args.allow_clock_skew_seconds, predecessor=predecessor,
+                   discovery=discovery)
     text = json.dumps(receipt, sort_keys=True, indent=2) + '\n'
     if args.receipt:
         with open(args.receipt, 'x') as f:

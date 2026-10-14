@@ -681,6 +681,18 @@ def _previous_lost(predecessor):
     return bool(predecessor and predecessor.get('recorded') and predecessor.get('end_reason') == 'store_lost')
 
 
+def _first_install(predecessor):
+    return bool(predecessor and not predecessor.get('recorded') and predecessor.get('basis') == 'first_install')
+
+
+def _continuity_unknown(predecessor):
+    """A predecessor record that establishes nothing: neither withdrawn, lost nor a declared first install."""
+    return bool(predecessor) and not predecessor.get('recorded') and not _first_install(predecessor)
+
+
+CONTINUITY_UNKNOWN = 'Continuity before this epoch is unknown'
+
+
 def previous_epoch_sentence(predecessor=None):
     """One sentence about the previous epoch, from the store's recorded predecessor only.
 
@@ -694,7 +706,10 @@ def previous_epoch_sentence(predecessor=None):
         through = _esc(_when(predecessor['observed_through'])) if predecessor.get('observed_through') else 'an unknown time'
         return (f'A previous epoch, which began {began}, was observed through {through} and then lost; '
                 'its observations are not part of this service. ')
-    return 'The previous epoch, if any, is unknown: no record of one is available, and nothing from one is part of this service. '
+    if _first_install(predecessor):
+        return 'This is the first observation epoch of this installation; there is no previous epoch. '
+    return (CONTINUITY_UNKNOWN + '. The previous epoch, if any, is unknown: no record of one is available, '
+            'and nothing from one is part of this service. ')
 
 
 def coverage_statement(started_at=None, window_days=30, predecessor=None):
@@ -803,12 +818,18 @@ def landing_html(view, interval=None, error=None, predecessor=None):
                             + ('its recorded bounds are shown below. ' if bounded else 'its extent is unknown. ')
                             + 'That interval is shown as observed, then lost, never as quiet. '
                             '<a href="/previous-epoch">About the previous epoch</a></p>')
+        elif _continuity_unknown(predecessor):
+            coverage.append('<p><strong>' + CONTINUITY_UNKNOWN + '.</strong> No record establishes whether a previous epoch '
+                            'observed part of this window. <a href="/previous-epoch">About the previous epoch</a></p>')
         if cov['gaps']:
             coverage.append('<h3>Collection interruptions</h3><ul>' + ''.join(
                 '<li>' + _esc(_when(g['start'])) + ' to ' + _esc(_when(g['end'])) + ': ' + _esc(GAP_REASONS.get(g['reason'], GAP_REASONS['unknown'])) + '</li>'
                 for g in cov['gaps']) + '</ul>')
             if cov['gap_overflow']:
                 coverage.append('<p>More interruptions were recorded than can be listed; the whole window is disclosed as not established.</p>')
+        elif _continuity_unknown(predecessor):
+            coverage.append('<p>Because continuity before this epoch is unknown, an empty list of recorded gaps establishes '
+                            'nothing about coverage.</p>')
         else:
             coverage.append('<p>No specific gaps are recorded. This does not establish complete source coverage.</p>')
         src = cov['sources']
@@ -887,9 +908,14 @@ def previous_epoch_html(predecessor=None):
                          'shown as observed, then lost, never as quiet or as not having happened.</p>'
                          '<table><tbody>' + ''.join('<tr><th>' + k + '</th><td>' + v + '</td></tr>' for k, v in rows) + '</tbody></table>'
                          '<p class="nz-muted">Bounds marked unknown were not recorded when this epoch began.</p></section>' + back)
+    if _first_install(predecessor):
+        return page_html('Previous Labelwatch epoch',
+                         '<p class="nz-eyebrow">Previous epoch</p><h1>There is no previous epoch</h1>'
+                         '<section class="nz-panel"><p>The current epoch was declared the first of this installation when it began. '
+                         'Nothing from any earlier epoch is part of this service.</p></section>' + back)
     return page_html('Previous Labelwatch epoch',
                      '<p class="nz-eyebrow">Previous epoch</p><h1>The previous epoch is unknown</h1>'
-                     '<section class="nz-panel"><p>No record of a previous observation epoch is available for the current one. '
+                     '<section class="nz-panel"><p>' + CONTINUITY_UNKNOWN + '. No record of a previous observation epoch is available for the current one. '
                      'Whether one existed, and when it ended, is unknown. Nothing from any earlier epoch is part of '
                      'this service or presented as observed by the current epoch.</p></section>' + back)
 

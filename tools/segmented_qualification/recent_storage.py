@@ -72,8 +72,12 @@ def iso(value):
 PREDECESSOR_KEY = 'q:recent_predecessor'
 PREDECESSOR_SCHEMA = 'labelwatch.predecessor.v1'
 PREDECESSOR_FIELDS = {'schema', 'recorded', 'generation_id', 'started_at', 'observed_through', 'ended_on', 'end_reason', 'basis'}
-PREDECESSOR_END_REASONS = ('store_lost', 'withdrawn', 'unknown')
-PREDECESSOR_BASES = ('predecessor_receipt', 'continuity_break', 'none', 'legacy_default')
+PREDECESSOR_END_REASONS = ('store_lost', 'withdrawn', 'unknown', 'none')
+# none: no record (stores without the key begun after the cutoff); undiscovered:
+# init could not establish continuity; first_install: the operator declared that
+# no previous epoch exists. none and undiscovered both mean continuity is unknown.
+PREDECESSOR_BASES = ('predecessor_receipt', 'continuity_break', 'published_overview', 'first_install', 'undiscovered',
+                     'none', 'legacy_default')
 # Compatibility: stores initialised before predecessor records existed carry no
 # PREDECESSOR_KEY. Every such store that started before this cutoff follows the
 # one real earlier epoch, which was withdrawn and ended on 2026-10-06. A store
@@ -84,6 +88,8 @@ LEGACY_PREDECESSOR = {'schema': PREDECESSOR_SCHEMA, 'recorded': True, 'generatio
                       'observed_through': None, 'ended_on': '2026-10-06', 'end_reason': 'withdrawn', 'basis': 'legacy_default'}
 NO_PREDECESSOR = {'schema': PREDECESSOR_SCHEMA, 'recorded': False, 'generation_id': None, 'started_at': None,
                   'observed_through': None, 'ended_on': None, 'end_reason': 'unknown', 'basis': 'none'}
+UNKNOWN_CONTINUITY = dict(NO_PREDECESSOR, basis='undiscovered')
+FIRST_INSTALL = dict(NO_PREDECESSOR, end_reason='none', basis='first_install')
 
 
 def predecessor_record(value):
@@ -104,6 +110,8 @@ def predecessor_record(value):
         raise ValueError('predecessor observed_through precedes started_at')
     if not out['recorded'] and any(out[k] is not None for k in ('generation_id', 'started_at', 'observed_through', 'ended_on')):
         raise ValueError('unrecorded predecessor carries bounds')
+    if (out['basis'] == 'first_install') != (out['end_reason'] == 'none') or (out['basis'] == 'first_install' and out['recorded']):
+        raise ValueError('first install is the only predecessor without an end')
     return out
 
 
@@ -194,7 +202,10 @@ class RecentStore(Store):
                 db.set_meta(c, PREDECESSOR_KEY, json.dumps(predecessor, sort_keys=True))
                 if predecessor['end_reason'] == 'store_lost':
                     lo = predecessor['started_at'] or db.get_meta(c, 'q:recent_start')
-                    hi = min(predecessor['observed_through'] or iso(stamp), iso(stamp))
+                    # A published overview is a snapshot: its epoch may have kept
+                    # observing until the loss, so the interval runs to this start.
+                    through = None if predecessor['basis'] == 'published_overview' else predecessor['observed_through']
+                    hi = min(through or iso(stamp), iso(stamp))
                     if lo < hi: store._record_gap(c, lo, hi, 'observed_then_lost')
             c.commit()
         return cls(root)

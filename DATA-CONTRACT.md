@@ -53,15 +53,26 @@ When the store is missing, emptied or unreadable:
 - The operator runs `recent_init.py` into an empty root. This starts a new epoch
   with a new acquisition generation id and start time. Everything in the window
   before that start is shown as "not observed".
-- If the operator declares the loss (`--continuity-break`, or
-  `--predecessor-receipt` with the lost store's init receipt, `overview.json` or
-  `STATUS.json`), the new store records the predecessor and the interval it may
-  have covered is shown as "observed, then lost": with its recorded bounds when
-  known, otherwise as the widest interval it could cover, labelled as such. After a
-  declared break the pages do not say that no gaps are recorded.
+- The default is uncertainty: continuity before the new epoch is recorded as
+  unknown unless the predecessor is discovered or declared. Init discovers it from
+  the last published `overview.json` (in `$LABELWATCH_RECENT_PUBDIR`, or
+  `--published-overview PATH`): when that names a generation, the new store
+  records it as lost, and the interval from its start to the new epoch start is
+  shown as "observed, then lost" (the overview is a snapshot, so its last
+  observation time is shown as the last known one, not the end). An absent,
+  unreadable or held overview, or one without a generation, records unknown
+  continuity, never a first install.
+- The operator can declare instead, which skips discovery: `--continuity-break`
+  (lost, extent unknown), `--predecessor-receipt` with the lost store's init
+  receipt, `overview.json` or `STATUS.json` (lost, with its recorded bounds), or
+  `--first-install`, the only way to record that no previous epoch exists.
+  Conflicting flags are refused. A lost predecessor's interval is shown as
+  "observed, then lost": with its recorded bounds when known, otherwise as the
+  widest interval it could cover, labelled as such. After a break, or with
+  continuity unknown, the pages do not say that no gaps are recorded.
 - The previous-epoch text on `/about` and `/previous-epoch` comes only from the
-  store's recorded predecessor. With none recorded, it says the previous epoch
-  is unknown. Stores created before predecessor records existed, which have no
+  store's recorded predecessor. With none recorded, it says continuity before
+  this epoch is unknown. Stores created before predecessor records existed, which have no
   record and started before 2026-10-15, keep the one real earlier epoch: it was
   withdrawn and ended on 2026-10-06.
 
@@ -96,9 +107,10 @@ re-applied and carries no observation history.
 
 ## Known limitations
 
-- A loss that is not declared at re-initialisation is shown only as "not observed"
-  before the new epoch start, and the previous epoch as unknown. Nothing in the
-  new store can detect an undeclared loss.
+- A loss that is neither discovered nor declared at re-initialisation is shown
+  as "not observed" before the new epoch start, with continuity before it
+  unknown. Discovery only sees the last overview left in the publish directory;
+  a wrongly declared `--first-install` hides a loss.
 - A predecessor taken from an init receipt alone has no last-observation time;
   the lost interval then runs to the new epoch start.
 - A `reader.lock` left in an emptied store directory by an older release still
