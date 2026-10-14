@@ -197,6 +197,7 @@ def status_snapshot(store, now):
         store.require(c)
         meta = {key: db.get_meta(c, 'q:recent_' + key) for key in ('start', 'generation', 'gap_overflow')}
         acquisition = store.acquisition(c)
+        predecessor = store.predecessor(c)
         pending = c.execute('SELECT 1 FROM q_recent_transition').fetchone() is not None
         observed_through = c.execute('SELECT MAX(last_observed) FROM q_recent_sources').fetchone()[0]
         gaps = [dict(start=row[0], end=row[1], reason=row[2]) for row in
@@ -210,7 +211,7 @@ def status_snapshot(store, now):
     generation = meta['generation']
     return {'schema': STATUS_SCHEMA, 'generated_at': iso(now), 'window_days': recent_overview.WINDOW_DAYS,
             'acquisition': {k: acquisition[k] for k in ('generation_id', 'started_at', 'basis')},
-            'coverage': recent_overview.coverage(stats, now),
+            'coverage': recent_overview.coverage(stats, now), 'predecessor': predecessor,
             'refused_sources': refused, 'operator_sources': operator,
             'last_maintenance': {'generation': int(generation), 'recovery_pending': pending,
                                  'at': iso(clock(meta['start']) + timedelta(days=recent_overview.WINDOW_DAYS)) if generation != '0' else None}}

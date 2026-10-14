@@ -1,7 +1,12 @@
 """Create one empty recent store under the admitted root and seed its roster.
 
 Seeded DIDs carry no endpoint and no cursor: their coverage is unknown until
-the collector bootstraps each one. Nothing here enables a unit, touches a hold
+the collector bootstraps each one.
+
+Every new store records its predecessor. With --predecessor-receipt (the lost
+store's init receipt, overview.json or STATUS.json) or --continuity-break, the
+previous epoch is recorded as observed and then lost, with its known bounds or
+none; otherwise the previous epoch is recorded as unknown. Nothing here enables a unit, touches a hold
 or activation marker, or imports legacy history.
 """
 import argparse
@@ -17,7 +22,7 @@ from contextlib import closing
 from importlib import metadata
 
 import storage
-from recent_storage import RecentStore, clock, iso
+from recent_storage import RecentStore, clock, iso, NO_PREDECESSOR, PREDECESSOR_SCHEMA, predecessor_record
 from labelwatch.ingest import _is_valid_did
 from labelwatch.utils import get_git_commit
 
@@ -56,6 +61,31 @@ def versions():
     return found
 
 
+RECEIPT_SCHEMA = 'labelwatch.recent-init-receipt.v1'
+PRIOR_SCHEMAS = (RECEIPT_SCHEMA, 'labelwatch.recent-overview.v1', 'labelwatch.recent-status.v1')
+
+
+def lost_predecessor(generation_id=None, started_at=None, observed_through=None, basis='continuity_break'):
+    """A previous epoch existed and its store was lost; unknown bounds stay None."""
+    return predecessor_record({'schema': PREDECESSOR_SCHEMA, 'recorded': True, 'generation_id': generation_id,
+                               'started_at': started_at, 'observed_through': observed_through, 'ended_on': None,
+                               'end_reason': 'store_lost', 'basis': basis})
+
+
+def predecessor_from_receipt(path):
+    """Bounds of a lost epoch from its init receipt, published overview or STATUS.json."""
+    value = json.loads(open(path, 'rb').read())
+    schema = value.get('schema') or value.get('schema_version') if isinstance(value, dict) else None
+    if schema not in PRIOR_SCHEMAS: raise ValueError('predecessor receipt schema')
+    if schema == RECEIPT_SCHEMA:
+        acquisition, through = value, None
+    else:
+        acquisition, through = value.get('acquisition'), (value.get('coverage') or {}).get('observed_through')
+    if not isinstance(acquisition, dict) or not acquisition.get('generation_id') or not acquisition.get('started_at'):
+        raise ValueError('predecessor receipt carries no acquisition identity (a held overview is not a receipt)')
+    return lost_predecessor(acquisition['generation_id'], acquisition['started_at'], through, 'predecessor_receipt')
+
+
 MAX_SKEW_SECONDS = 300
 
 
@@ -77,7 +107,7 @@ def acceptance_clock(now, allow_skew_seconds=None, wall=None):
             'allowed_skew_seconds': bound, 'explicit_allowance': allow_skew_seconds is not None}
 
 
-def init(root, now, days=30, roster=None, allow_skew_seconds=None, wall=None):
+def init(root, now, days=30, roster=None, allow_skew_seconds=None, wall=None, predecessor=None):
     root = storage.owned(root)
     if days != 30: raise ValueError('only 30-day candidate admitted')
     acceptance = acceptance_clock(now, allow_skew_seconds, wall)
@@ -87,14 +117,15 @@ def init(root, now, days=30, roster=None, allow_skew_seconds=None, wall=None):
     if root.exists():
         if not root.is_dir() or any(root.iterdir()): raise RuntimeError('store root exists and is not empty')
         root.rmdir()  # Store.create owns the mkdir; an empty placeholder carries nothing.
-    store = RecentStore.create(root, now, days)
+    store = RecentStore.create(root, now, days, predecessor=predecessor or NO_PREDECESSOR)
     if dids: store.remember_sources([{'did': d} for d in dids], limit=2048)
     with closing(storage.connect(store.state, readonly=True)) as c:
         acquisition = RecentStore.acquisition(c)
+        recorded_predecessor = store.predecessor(c)
         policy = json.loads(storage.db.get_meta(c, storage.RESERVES_KEY))
         seeded = c.execute('SELECT COUNT(*) FROM q_recent_sources WHERE endpoint IS NULL AND provider_cursor IS NULL').fetchone()[0]
     if seeded != len(dids): raise RuntimeError('roster seed count mismatch after enrollment')
-    return {'schema': 'labelwatch.recent-init-receipt.v1', 'store': str(root),
+    return {'schema': RECEIPT_SCHEMA, 'store': str(root), 'predecessor': recorded_predecessor,
             'generation_id': acquisition['generation_id'], 'started_at': acquisition['started_at'],
             'basis': acquisition['basis'], 'days': days,
             'roster': {'path': os.path.abspath(roster) if roster else None, 'sha256': roster_sha,
@@ -111,9 +142,19 @@ def main(argv=None):
     parser.add_argument('--allow-clock-skew-seconds', type=int, default=None,
                         help='explicitly admit |now - wall clock| up to N s (default bound 300 s); recorded')
     parser.add_argument('--receipt', help='write the receipt JSON here as well (must not exist)')
+    parser.add_argument('--predecessor-receipt',
+                        help="the lost store's init receipt, overview.json or STATUS.json; records its known bounds")
+    parser.add_argument('--continuity-break', action='store_true',
+                        help='a prior epoch existed and was lost; its extent is unknown')
     args = parser.parse_args(argv)
     if args.receipt and os.path.exists(args.receipt): parser.error('receipt path exists')
-    receipt = init(args.root, args.now, args.days, args.roster, args.allow_clock_skew_seconds)
+    if args.predecessor_receipt:
+        predecessor = predecessor_from_receipt(args.predecessor_receipt)
+    elif args.continuity_break:
+        predecessor = lost_predecessor()
+    else:
+        predecessor = None
+    receipt = init(args.root, args.now, args.days, args.roster, args.allow_clock_skew_seconds, predecessor=predecessor)
     text = json.dumps(receipt, sort_keys=True, indent=2) + '\n'
     if args.receipt:
         with open(args.receipt, 'x') as f:

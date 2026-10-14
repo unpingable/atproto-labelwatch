@@ -109,6 +109,14 @@ class SiteStatus:
         except Exception as exc:
             return None, "status_unreadable:" + type(exc).__name__
 
+    def predecessor(self):
+        """The store's recorded previous epoch; the cached STATUS.json copy while the store is unreadable; else None (unknown)."""
+        try:
+            return self.product.provider.store.predecessor()
+        except Exception:
+            status, _ = self.cached_status()
+            return status.get("predecessor") if status else None
+
     def read(self):
         with self._lock:
             tick = time.monotonic()
@@ -259,12 +267,12 @@ def handler(product, *, resolver=None, status=None):
                 except Exception:
                     window = None
                 current = site.read()
-                return landing_html(current["view"], window, current["error"]), True
+                return landing_html(current["view"], window, current["error"], site.predecessor()), True
             if path in ("/about", "/previous-epoch"):
                 if path == "/previous-epoch":
-                    return previous_epoch_html(), True
+                    return previous_epoch_html(site.predecessor()), True
                 view = site.read()["view"]
-                return about_html(view["acquisition"]["started_at"] if view else None, product.limits.days), True
+                return about_html(view["acquisition"]["started_at"] if view else None, product.limits.days, site.predecessor()), True
             if path == "/download":
                 if set(args)!={"cursor"}:raise Refused("invalid_download_request")
                 return product.download(args["cursor"]),False

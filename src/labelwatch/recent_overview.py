@@ -27,7 +27,7 @@ MAX_GAPS = 128
 MAX_TOP_LABELERS = 20
 OVERVIEW_NAME = "overview.json"
 GAP_REASONS = ("not_observed", "source_unavailable", "ingest_paused", "cursor_reset",
-               "maintenance", "warmup", "unknown")
+               "maintenance", "warmup", "unknown", "observed_then_lost")
 SOURCE_KEYS = ("enrolled", "unstarted", "probing", "established", "refused", "pre_epoch_skipped",
                "undated_skipped", "late_skipped", "cursor_order_unverified", "undated_only",
                "provider_rejects", "unavailable")

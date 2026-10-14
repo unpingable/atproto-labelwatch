@@ -69,6 +69,44 @@ def iso(value):
     return value.isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 
+PREDECESSOR_KEY = 'q:recent_predecessor'
+PREDECESSOR_SCHEMA = 'labelwatch.predecessor.v1'
+PREDECESSOR_FIELDS = {'schema', 'recorded', 'generation_id', 'started_at', 'observed_through', 'ended_on', 'end_reason', 'basis'}
+PREDECESSOR_END_REASONS = ('store_lost', 'withdrawn', 'unknown')
+PREDECESSOR_BASES = ('predecessor_receipt', 'continuity_break', 'none', 'legacy_default')
+# Compatibility: stores initialised before predecessor records existed carry no
+# PREDECESSOR_KEY. Every such store that started before this cutoff follows the
+# one real earlier epoch, which was withdrawn and ended on 2026-10-06. A store
+# without the key that started later (or was made outside recent_init) gets no
+# predecessor claim: its previous epoch is reported as unknown.
+LEGACY_PREDECESSOR_CUTOFF = '2026-10-15T00:00:00.000000Z'
+LEGACY_PREDECESSOR = {'schema': PREDECESSOR_SCHEMA, 'recorded': True, 'generation_id': None, 'started_at': None,
+                      'observed_through': None, 'ended_on': '2026-10-06', 'end_reason': 'withdrawn', 'basis': 'legacy_default'}
+NO_PREDECESSOR = {'schema': PREDECESSOR_SCHEMA, 'recorded': False, 'generation_id': None, 'started_at': None,
+                  'observed_through': None, 'ended_on': None, 'end_reason': 'unknown', 'basis': 'none'}
+
+
+def predecessor_record(value):
+    """Validate a predecessor record; returns it normalised or raises ValueError."""
+    if not isinstance(value, dict) or set(value) != PREDECESSOR_FIELDS or value['schema'] != PREDECESSOR_SCHEMA:
+        raise ValueError('predecessor record fields')
+    if type(value['recorded']) is not bool or value['end_reason'] not in PREDECESSOR_END_REASONS \
+            or value['basis'] not in PREDECESSOR_BASES:
+        raise ValueError('predecessor record values')
+    out = dict(value)
+    if out['generation_id'] is not None:
+        identity = uuid.UUID(str(out['generation_id']))
+        if str(identity) != out['generation_id']: raise ValueError('predecessor generation id')
+    for key in ('started_at', 'observed_through'):
+        if out[key] is not None: out[key] = iso(clock(out[key]))
+    if out['ended_on'] is not None: out['ended_on'] = dt.date.fromisoformat(out['ended_on']).isoformat()
+    if out['started_at'] and out['observed_through'] and out['observed_through'] < out['started_at']:
+        raise ValueError('predecessor observed_through precedes started_at')
+    if not out['recorded'] and any(out[k] is not None for k in ('generation_id', 'started_at', 'observed_through', 'ended_on')):
+        raise ValueError('unrecorded predecessor carries bounds')
+    return out
+
+
 def micros(value):
     delta=clock(value)-EPOCH if isinstance(value,str) else value-EPOCH
     return (delta.days*86400+delta.seconds)*1000000+delta.microseconds
@@ -88,9 +126,19 @@ def day_name(number):
 
 class RecentStore(Store):
     @classmethod
-    def create(cls, root, now, days=30):
+    def create(cls, root, now, days=30, predecessor=None):
+        """predecessor (labelwatch.predecessor.v1) is recorded when given; recent_init always gives one.
+
+        A predecessor that ended by loss also records its interval inside the
+        new window as an 'observed_then_lost' gap: the widest interval it could
+        cover when its bounds are unknown, never a claim that it was quiet.
+        """
         if days != 30: raise ValueError('only 30-day candidate admitted; 45 is unqualified')
         stamp = clock(now)
+        if predecessor is not None:
+            predecessor = predecessor_record(predecessor)
+            if predecessor['started_at'] and clock(predecessor['started_at']) >= stamp:
+                raise ValueError('predecessor started after this epoch')
         # Custody source-time floor remains separate from observation retention.
         store = super().create(root, period=stamp.date().isoformat(), floor='0001-01-01T00:00:00Z')
         (store.root/'archive').mkdir()
@@ -142,8 +190,26 @@ class RecentStore(Store):
                     UPDATE q_recent_counts SET n=n+1 WHERE name='{table}'; END;
                 CREATE TRIGGER recent_count_deleted_{table} AFTER DELETE ON "{table}" BEGIN
                     UPDATE q_recent_counts SET n=n-1 WHERE name='{table}'; END;''')
+            if predecessor is not None:
+                db.set_meta(c, PREDECESSOR_KEY, json.dumps(predecessor, sort_keys=True))
+                if predecessor['end_reason'] == 'store_lost':
+                    lo = predecessor['started_at'] or db.get_meta(c, 'q:recent_start')
+                    hi = min(predecessor['observed_through'] or iso(stamp), iso(stamp))
+                    if lo < hi: store._record_gap(c, lo, hi, 'observed_then_lost')
             c.commit()
         return cls(root)
+
+    def predecessor(self, c=None):
+        """The recorded previous epoch, the documented legacy default, or 'not recorded'."""
+        own = c is None
+        if own: c = connect(self.state, readonly=True)
+        try:
+            raw = db.get_meta(c, PREDECESSOR_KEY)
+            if raw is not None: return predecessor_record(json.loads(raw))
+            started = self.acquisition(c)['started_at']
+            return dict(LEGACY_PREDECESSOR if started < LEGACY_PREDECESSOR_CUTOFF else NO_PREDECESSOR)
+        finally:
+            if own: c.close()
 
     def require(self, c):
         present = {r[1] for r in c.execute('PRAGMA table_info(q_recent_sources)')}
@@ -847,7 +913,7 @@ class RecentStore(Store):
 
     def _record_gap(self,c,start,end,reason):
         start,end=iso(clock(start)),iso(clock(end))
-        if start>=end or reason not in ('ingest_paused','source_unavailable','cursor_reset','maintenance','unknown','warmup'):raise ValueError('invalid bounded gap')
+        if start>=end or reason not in ('ingest_paused','source_unavailable','cursor_reset','maintenance','unknown','warmup','observed_then_lost'):raise ValueError('invalid bounded gap')
         start=max(start,db.get_meta(c,'q:recent_start'))
         if start>=end:return
         # Same-reason overlapping or touching intervals merge into one row.

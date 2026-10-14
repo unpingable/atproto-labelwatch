@@ -249,7 +249,7 @@ class RecentObservations:
             if not start <= lo < hi <= end:
                 raise Refused("invalid_coverage_gap")
             reason = gap.get("reason")
-            if reason not in ("not_observed", "source_unavailable", "unknown", "ingest_paused", "cursor_reset", "maintenance", "warmup"):
+            if reason not in ("not_observed", "source_unavailable", "unknown", "ingest_paused", "cursor_reset", "maintenance", "warmup", "observed_then_lost"):
                 reason = "unknown"
             gaps.append({"start": iso(lo), "end": iso(hi), "reason": reason})
         if value["status"] == "observed" and (gaps or warmup):
@@ -567,7 +567,9 @@ GAP_REASONS={'not_observed':'Acquisition had not begun; this interval was not ob
              'cursor_reset':'Source continuation was reset; continuity is not established.',
              'maintenance':'Collection coverage was interrupted by maintenance.',
              'warmup':'The collector was warming up; observation coverage is not established.',
-             'unknown':'Observation coverage is not established for this interval.'}
+             'unknown':'Observation coverage is not established for this interval.',
+             'observed_then_lost':('Observed by a previous epoch whose record was lost; nothing from it is served. '
+                                   'Unless that epoch\'s bounds were recorded, this is the widest interval it could cover, not a measured extent.')}
 
 
 def account_html(account):
@@ -634,7 +636,6 @@ def account_html(account):
 # reads storage or changes account/export semantics.
 # ---------------------------------------------------------------------------
 
-PREVIOUS_EPOCH_END = '2026-10-06'
 EPOCH_GAP_NOTES = {'pre_epoch': 'Source-authored before this epoch began (beyond the late allowance); skipped, not stored, and counted per source.',
                    'late_skipped': 'Source-authored more than 48 hours before acceptance; skipped as late, not stored, and counted per source.',
                    'cursor_order_unverified': 'The source\'s page order could not be verified; its coverage is reported as unknown, never as quiet.'}
@@ -676,8 +677,28 @@ def page_html(title, body):
             'Current label state is unknown. Observations older than 30 days expire.</p></footer></div></body></html>')
 
 
-def coverage_statement(started_at=None, window_days=30):
-    """The public coverage statement (proposal Part 4, verbatim with N and the epoch start filled in)."""
+def _previous_lost(predecessor):
+    return bool(predecessor and predecessor.get('recorded') and predecessor.get('end_reason') == 'store_lost')
+
+
+def previous_epoch_sentence(predecessor=None):
+    """One sentence about the previous epoch, from the store's recorded predecessor only.
+
+    predecessor is a labelwatch.predecessor.v1 record (RecentStore.predecessor);
+    None or an unrecorded predecessor is reported as unknown, never as a date.
+    """
+    if predecessor and predecessor.get('recorded') and predecessor.get('end_reason') == 'withdrawn' and predecessor.get('ended_on'):
+        return f'Observations from the previous epoch, which ended {_esc(predecessor["ended_on"])}, are not part of this service. '
+    if _previous_lost(predecessor):
+        began = 'on ' + _esc(_when(predecessor['started_at'])) if predecessor.get('started_at') else 'at an unknown time'
+        through = _esc(_when(predecessor['observed_through'])) if predecessor.get('observed_through') else 'an unknown time'
+        return (f'A previous epoch, which began {began}, was observed through {through} and then lost; '
+                'its observations are not part of this service. ')
+    return 'The previous epoch, if any, is unknown: no record of one is available, and nothing from one is part of this service. '
+
+
+def coverage_statement(started_at=None, window_days=30, predecessor=None):
+    """The public coverage statement (proposal Part 4, verbatim with N, the epoch start and the predecessor filled in)."""
     began = _esc(_when(started_at)) if started_at else 'a time that is currently unavailable'
     return (f'Labelwatch keeps a rolling window of the most recent {int(window_days)} days of public label observations. '
             'Older observations expire and are not served. '
@@ -687,7 +708,7 @@ def coverage_statement(started_at=None, window_days=30):
             'Inside the window, recorded gaps are disclosed with their reason. '
             'No recorded gaps does not prove complete source coverage, and no observations does not mean no labels exist. '
             'Labelwatch records observed application and removal events; it does not know whether a label is currently active. '
-            f'Observations from the previous epoch, which ended {PREVIOUS_EPOCH_END}, are not part of this service. '
+            + previous_epoch_sentence(predecessor) +
             'Requests outside the window are refused explicitly.')
 
 
@@ -733,11 +754,12 @@ def _exports_panel():
             '<p>' + EXPORT_BOUND_SENTENCE + '</p></section>')
 
 
-def landing_html(view, interval=None, error=None):
+def landing_html(view, interval=None, error=None, predecessor=None):
     """Landing page for the rolling observatory.
 
     view is a labelwatch.recent-overview.v1 envelope (top labelers optional),
-    or None when the store summary is unavailable.
+    or None when the store summary is unavailable. predecessor is the store's
+    recorded previous epoch (or None).
     """
     body = ['<p class="nz-eyebrow">Rolling observatory</p><h1>Recently observed labeling activity</h1>'
             '<p>Labelwatch watches public ATProto labelers and records the label application and removal events it '
@@ -775,6 +797,12 @@ def landing_html(view, interval=None, error=None):
                             + _esc(_when(cov['warmup']['end'])) + ' was not observed by this acquisition generation.</p>')
         else:
             coverage.append('<p>The full ' + _esc(window) + '-day window lies inside this epoch.</p>')
+        if _previous_lost(predecessor):
+            bounded = predecessor.get('started_at') and predecessor.get('observed_through')
+            coverage.append('<p><strong>Continuity break.</strong> A previous epoch observed part of this window and was then lost; '
+                            + ('its recorded bounds are shown below. ' if bounded else 'its extent is unknown. ')
+                            + 'That interval is shown as observed, then lost, never as quiet. '
+                            '<a href="/previous-epoch">About the previous epoch</a></p>')
         if cov['gaps']:
             coverage.append('<h3>Collection interruptions</h3><ul>' + ''.join(
                 '<li>' + _esc(_when(g['start'])) + ' to ' + _esc(_when(g['end'])) + ': ' + _esc(GAP_REASONS.get(g['reason'], GAP_REASONS['unknown'])) + '</li>'
@@ -825,25 +853,45 @@ def landing_html(view, interval=None, error=None):
     return page_html('Labelwatch rolling observatory', ''.join(body))
 
 
-def about_html(started_at=None, window_days=30):
+def about_html(started_at=None, window_days=30, predecessor=None):
     glossary = ''.join('<tr><th><code>' + _esc(k) + '</code></th><td>' + _esc(v) + '</td></tr>'
                        for k, v in list(GAP_REASONS.items()) + list(EPOCH_GAP_NOTES.items()))
     return page_html('About Labelwatch coverage',
                      '<p class="nz-eyebrow">About</p><h1>What this observatory covers</h1>'
-                     '<section class="nz-panel"><p>' + coverage_statement(started_at, window_days) + '</p></section>'
+                     '<section class="nz-panel"><p>' + coverage_statement(started_at, window_days, predecessor) + '</p></section>'
                      '<h2>Gap reasons</h2><p>Each disclosed interval carries one of these reasons.</p>'
                      '<table><tbody>' + glossary + '</tbody></table>'
                      '<h2>Exports</h2><p>' + EXPORT_BOUND_SENTENCE + '</p>')
 
 
-def previous_epoch_html():
+def previous_epoch_html(predecessor=None):
+    """/previous-epoch from the store's recorded predecessor; unknown when none is recorded."""
+    back = '<p><a href="/">Return to the current rolling observatory</a></p>'
+    if predecessor and predecessor.get('recorded') and predecessor.get('end_reason') == 'withdrawn' and predecessor.get('ended_on'):
+        return page_html('Previous Labelwatch epoch',
+                         '<p class="nz-eyebrow">Previous epoch</p><h1>The previous epoch is withdrawn</h1>'
+                         '<section class="nz-panel"><p>The previous Labelwatch observation epoch ended on ' + _esc(predecessor['ended_on']) + '. '
+                         'Its pages, census, labeler and alert reports are withdrawn and are not served by this service. '
+                         'Its observations are not part of the current rolling window, and nothing from it is presented '
+                         'as observed by the current epoch.</p></section>' + back)
+    if _previous_lost(predecessor):
+        def bound(key):
+            return _esc(_when(predecessor[key])) if predecessor.get(key) else 'unknown'
+        rows = [('Began', bound('started_at')), ('Last known observation', bound('observed_through')),
+                ('Generation', '<code>' + _esc(predecessor['generation_id']) + '</code>' if predecessor.get('generation_id') else 'unknown'),
+                ('How it ended', 'its store was lost')]
+        return page_html('Previous Labelwatch epoch',
+                         '<p class="nz-eyebrow">Previous epoch</p><h1>The previous epoch was lost</h1>'
+                         '<section class="nz-panel"><p>A previous Labelwatch observation epoch existed and its record was lost. '
+                         'Its observations cannot be served. Inside the current window, the interval it may have covered is '
+                         'shown as observed, then lost, never as quiet or as not having happened.</p>'
+                         '<table><tbody>' + ''.join('<tr><th>' + k + '</th><td>' + v + '</td></tr>' for k, v in rows) + '</tbody></table>'
+                         '<p class="nz-muted">Bounds marked unknown were not recorded when this epoch began.</p></section>' + back)
     return page_html('Previous Labelwatch epoch',
-                     '<p class="nz-eyebrow">Previous epoch</p><h1>The previous epoch is withdrawn</h1>'
-                     '<section class="nz-panel"><p>The previous Labelwatch observation epoch ended on ' + PREVIOUS_EPOCH_END + '. '
-                     'Its pages, census, labeler and alert reports are withdrawn and are not served by this service. '
-                     'Its observations are not part of the current rolling window, and nothing from it is presented '
-                     'as observed by the current epoch.</p></section>'
-                     '<p><a href="/">Return to the current rolling observatory</a></p>')
+                     '<p class="nz-eyebrow">Previous epoch</p><h1>The previous epoch is unknown</h1>'
+                     '<section class="nz-panel"><p>No record of a previous observation epoch is available for the current one. '
+                     'Whether one existed, and when it ended, is unknown. Nothing from any earlier epoch is part of '
+                     'this service or presented as observed by the current epoch.</p></section>' + back)
 
 
 def lookup_refusal_html(reason):

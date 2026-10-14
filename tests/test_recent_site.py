@@ -11,6 +11,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).parents[1] / 'tools/segmented_qualification'))
 from recent_provider import RecentProvider  # noqa: E402
 from labelwatch.recent_observations import RecentObservations, coverage_statement  # noqa: E402
+from recent_storage import LEGACY_PREDECESSOR  # noqa: E402
 from test_recent_overview import store, NOW, A, B, SUBJECT  # noqa: E402,F401
 
 PATH = Path(__file__).parents[1] / 'tools' / 'segmented_qualification' / 'recent_product.py'
@@ -83,7 +84,7 @@ def test_about_states_verbatim_coverage_and_glossary(store):
     status, _, body = get(h, '/about')
     text = body.decode()
     assert status == 200
-    assert coverage_statement('2026-09-01T00:00:00.000000Z', 30) in text
+    assert coverage_statement('2026-09-01T00:00:00.000000Z', 30, LEGACY_PREDECESSOR) in text
     assert 'Labelwatch keeps a rolling window of the most recent 30 days of public label observations.' in text
     assert 'which ended 2026-10-06, are not part of this service' in text
     assert 'Exports are bounded to about 114,000 rows' in text
