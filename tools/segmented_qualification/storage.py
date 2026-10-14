@@ -220,6 +220,10 @@ def _checkpoint_pending(root):
 @contextlib.contextmanager
 def lock(root, name='writer.lock', shared=False, timeout=None):
     started = time.monotonic()
+    if name == 'reader.lock' and not (Path(root) / 'state.sqlite').exists():
+        # A reader must never leave a lock file in a missing or emptied store
+        # directory: init and the admitted root would then see a foreign entry.
+        raise FileNotFoundError('store state unavailable: ' + str(Path(root) / 'state.sqlite'))
     if name == 'reader.lock' and shared and _checkpoint_pending(root):
         until = started + min(CHECKPOINT_READER_WAIT, CHECKPOINT_READER_WAIT if timeout is None else timeout)
         while _checkpoint_pending(root) and time.monotonic() < until:

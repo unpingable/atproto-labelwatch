@@ -142,3 +142,20 @@ def test_store_without_predecessor_meta_keeps_the_2026_10_06_epoch(admitted):
     # The default is not extended to stores begun after this change.
     later = datetime.datetime.fromisoformat(LEGACY_PREDECESSOR_CUTOFF.replace('Z', '+00:00')) + datetime.timedelta(days=1)
     assert RecentStore.create(admitted / 'later', iso(later)).predecessor()['recorded'] is False
+
+
+def test_reader_against_empty_store_dir_leaves_nothing_and_init_proceeds(admitted):
+    root = admitted / 'epoch'
+    init(root, T0)
+    lose(root)
+    root.mkdir()                     # an emptied store directory after the loss
+    mod = module()
+    product = RecentObservations(RecentProvider(RecentStore(root)), now=lambda: T1)
+    h = mod.handler(product, status=mod.SiteStatus(product))
+    for path in ('/', '/about', '/previous-epoch', '/health'):
+        get(h, path)
+    with pytest.raises(FileNotFoundError):
+        recent_publish.read_store(RecentStore(root), T1)
+    assert list(root.iterdir()) == []
+    assert storage.admitted_root() == admitted
+    assert init(root, T1)['predecessor']['recorded'] is False
