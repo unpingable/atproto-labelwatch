@@ -269,6 +269,14 @@ ingestion rows/second; missing/truncated roster evidence is unknown. Net allocat
 separate measurement; it is not gross ingestion cost per row. Nonpositive net growth gives unknown
 forecast, never a healthy-capacity conclusion.
 
+The 30-day estimate uses net growth over a rolling history of hourly samples, at least 6 hours
+and at most 25 hours old (`capacity_history` in `state.json`). History survives a stale gap and a
+maintenance-generation change, so retirement inside the window is credited. Any other identity
+change resets it. Until 6 hours of comparable history exist, the estimate is unknown. A single
+300-second sample is never extrapolated 30 days. On 2026-10-13/14 that produced 33–67 GiB notices
+against a 0.15 GiB store whose median projection was 0.7 GiB. The 300-second rate still decides
+urgency (crossing within lookahead), so a real burst still pages.
+
 The explicit estimate is `current allocated + observed positive net bytes/second × 30 days`. It
 assumes repetition of the recent rate and gives no credit for future unobserved retirement. It is
 **not measured full-window capacity**, nor proof that the deployment can safely serve 30 days.

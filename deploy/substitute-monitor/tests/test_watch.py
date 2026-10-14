@@ -773,6 +773,16 @@ def capacity_facts(now=NOW, allocated=GIB, accepted=100, budget=10*GIB, generati
     f['status']['operator_sources'] = {'source_status': [{'did': 'did:fixture', 'accepted_rows': accepted}]}
     return f
 
+def grow(st, seconds, rate, budget=10*GIB, start=NOW, allocated=GIB, accepted=100, stepper=None):
+    """Steady growth sampled every 300 s; returns (now, allocated, accepted, last results, all intents)."""
+    stepper = stepper or (lambda f, now: step(st, f, now))
+    now, out, every = start, None, []
+    for _ in range(seconds // 300):
+        now += timedelta(seconds=300); allocated += rate * 300; accepted += 3
+        out = stepper(capacity_facts(now, allocated=allocated, accepted=accepted, budget=budget), now)
+        if out: every += out[1]
+    return now, allocated, accepted, out and out[0], every
+
 def test_l11_cold_short_baseline_unknown_preserves_baseline_then_forecasts():
     st = {}
     assert step(st, capacity_facts())[0]['L11']['verdict'] == 'unknown'
@@ -783,22 +793,38 @@ def test_l11_cold_short_baseline_unknown_preserves_baseline_then_forecasts():
         assert st['capacity_baseline'] == baseline
     now = NOW + timedelta(seconds=300)
     r, i = step(st, capacity_facts(now, allocated=GIB+300, accepted=103), now)
-    assert r['L11']['verdict'] == 'ok'
+    # A 300 s rate is measured but never extrapolated 30 days.
+    assert r['L11']['verdict'] == 'unknown' and 'comparable history' in r['L11']['facts']['reason']
     assert r['L11']['facts']['ingestion_rows_per_second'] == .01
-    assert r['L11']['facts']['projected_30day_allocated_bytes'] == GIB+300+30*86400
+    now, allocated, _, r, _ = grow(st, w.LONG_WINDOW_MIN, 1, start=now, allocated=GIB+300, accepted=103)
+    assert r['L11']['verdict'] == 'ok'
+    assert r['L11']['facts']['projection_window_seconds'] >= w.LONG_WINDOW_MIN
+    assert r['L11']['facts']['projected_30day_allocated_bytes'] == allocated+30*86400
 
 def test_l11_projected_30day_breach_warns_outside_lookahead_and_urgent_pages():
     st = {}
     step(st, capacity_facts(budget=2*GIB))
-    now = NOW + timedelta(seconds=300)
-    # 1000 B/s crosses store budget in ~12 days, still a 30-day estimate warning.
-    r, i = step(st, capacity_facts(now, allocated=GIB+300000, budget=2*GIB), now)
+    # 1000 B/s for 6 h crosses the store budget in ~12 days: a 30-day estimate warning.
+    now, allocated, accepted, r, i = grow(st, w.LONG_WINDOW_MIN + 300, 1000, budget=2*GIB)
     assert r['L11']['verdict'] == 'projected-budget-breach'
     assert r['L11']['facts']['seconds_to_store_budget'] > 86400
     assert ('L11','projected-budget-breach','trigger','notice') in kinds(i)
     now += timedelta(seconds=300)
-    r, i = step(st, capacity_facts(now, allocated=GIB+300000+300*100000, budget=2*GIB), now)
+    r, i = step(st, capacity_facts(now, allocated=allocated+300*100000, accepted=accepted+3, budget=2*GIB), now)
     assert ('L11','projected-budget-breach','trigger','page') in kinds(i)
+
+def test_l11_one_bursty_sample_does_not_project_a_breach():
+    # Production 2026-10-13/14: 0.15 GiB store, ~27 B/s, 32 GiB budget; one 300 s burst
+    # extrapolated 30 days produced 33-67 GiB notices that resolved 5-15 min later.
+    st = {}
+    step(st, capacity_facts(allocated=GIB//7, budget=32*GIB))
+    now, allocated, accepted, r, i = grow(st, w.LONG_WINDOW_MIN, 27, budget=32*GIB, allocated=GIB//7)
+    assert r['L11']['verdict'] == 'ok' and not i
+    now += timedelta(seconds=300)
+    r, i = step(st, capacity_facts(now, allocated=allocated+300*26000, accepted=accepted+3, budget=32*GIB), now)
+    assert r['L11']['verdict'] == 'ok', r['L11']
+    assert r['L11']['facts']['net_allocated_bytes_per_second'] == 26000
+    assert not [x for x in i if x['obligation'] == 'L11']
 
 @pytest.mark.parametrize('which', ['store', 'wal', 'reserve', 'inodes'])
 def test_l11_exhaustion_distinct_from_projection_even_without_round(which):
@@ -828,12 +854,11 @@ def test_l11_noncomparable_or_nonpositive_forecast_is_unknown(change):
 
 def test_l11_json_roundtrip_baseline_and_unknown_do_not_resolve_projection():
     st = {};step(st, capacity_facts(budget=2*GIB))
-    st = json.loads(json.dumps(st))
-    now = NOW+timedelta(seconds=300)
-    r,i = step(st,capacity_facts(now,allocated=GIB+300000,budget=2*GIB),now)
+    now, allocated, accepted, r, i = grow(st, w.LONG_WINDOW_MIN + 300, 1000, budget=2*GIB)
     assert r['L11']['verdict'] == 'projected-budget-breach'
-    now += timedelta(seconds=300)
-    r,i = step(st,capacity_facts(now,allocated=GIB+300000,budget=2*GIB),now)
+    st = json.loads(json.dumps(st))
+    now += timedelta(seconds=901)
+    r,i = step(st,capacity_facts(now,allocated=allocated,accepted=accepted,budget=2*GIB),now)
     assert r['L11']['verdict'] == 'unknown'
     assert not any(x['obligation']=='L11' and x['action']=='resolve' for x in i)
 
@@ -910,8 +935,7 @@ def test_l11_capacity_inventory_rejects_symlink(monkeypatch,tmp_path):
 def test_l11_forecast_intent_and_persisted_observation_chain(env):
     cfg,sd,calls=env
     run(cfg,capacity_facts(budget=2*GIB),NOW)
-    later=NOW+timedelta(seconds=300)
-    run(cfg,capacity_facts(later,allocated=GIB+300000,budget=2*GIB),later)
+    grow(None, w.LONG_WINDOW_MIN + 300, 1000, budget=2*GIB, stepper=lambda f, now: run(cfg, f, now) and None)
     obs=[json.loads(x) for x in (sd/'observations.jsonl').read_text().splitlines()]
     assert obs[-1]['obligations']['L11']['verdict']=='projected-budget-breach'
     assert obs[-1]['obligations']['L11']['facts']['window_days']==30
