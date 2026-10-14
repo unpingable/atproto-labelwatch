@@ -34,9 +34,10 @@ OBLIGATIONS = {'version': 1,
     'L8': {'name': 'hold-and-activation', 'rule': 'hold gates everything and never pages; hold-incomplete notice'},
     'L9': {'name': 'product-reachability', 'rule': 'refused page at 300 s; 503 health-stale notice; timeout unknown'},
     'L10': {'name': 'evidence-presence', 'rule': 'no evaluation for 900 s notice; daily digest at 00:40Z'},
-    'L11': {'name': 'fixed-window-capacity', 'rule': 'explicit budgets; exhausted page; projected 30-day footprint breach notice, crossing within lookahead page; insufficient forecast unknown'},
+    'L11': {'name': 'fixed-window-capacity', 'rule': 'explicit budgets; exhausted page; projected 30-day footprint breach notice from >= 6 h net growth, crossing within lookahead page; insufficient forecast unknown'},
     'C1': {'name': 'control-occurrence', 'rule': 'NC1: failed within 900 s or no occurrence for 900 s: page'},
     'evidence': {'name': 'evidence-unavailable', 'rule': 'input unreadable/stale for 900 s: one notice per input'}}
+LONG_WINDOW_MIN, LONG_WINDOW_MAX = 6 * 3600, 25 * 3600
 DIGEST = hashlib.sha256(json.dumps(OBLIGATIONS, sort_keys=True).encode()).hexdigest()
 RESERVE_RE = re.compile(r'shared_reserve_unavailable|local_capacity_below_required_bound')
 MAINT_RESERVE_RE = re.compile(r'(daily archive|global compaction) allocation not admitted')
@@ -239,6 +240,22 @@ def l11(f, st, now):
     current = {'at': iso(now), 'identity': identity, 'allocated_bytes': c['allocated_bytes'], 'accepted_rows': accepted,
                'accepted_by_source': {row['did']: row['accepted_rows'] for row in rows},
                'free_bytes': [m['free_bytes'] for m in mounts]}
+    # The 30-day projection uses net growth over hours, not one 300 s sample: a single bursty
+    # sample extrapolated 30 days flapped 0.7 GiB median projections to 67 GiB notices.
+    # Hourly samples, reset on any non-comparable identity; maintenance generation is allowed
+    # to change inside the window so retirement is credited.
+    long_identity = hashlib.sha256(json.dumps({k: v for k, v in identity.items() if k != 'generation'},
+                                              sort_keys=True).encode()).hexdigest()
+    history = [x for x in st.get('capacity_history') or [] if isinstance(x, dict) and x.get('identity') == long_identity
+               and ts(x.get('at')) and 0 <= secs(now - ts(x['at'])) <= LONG_WINDOW_MAX]
+    if not history or secs(now - ts(history[-1]['at'])) >= 3600:
+        history.append({'at': iso(now), 'identity': long_identity, 'allocated_bytes': c['allocated_bytes']})
+    st['capacity_history'] = history
+    oldest = history[0]
+    long_elapsed = secs(now - ts(oldest['at']))
+    long_net = (c['allocated_bytes'] - oldest['allocated_bytes']) / long_elapsed if long_elapsed >= LONG_WINDOW_MIN else None
+    facts.update(projection_window_seconds=long_elapsed if long_net is not None else None,
+                 projection_net_allocated_bytes_per_second=long_net)
     prev = st.get('capacity_baseline')
     elapsed = secs(now - ts(prev['at'])) if prev and ts(prev.get('at')) else None
     if not prev or prev.get('identity') != identity or elapsed is None or elapsed <= 0 or elapsed > 900 or accepted < prev['accepted_rows'] or prev.get('accepted_by_source') is None or any(
@@ -265,15 +282,21 @@ def l11(f, st, now):
         facts['forecast_state'] = 'partial_conditional_estimate'
         return cond('projected-budget-breach', 'observed filesystem depletion projects reserve breach within lookahead; '
                     'store growth/30-day footprint unknown; other tenant consumption is not attributed to this store', P + '-capacity', 0, **facts)
-    if net <= 0:
+    # Urgency (crossing within lookahead) keeps the short rate so a real burst still pages.
+    crossing = (budget - c['allocated_bytes']) / net if net > 0 else None
+    urgent = (crossing is not None and crossing <= lookahead) or filesystem_urgent
+    if long_net is None and not urgent:
+        return res('unknown', reason='30-day projection needs %d s of comparable history (have %d s)' % (LONG_WINDOW_MIN, long_elapsed), **facts)
+    rate = long_net if long_net is not None else net
+    if rate <= 0 and not urgent:
         return res('unknown', reason='nonpositive net allocation: future ingestion/retirement footprint not identifiable', **facts)
-    projected = c['allocated_bytes'] + net * 30 * 86400
-    crossing = (budget - c['allocated_bytes']) / net
+    projected = c['allocated_bytes'] + max(rate, 0) * 30 * 86400
     facts.update(projected_30day_allocated_bytes=projected, seconds_to_store_budget=crossing, forecast_state='conditional_estimate', store_forecast_state='conditional_estimate')
-    urgent = crossing <= lookahead or filesystem_urgent
     if projected >= budget or urgent:
         return cond('projected-budget-breach', 'conditional fixed 30-day footprint %.1f GiB vs admitted %.1f GiB; store budget in %.1f hours; '
-                    'linear recent rate, future retirement uncredited; review ingestion/allocation/retirement' % (projected / GIB, budget / GIB, crossing / 3600),
+                    'linear rate over %.1f h, future retirement uncredited; review ingestion/allocation/retirement' % (
+                        projected / GIB, budget / GIB, (crossing if crossing is not None else float('inf')) / 3600,
+                        (long_elapsed if long_net is not None else elapsed) / 3600),
                     P + '-capacity', 0 if urgent else None, **facts)
     # Below-budget estimates are still conditional; ok resolves only this capacity observation, not fixed-window qualification.
     return res('ok', **facts)
@@ -349,7 +372,7 @@ def transition(st, oid, r, now):
         c['observation'] = 'present' if c['condition'] == v else v if v in ('held', 'not_activated', 'unknown') else 'absent'
     if v == 'ok':  # a fresh verified success resolves everything this obligation has open
         for k, c in mine.items():
-            out += [make_intent('resolve', oid, c['condition'], c['target'], 'recovered after a fresh success: ' + c['text'], c['notified'],
+            out += [make_intent('resolve', oid, c['condition'], c['target'], 'resolved by a fresh ok evaluation; the last breach reported was: ' + c['text'], c['notified'],
                                 now, c.get('ids'), c)] if c.get('notified') else []
             del conds[k]
         return out
@@ -576,7 +599,7 @@ def run(cfg, now=None, gather_fn=gather):
     results, intents = evaluate(f, st, now, cfg)
     if now.time() >= dtime(0, 40) and st.setdefault('digest_day', today) != today:  # a missing digest exposes a silent watcher
         st['digest_day'] = today
-        pre.append(make_intent('notice', 'L10', 'daily-digest', P + '-watch', 'daily digest %s: maintenance %s, window %s; open: %s' % (
+        pre.append(make_intent('notice', 'L10', 'daily-digest', P + '-watch', 'labelwatch-recent watcher digest %s (this watcher only; Constellation sends its own): maintenance %s, window %s; open here: %s' % (
             today, results['L3']['verdict'], results['L4']['verdict'], ', '.join(sorted(st.get('conditions', {}))) or 'none'), 'notice', now))
     intents, obs = pre + intents, sd / 'observations.jsonl'
     if obs.exists() and obs.stat().st_size > ROTATE_BYTES: os.replace(obs, sd / 'observations.jsonl.1')
