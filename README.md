@@ -125,7 +125,8 @@ observed by this epoch and is shown as "not observed", never as quiet. During
 the first 30 days the site and the estate overview state how many of the 30
 days have been observed. Collection interruptions inside the window are
 disclosed with a reason (`source_unavailable`, `ingest_paused`,
-`cursor_reset`, `maintenance`, `warmup`, `unknown`); no recorded gaps does not
+`cursor_reset`, `maintenance`, `warmup`, `unknown`, and
+`observed_then_lost` after a declared store loss); no recorded gaps does not
 prove complete coverage. Source-authored label dates are never observation
 times.
 
@@ -139,7 +140,11 @@ API, which serves it only while fresh.
 
 The previous epoch ended on 2026-10-06. Its pages, census, labeler and alert
 reports are withdrawn and are not served; accepted incident and qualification
-evidence is preserved separately.
+evidence is preserved separately. The pages take the previous epoch from the
+store's recorded predecessor and say it is unknown when none is recorded.
+
+What the observatory keeps, what it may lose, and what it never claims are set
+out in the [data contract](DATA-CONTRACT.md).
 
 ## CLI
 
