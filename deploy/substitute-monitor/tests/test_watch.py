@@ -809,6 +809,8 @@ def test_l11_projected_30day_breach_warns_outside_lookahead_and_urgent_pages():
     assert r['L11']['verdict'] == 'projected-budget-breach'
     assert r['L11']['facts']['seconds_to_store_budget'] > 86400
     assert ('L11','projected-budget-breach','trigger','notice') in kinds(i)
+    assert r['L11']['text'].startswith('conditional fixed 30-day footprint')
+    assert 'filesystem' not in r['L11']['text']
     now += timedelta(seconds=300)
     r, i = step(st, capacity_facts(now, allocated=allocated+300*100000, accepted=accepted+3, budget=2*GIB), now)
     assert ('L11','projected-budget-breach','trigger','page') in kinds(i)
@@ -870,6 +872,46 @@ def test_l11_filesystem_depletion_forecast_does_not_attribute_to_store():
     assert r['L11']['facts']['net_allocated_bytes_per_second']==1
     assert r['L11']['facts']['filesystem_forecasts'][0]['free_depletion_bytes_per_second']==GIB/300
     assert r['L11']['verdict']=='projected-budget-breach'
+
+
+@pytest.mark.parametrize('growth', [300, 0, -300])
+def test_l11_reserve_page_names_mount_threshold_and_short_sample(growth):
+    # Shared-filesystem depletion can page even when the store forecast is small
+    # or unknown. The text must explain that independent trigger to the operator.
+    st = {}
+    first = capacity_facts(budget=32*GIB)
+    first['reserves'][0].update(reserve_bytes=32*GIB, free_bytes=77534203904+151121920)
+    step(st, first)
+    now = NOW + timedelta(seconds=300)
+    second = capacity_facts(now, allocated=GIB+growth, budget=32*GIB)
+    second['reserves'][0].update(reserve_bytes=32*GIB, free_bytes=77534203904)
+    r, intents = step(st, second, now)
+    v = r['L11']
+    assert v['verdict'] == 'projected-budget-breach'
+    assert ('L11', 'projected-budget-breach', 'trigger', 'page') in kinds(intents)
+    assert next(x for x in intents if x['obligation'] == 'L11')['text'] == v['text']
+    for expected in ('filesystem /', '32.0 GiB reserve in 23.8 hours',
+                     '24.0 h lookahead', '300 s sample', 'other tenants'):
+        assert expected in v['text']
+    if growth > 0:
+        assert '30-day footprint' in v['text']
+    else:
+        assert 'store growth/30-day footprint unknown' in v['text']
+
+
+@pytest.mark.parametrize('second_urgent', [False, True])
+def test_l11_reserve_page_lists_only_mounts_crossing_within_lookahead(second_urgent):
+    st = {}
+    first = capacity_facts()
+    first['reserves'].append(dict(first['reserves'][0], mount='/data', device=2))
+    step(st, first)
+    now = NOW + timedelta(seconds=300)
+    second = capacity_facts(now, allocated=GIB+300)
+    second['reserves'][0]['free_bytes'] = 28*GIB
+    second['reserves'].append(dict(first['reserves'][1], free_bytes=28*GIB if second_urgent else 29*GIB-300))
+    r, _ = step(st, second, now)
+    assert 'filesystem /:' in r['L11']['text']
+    assert ('filesystem /data:' in r['L11']['text']) == second_urgent
 
 def test_l11_gather_measures_allocated_and_wal_without_db_access(monkeypatch,tmp_path):
     (tmp_path/'state.sqlite').write_bytes(b'x'*4096)

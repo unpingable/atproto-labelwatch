@@ -282,6 +282,11 @@ assumes repetition of the recent rate and gives no credit for future unobserved 
 **not measured full-window capacity**, nor proof that the deployment can safely serve 30 days.
 Time to store budget and each same-mount reserve are conditional estimates; filesystem free-space
 depletion includes other tenants and is not attributed to this store.
+When a filesystem forecast causes a page, the notification leads with each affected mount,
+its configured reserve, time to that reserve, lookahead and short sample duration. It then gives
+the separate store forecast (or says it is unknown). A small store forecast does not rule out
+shared-filesystem depletion; inspect the named mount and all of its tenants. Forecast thresholds,
+notice/page timing and resolution rules are unchanged by this message formatting.
 
 - `projected-budget-breach`: notice when the 30-day estimate reaches the admitted store budget, even
   when crossing is beyond one day; page when estimated store/reserve crossing is within lookahead.

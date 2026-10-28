@@ -278,10 +278,20 @@ def l11(f, st, now):
     facts['filesystem_forecasts'] = forecasts
     facts['filesystem_forecast_state'] = 'conditional_estimate' if any(x['forecast_state'] == 'conditional_estimate' for x in forecasts) else 'unknown'
     filesystem_urgent = any(x['seconds_to_reserve'] is not None and x['seconds_to_reserve'] <= lookahead for x in forecasts)
+    filesystem_text = ''
+    if filesystem_urgent:
+        filesystem_text = '; '.join(
+            'filesystem %s: conditional depletion reaches %.1f GiB reserve in %.1f hours '
+            '(%.1f h lookahead, %d s sample)' % (
+                x['mount'], m['reserve_bytes'] / GIB, x['seconds_to_reserve'] / 3600,
+                lookahead / 3600, elapsed)
+            for m, x in zip(mounts, forecasts)
+            if x['seconds_to_reserve'] is not None and x['seconds_to_reserve'] <= lookahead
+        ) + '; shared filesystem includes other tenants; depletion is not attributed to this store; '
     if net <= 0 and filesystem_urgent:
         facts['forecast_state'] = 'partial_conditional_estimate'
-        return cond('projected-budget-breach', 'observed filesystem depletion projects reserve breach within lookahead; '
-                    'store growth/30-day footprint unknown; other tenant consumption is not attributed to this store', P + '-capacity', 0, **facts)
+        return cond('projected-budget-breach', filesystem_text + 'store growth/30-day footprint unknown',
+                    P + '-capacity', 0, **facts)
     # Urgency (crossing within lookahead) keeps the short rate so a real burst still pages.
     crossing = (budget - c['allocated_bytes']) / net if net > 0 else None
     urgent = (crossing is not None and crossing <= lookahead) or filesystem_urgent
@@ -293,7 +303,7 @@ def l11(f, st, now):
     projected = c['allocated_bytes'] + max(rate, 0) * 30 * 86400
     facts.update(projected_30day_allocated_bytes=projected, seconds_to_store_budget=crossing, forecast_state='conditional_estimate', store_forecast_state='conditional_estimate')
     if projected >= budget or urgent:
-        return cond('projected-budget-breach', 'conditional fixed 30-day footprint %.1f GiB vs admitted %.1f GiB; store budget in %.1f hours; '
+        return cond('projected-budget-breach', filesystem_text + 'conditional fixed 30-day footprint %.1f GiB vs admitted %.1f GiB; store budget in %.1f hours; '
                     'linear rate over %.1f h, future retirement uncredited; review ingestion/allocation/retirement' % (
                         projected / GIB, budget / GIB, (crossing if crossing is not None else float('inf')) / 3600,
                         (long_elapsed if long_net is not None else elapsed) / 3600),
