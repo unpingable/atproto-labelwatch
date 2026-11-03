@@ -1,0 +1,13 @@
+# Example only; not installed or enabled. Persistent=true runs a missed
+# 00:05 maintenance at the next boot; the service is idempotent per UTC day.
+[Unit]
+Description=Labelwatch recent observatory: daily maintenance 00:05 UTC
+
+[Timer]
+OnCalendar=*-*-* 00:05:00 UTC
+AccuracySec=1s
+Persistent=true
+Unit=labelwatch-recent-maintain.service
+
+[Install]
+WantedBy=timers.target

@@ -19,6 +19,21 @@ inspectable receipts about governance infrastructure behavior.
 an account or its posts without signing in. The live site links back to this
 repository, its methodology, privacy boundary, and operator contact.
 
+## Current public service
+
+The deployed rolling observatory records public label observations in a fixed
+30-day window. Account labels appear before post labels, with source attribution
+and explicit coverage. These are observations, not current label state.
+
+**Developers:** [API and data guide](https://labelwatch.neutral.zone/api) ·
+[Account/export reference](docs/PUBLIC-API.md) ·
+[Aggregate Facts API](https://api.neutral.zone/atproto/) ·
+[OpenAPI](https://api.neutral.zone/atproto/openapi.json).
+The aggregate API does not publish account data or operational diagnostics.
+
+The older analysis/CLI capabilities described below are repository functionality,
+not a claim that every legacy report or route is served by the current website.
+
 Operational supervisors can discover the neutral concern manifest at
 `.ops/concerns.toml`; `labelwatch ops-status` renders the corresponding
 machine-readable or human view. See
@@ -121,21 +136,40 @@ Three systemd services, one SQLite database (WAL mode):
 └──────────────────┘
 ```
 
-### Current operation (2026-10-03)
+### Current operation: rolling observatory (clean-start epoch)
 
-Generation 2 writes to root; a verified local v3 catalog covers cold history
-and the full archive plus deltas are retained on home NFS. Live floor is
-`2026-08-15T00:00:00Z`; history start is
-`2026-02-24T20:09:49.538634Z`. Bridge exit, Phase 2 and one real
-archive/catalog-extension/trim cycle are accepted. The weekly maintenance
-procedure is [retention-cycle](docs/retention.md).
+**Status (2026-10-08): held.** The public site returns the hold page (HTTP 503)
+while the new observation epoch is prepared. Keep this line until the epoch is
+activated; the rest of this section describes the service as it runs then.
 
-Collector, API, discovery and watcher remain active. Scheduled derive/report
-are disabled (`LABELWATCH_DERIVE_DISABLE=1`); climate/registry answers refuse
-when their cold coverage is incomplete. This diagram describes implemented
-capabilities, not permission to enable every consumer. `report --labeler`
-returns a verified cold/live lifetime total or an explicit refusal, including
-ambiguous quarantined events for that labeler.
+Labelwatch is a rolling observatory. It keeps the most recent 30 days of
+public label observations; older observations expire and are not served.
+The current epoch begins at its recorded acquisition time (the local
+acceptance clock, `q:recent_acquisition.started_at`); anything earlier was not
+observed by this epoch and is shown as "not observed", never as quiet. During
+the first 30 days the site and the estate overview state how many of the 30
+days have been observed. Collection interruptions inside the window are
+disclosed with a reason (`source_unavailable`, `ingest_paused`,
+`cursor_reset`, `maintenance`, `warmup`, `unknown`, and
+`observed_then_lost` after a declared store loss); no recorded gaps does not
+prove complete coverage. Source-authored label dates are never observation
+times.
+
+Labelwatch records observed application and removal events. It does not know
+whether a label is currently active: current label state is unknown. Account
+views and bounded paginated exports (`/account`, `/exports`, `/download`) cover
+only the window; requests outside it are refused explicitly. An aggregate
+estate overview (`labelwatch.recent-overview.v1`, no subject identities) is
+published by `tools/segmented_qualification/recent_publish.py` for the facts
+API, which serves it only while fresh.
+
+The previous epoch ended on 2026-10-06. Its pages, census, labeler and alert
+reports are withdrawn and are not served; accepted incident and qualification
+evidence is preserved separately. The pages take the previous epoch from the
+store's recorded predecessor and say it is unknown when none is recorded.
+
+What the observatory keeps, what it may lose, and what it never claims are set
+out in the [data contract](DATA-CONTRACT.md).
 
 ## CLI
 

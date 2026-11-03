@@ -90,3 +90,19 @@ def test_host_apply_memory_gate_refuses_before_launch(tmp_path, monkeypatch, ava
             cycle.admit_apply_memory()
         assert not (tmp_path / 'checkpoint.json').exists()
     assert len(calls) == 1 and calls[0][0] == '/deployed/python'
+
+
+@pytest.mark.parametrize('resume', [False, True])
+def test_superseded_record_refuses_fresh_and_resumed_occurrences(tmp_path, monkeypatch, resume):
+    occurrence = tmp_path / '20261005T060809Z-98c7308f'
+    occurrence.mkdir()
+    (tmp_path / 'ACTIVE.json').write_text(json.dumps({'occurrence': str(occurrence), 'host': 'root@existing'}))
+    (tmp_path / 'SUPERSEDED.json').write_text(json.dumps({'superseded_by': 'epoch-2'}))
+    config = tmp_path / 'config.json'
+    config.write_text(json.dumps({'occurrence_root': str(tmp_path), 'host': 'root@existing', 'live_days': 40, 'max_delta_days': 7}))
+    argv = ['cycle', '--config', str(config)] + (['--resume', str(occurrence)] if resume else [])
+    monkeypatch.setattr(module.sys, 'argv', argv)
+    monkeypatch.setattr(module.Cycle, 'execute', lambda self: pytest.fail('occurrence executed'))
+    with pytest.raises(module.TrimRefused, match='superseded'):
+        module.main()
+    assert json.loads((tmp_path / 'ACTIVE.json').read_text())['occurrence'] == str(occurrence)

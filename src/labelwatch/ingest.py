@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional
 from uuid import uuid4
 
-from . import db, retention
+from . import db, retention, custody
 from .config import Config
 from .db import parse_target_did
 from .utils import format_ts, hash_sha256, now_utc, sqlite_safe_text, stable_json
@@ -59,7 +59,7 @@ class LabelEvent:
     event_hash: str
 
 
-def normalize_label(raw: Dict) -> LabelEvent:
+def normalize_label(raw: Dict, strict_identity: bool = False) -> LabelEvent:
     labeler_did = raw.get("labeler_did") or raw.get("src")
     if not labeler_did:
         raise ValueError("labeler_did or src required")
@@ -79,7 +79,7 @@ def normalize_label(raw: Dict) -> LabelEvent:
     sig = sqlite_safe_text(sig)
     if sig_raw is not None and not isinstance(sig_raw, (str, dict, type(None))):
         log.info("Coerced sig type=%s for %s: %.80r", type(sig_raw).__name__, labeler_did, sig_raw)
-    ts = raw.get("ts") or format_ts(now_utc())
+    ts = (raw.get("cts") or raw.get("ts")) if strict_identity else (raw.get("ts") or format_ts(now_utc()))
     canonical = {
         "labeler_did": labeler_did,
         "src": src,
@@ -91,7 +91,7 @@ def normalize_label(raw: Dict) -> LabelEvent:
         "sig": sig,
         "ts": ts,
     }
-    event_hash = hash_sha256(stable_json(canonical))
+    event_hash = custody.canonical_identity(raw) if strict_identity else hash_sha256(stable_json(canonical))
     return LabelEvent(
         labeler_did=labeler_did,
         src=src,
@@ -188,6 +188,8 @@ def store_label_events(conn, rows: List[tuple], config: Optional[Config] = None)
     stored string, the order the trim and the catalog ownership rule use.
     Returns the number of rows inserted into label_events.
     """
+    if custody.enabled(conn):
+        raise custody.Refused("direct legacy store cannot bypass custody.accept")
     floor = retention.live_floor(conn)
     if floor is None or not rows or below_floor_policy(config) == "insert":
         return db.insert_label_events(conn, rows)
@@ -222,7 +224,7 @@ def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int =
                 break
             rows = []
             for raw in labels:
-                event = normalize_label(raw)
+                event = normalize_label(raw, strict_identity=custody.enabled(conn))
                 rows.append(
                     (
                         event.labeler_did,
@@ -239,11 +241,14 @@ def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int =
                     )
                 )
                 seen_dids.add(event.labeler_did)
-                db.upsert_labeler(conn, event.labeler_did, event.ts)
-                # Track observed src DID
-                src_did = event.src or event.labeler_did
-                _track_observed_src(conn, src_did, event.ts, evidence_seen)
-            total += store_label_events(conn, rows, config)
+                if not custody.enabled(conn):
+                    db.upsert_labeler(conn, event.labeler_did, event.ts)
+                    src_did = event.src or event.labeler_did
+                    _track_observed_src(conn, src_did, event.ts, evidence_seen)
+            if custody.enabled(conn):
+                total += custody.accept(conn, rows, source, payload.get("cursor"))["inserted"]
+            else:
+                total += store_label_events(conn, rows, config)
             cursor = payload.get("cursor")
             # Persist cursor only after events are committed
             if cursor:
@@ -252,6 +257,7 @@ def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int =
             if not cursor:
                 break
     except Exception as exc:
+        conn.rollback()
         latency_ms = int((time.monotonic() - t0) * 1000)
         outcome, http_status = _classify_exception(exc)
         error_type = type(exc).__name__
@@ -281,12 +287,23 @@ def ingest_from_service(conn, config: Config, limit: int = 100, max_pages: int =
     return total
 
 
-def ingest_from_iter(conn, items: Iterable[Dict]) -> int:
+def ingest_from_iter(conn, items: Iterable[Dict], *, mode: str = "ingest", expected_checkpoint=None) -> int:
+    if custody.enabled(conn):
+        rows = []
+        for raw in items:
+            e = normalize_label(raw, strict_identity=True)
+            rows.append((e.labeler_did,e.src,e.uri,e.cid,e.val,e.neg,e.exp,e.sig,e.ts,e.event_hash,parse_target_did(e.uri)))
+        if mode != "ingest":
+            custody.replay(conn, rows, mode, expected_checkpoint)
+            return 0
+        return custody.accept(conn, rows, "iterable", None)["inserted"]
+    if mode != "ingest":
+        raise custody.Refused("explicit replay requires enrolled custody lineage")
     rows = []
     total = 0
     evidence_seen: set = set()
     for raw in items:
-        event = normalize_label(raw)
+        event = normalize_label(raw, strict_identity=custody.enabled(conn))
         rows.append(
             (
                 event.labeler_did,
@@ -369,16 +386,20 @@ def ingest_multi(conn, config: Config, timeout: int | None = None,
                     break
                 event_rows = []
                 for raw in labels:
-                    event = normalize_label(raw)
+                    event = normalize_label(raw, strict_identity=custody.enabled(conn))
                     event_rows.append((
                         event.labeler_did, event.src, event.uri, event.cid,
                         event.val, event.neg, event.exp, event.sig,
                         event.ts, event.event_hash, parse_target_did(event.uri),
                     ))
-                    db.upsert_labeler(conn, event.labeler_did, event.ts)
-                    src_did = event.src or event.labeler_did
-                    _track_observed_src(conn, src_did, event.ts, evidence_seen)
-                total += store_label_events(conn, event_rows, config)
+                    if not custody.enabled(conn):
+                        db.upsert_labeler(conn, event.labeler_did, event.ts)
+                        src_did = event.src or event.labeler_did
+                        _track_observed_src(conn, src_did, event.ts, evidence_seen)
+                if custody.enabled(conn):
+                    total += custody.accept(conn, event_rows, cursor_key, payload.get("cursor"))["inserted"]
+                else:
+                    total += store_label_events(conn, event_rows, config)
                 cursor = payload.get("cursor")
                 if cursor:
                     db.set_cursor(conn, cursor_key, cursor)
@@ -402,6 +423,7 @@ def ingest_multi(conn, config: Config, timeout: int | None = None,
             db.set_meta(conn, 'multi_ingest:last_attempted_did', did)
             conn.commit()
         except Exception as exc:
+            conn.rollback()
             latency_ms = int((time.monotonic() - t0) * 1000)
             outcome, http_status = _classify_exception(exc)
             error_type = type(exc).__name__

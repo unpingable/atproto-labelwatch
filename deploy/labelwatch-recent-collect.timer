@@ -1,0 +1,14 @@
+# Example only; not installed or enabled. Missed rounds are not replayed:
+# source cursors carry continuity, not the timer.
+[Unit]
+Description=Labelwatch recent observatory: collection every 2 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/2:00 UTC
+AccuracySec=5s
+RandomizedDelaySec=15
+Persistent=false
+Unit=labelwatch-recent-collect.service
+
+[Install]
+WantedBy=timers.target

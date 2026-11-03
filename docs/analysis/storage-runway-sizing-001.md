@@ -1,3 +1,9 @@
+> Historical sizing analysis; not a current deployment or capacity receipt.
+> September/October Parquet export/archive and cold-catalog work superseded
+> the statements below that Labelwatch has no cold exports or retention.
+> Preserve the original measurements and hypotheses as dated evidence.
+> Current comparison: [October 5 architecture spike](../../LABELWATCH-STORAGE-ARCHITECTURE.md).
+
 # Storage runway sizing — Labelwatch, 2026-06-09
 
 > **Phase −1 research spike.** This note characterises labelwatch's storage footprint and growth, identifies retention candidates, and proposes a minimum-runway floor. It does NOT commit to a Phase 0 implementation (cold-path Parquet/DuckDB, index pruning, or any other structural change). The sizing note exists so that the Phase 0 decision is informed, not so that the Phase 0 build is queued.

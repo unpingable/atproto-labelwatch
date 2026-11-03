@@ -14,6 +14,7 @@ dependencies = [
     "tomli>=2; python_version < '3.11'",
     "websockets>=10",
     "atproto>=0.0.50",
+    "httpx>=0.27,<1",
     "markdown>=3",
 ]
 
@@ -22,6 +23,7 @@ labelwatch = "labelwatch.cli:main"
 
 [project.optional-dependencies]
 export = []
+recent = ["duckdb==1.4.3", "pyarrow==22.0.0", "httpx==0.28.1"]
 
 test = ["pytest>=7", "pytest-asyncio>=0.21", "anyio>=4"]
 
@@ -30,4 +32,4 @@ labelwatch = ["_ops/*.toml", "_instruments/*.css", "_instruments/*.json", "_inst
 
 [tool.pytest.ini_options]
 addopts = "-q"
-pythonpath = ["src"]
+pythonpath = ["src", "."]

@@ -1,0 +1,12 @@
+# NEGATIVE CONTROL ONLY (README.md). Every 10 minutes; the watcher's C1 window is 15 minutes.
+[Unit]
+Description=Labelwatch recent watch: negative-control occurrence every 10 min
+
+[Timer]
+OnCalendar=*-*-* *:03/10:00 UTC
+AccuracySec=5s
+Persistent=false
+Unit=labelwatch-recent-control.service
+
+[Install]
+WantedBy=timers.target

@@ -1,5 +1,27 @@
 # labelwatch — Public Surfaces
 
+## Approved successor scope (October 6, off-production)
+
+Existing issue #7 implements the bounded recent-observation contract in
+`LABELWATCH-SEGMENTED-DECISION.md`. Its account view reports recently observed
+label applications/removals, with summary, timeline, filters, attribution and
+coverage gaps. This is receiving-end observation, not behavioral prediction.
+Current effective state remains unknown unless separately qualified; an absent
+removal is not evidence that a label is still active.
+
+The explicit successor preview offers `/`, `/account` and `/exports` only on
+loopback. Export snapshots contain a public-field allowlist, coverage, schema,
+content identity and fixed expiry; pages cannot keep storage generations alive.
+Internal probes, quarantine, operational evidence and arbitrary tables are not
+export surfaces. Dense requests refuse explicitly and request a shorter interval;
+they never silently truncate. The initial30-day window is a capacity candidate,
+not a deployed guarantee or an accepted production resource envelope.
+
+Production remains in safe hold with public503 responses. The inventory below
+describes the earlier service; no successor surface is selected in production.
+Migration must explicitly reconcile named existing consumers with windowed
+semantics, without silently representing a recent-window answer as lifetime data.
+
 **Status**: v0 starter.
 **Last updated**: 2026-09-10
 

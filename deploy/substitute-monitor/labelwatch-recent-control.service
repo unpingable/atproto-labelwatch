@@ -1,0 +1,20 @@
+# NEGATIVE CONTROL ONLY (README.md, NC1-NC5). A scheduled occurrence that always fails, so the
+# watcher's C1 obligation ("control succeeded within 15 min") can be shown to page, go overdue,
+# hold silently, go unknown and resolve. It never touches /etc/labelwatch-operator-safe-hold or
+# /etc/labelwatch-recent-qualified-activation; it has its own markers. Remove after qualification.
+[Unit]
+Description=Labelwatch recent watch: negative-control scheduled occurrence (qualification only)
+ConditionPathExists=!/etc/labelwatch-recent-control-hold
+ConditionPathExists=/etc/labelwatch-recent-control-activation
+
+[Service]
+Type=oneshot
+ExecStart=/bin/false
+DynamicUser=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+TimeoutStartSec=30
