@@ -219,10 +219,11 @@ def _checkpoint_pending(root):
 
 @contextlib.contextmanager
 def lock(root, name='writer.lock', shared=False, timeout=None):
+    """Take a store lock, refusing a missing state file before creating the lock."""
     started = time.monotonic()
-    if name == 'reader.lock' and not (Path(root) / 'state.sqlite').exists():
-        # A reader must never leave a lock file in a missing or emptied store
-        # directory: init and the admitted root would then see a foreign entry.
+    if not (Path(root) / 'state.sqlite').exists():
+        # Every caller locks an existing store, including daily maintenance
+        # and archives. No initializer uses this helper before state creation.
         raise FileNotFoundError('store state unavailable: ' + str(Path(root) / 'state.sqlite'))
     if name == 'reader.lock' and shared and _checkpoint_pending(root):
         until = started + min(CHECKPOINT_READER_WAIT, CHECKPOINT_READER_WAIT if timeout is None else timeout)
@@ -245,8 +246,12 @@ def lock(root, name='writer.lock', shared=False, timeout=None):
         yield
 
 
-def connect(path, readonly=False):
-    c = sqlite3.connect(f'file:{path}?mode=ro' if readonly else str(path), uri=readonly, timeout=2)
+def connect(path, readonly=False, *, create=False):
+    # State creation belongs to Store.create. mode=rw also refuses a state
+    # removed after lock admission instead of manufacturing a schema-less DB.
+    existing = readonly or (Path(path).name == 'state.sqlite' and not create)
+    target = Path(path).absolute().as_uri() + ('?mode=ro' if readonly else '?mode=rw') if existing else str(path)
+    c = sqlite3.connect(target, uri=existing, timeout=2)
     c.row_factory = sqlite3.Row
     if not readonly:
         # Required by opt-in bounded-state counters when existing writers use
@@ -320,7 +325,7 @@ class Store:
     @classmethod
     def create(cls, root, period='2026-09-28', floor='2026-08-15T00:00:00Z'):
         root = owned(root); policy = canonical(reserve_policy(root)); root.mkdir()
-        c = connect(root / 'state.sqlite'); db.init_db(c)
+        c = connect(root / 'state.sqlite', create=True); db.init_db(c)
         c.executescript('''
         CREATE TABLE q_segments(identity TEXT PRIMARY KEY, status TEXT NOT NULL, schema_generation INTEGER NOT NULL);
         CREATE UNIQUE INDEX q_one_active ON q_segments(status) WHERE status='ACTIVE';

@@ -125,6 +125,35 @@ def test_recent_complete_discovery_remains_current_during_next_scan(store):
     run(store, clock, transport)
     assert status_snapshot(store, clock.now())['discovery']['current'] is False
 
+
+def test_seven_page_two_minute_scan_truthfully_exceeds_currentness_bound(store):
+    """Replay the observed 612-row shape without changing the 600-second policy."""
+    from recent_publish import status_snapshot
+
+    class Listing:
+        def request(self, operation, params, **limits):
+            if operation == 'labels':
+                return b'{"labels": []}'
+            assert operation == 'discover' and params['limit'] == 100
+            lo = int(params['cursor'] or 0)
+            hi = min(lo + 100, 612)
+            return json.dumps({'sources': [{'did': f'did:plc:listing{n}', 'endpoint': None} for n in range(lo, hi)],
+                               'cursor': str(hi) if hi < 612 else None}).encode()
+
+    clock = Clock()
+    store.record_discovery_outcome({'status': 'accepted', 'terminal': True}, clock.now().isoformat())
+    observations, pages = [], []
+    for _ in range(7):
+        clock.t += 120
+        result = run(store, clock, Listing())
+        pages.append(result['discovery'])
+        observations.append(status_snapshot(store, clock.now())['discovery']['current'])
+    assert [p['discovered'] for p in pages] == [100, 100, 100, 100, 100, 100, 12]
+    assert all(p['status'] == 'accepted' for p in pages)
+    assert observations == [True, True, True, True, True, False, True]
+    assert len(store.collector_sources(2048)) == 612
+    assert store.collector_discovery_status()['last_complete_at'] == '2026-10-08T12:14:00.000000Z'
+
 def test_existing_overflow_and_gap_history_are_preserved(store):
     ready(store, A)
     clock = Clock()

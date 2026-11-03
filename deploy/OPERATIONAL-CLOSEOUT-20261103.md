@@ -17,7 +17,10 @@ record, preserves its continuation and roster, and leaves collection gaps to act
 Missing, failed, stale or incomplete discovery keeps aggregate coverage unknown. The existing watcher gains
 explicit gap-overflow and sustained-discovery-refusal observations through its existing Slack route.
 Current discovery can include a new scan in progress when its last successful complete scan is still within
-600 seconds and the latest attempt succeeded; normal pagination must not make coverage oscillate.
+600 seconds and the latest attempt succeeded. This avoids treating every nonterminal page as immediately unknown.
+Actual subsequent cycles of 612 rows across seven pages took about 14 minutes, so completion age still exceeds
+the unchanged 600-second bound before the next terminal page. Those accepted intermediate pages truthfully leave
+discovery not current. No discovery bound or cadence change is included here.
 
 The 306 unstarted sources in this observation all had a current endpoint failure, a saturated bounded failure
 counter and zero bootstrap probes. No pending bootstrap source had a successful page newer than its recorded

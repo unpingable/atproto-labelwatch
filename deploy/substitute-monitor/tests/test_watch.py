@@ -172,7 +172,7 @@ def test_l2_condition_skip_held_timer_silent_not_scheduled_unreadable_unknown():
     f['units']['labelwatch-recent-collect.timer']['LastTriggerUSec'] = sysd(ago(NOW, minutes=11))
     assert step({}, f)[0]['L2']['verdict'] == 'collection-not-scheduled'
     f['units']['labelwatch-recent-collect.timer']['LastTriggerUSec'] = 'n/a'
-    assert step({}, f)[0]['L2']['verdict'] == 'collection-not-scheduled'
+    assert step({}, f)[0]['L2']['verdict'] == 'unknown'  # missing activation/due cannot establish overdue scheduling
     f['units']['labelwatch-recent-collect.service'] = None
     assert step({}, f)[0]['L2']['verdict'] == 'unknown'
 

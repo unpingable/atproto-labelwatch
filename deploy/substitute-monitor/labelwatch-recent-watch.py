@@ -15,7 +15,7 @@ STATUS_SCHEMA, OVERVIEW_SCHEMA = 'labelwatch.recent-status.v1', 'labelwatch.rece
 UNITS = ['collect.service', 'collect.timer', 'maintain.service', 'maintain.timer', 'overview.service', 'product.service']
 SERVICE_PROPS = ('LoadState,ActiveState,Result,ExecMainStatus,ExecMainStartTimestamp,ExecMainExitTimestamp,InvocationID,'
                  'ConditionResult,ConditionTimestamp,NRestarts')
-TIMER_PROPS = 'LoadState,ActiveState,UnitFileState,LastTriggerUSec,NextElapseUSecRealtime'
+TIMER_PROPS = 'LoadState,ActiveState,ActiveEnterTimestamp,UnitFileState,LastTriggerUSec,NextElapseUSecRealtime'
 DEFAULTS = {'WATCH_HOLD_MARKER': '/etc/labelwatch-operator-safe-hold', 'WATCH_RECENT_ENV': '/etc/labelwatch-recent.env',
             'WATCH_ACTIVATION_MARKER': '/etc/labelwatch-recent-qualified-activation', 'WATCH_CONTROL_UNIT': 'labelwatch-recent-control',
             'WATCH_CONTROL_HOLD': '/etc/labelwatch-recent-control-hold', 'WATCH_HEALTH_URL': 'http://127.0.0.1:8431/health',
@@ -25,7 +25,7 @@ DEFAULTS = {'WATCH_HOLD_MARKER': '/etc/labelwatch-operator-safe-hold', 'WATCH_RE
 # The enrolled obligation definitions (thresholds and response classes); the digest rides on every observation and intent.
 OBLIGATIONS = {'version': 1,
     'L1': {'name': 'collection-progress', 'rule': 'stalled >900 s notice, page at 3600 s; STATUS >600 s unknown; 00:00-00:35 held'},
-    'L2': {'name': 'collection-unit-result', 'rule': 'failing on 2 observed invocations or timer >600 s: notice'},
+    'L2': {'name': 'collection-unit-result', 'rule': 'failing on 2 observed invocations or timer >600 s: notice; initial active timer with valid due skips at most 600 s from activation; only actual fresh trigger resolves'},
     'L3': {'name': 'maintenance-by-deadline', 'rule': 'due 00:05, judged 00:35: failed/overdue page, running-late notice'},
     'L4': {'name': 'window-advanced', 'rule': 'settle 120 s; not-advanced notice day 1 page day 2; expiry-stalled page'},
     'L5': {'name': 'reserve-admission', 'rule': 'reserve-refused page; free < reserve + 2 GiB or inodes < floor notice'},
@@ -100,9 +100,29 @@ def l2(f, st, now):
     if len(occ) >= 2 and all(o['result'] != 'success' for o in occ[-2:]):
         return cond('collection-failing', 'collection rounds failing (exit %s on 2 consecutive observed invocations): %s'
                     % (occ[-1]['exit_status'], (s.get('round') or {}).get('reason')), P + '-collect', ids=ids, occurrences=occ)
-    if secs(now - (ts(t.get('LastTriggerUSec')) or datetime.min.replace(tzinfo=UTC))) > 600:
-        return cond('collection-not-scheduled', 'collection timer has not fired since %s' % t.get('LastTriggerUSec'), P + '-collect', ids=ids)
-    return res('ok', occurrences=occ, last_trigger=t.get('LastTriggerUSec'))
+    last = ts(t.get('LastTriggerUSec'))
+    if last is not None:
+        if last > now: return res('unknown', reason='collection timer trigger is in the future')
+        if secs(now - last) <= 600:
+            return res('ok', occurrences=occ, last_trigger=t.get('LastTriggerUSec'))
+    else:
+        if t.get('LastTriggerUSec') not in (None, '', 'n/a', '0'):
+            return res('unknown', reason='collection timer trigger timestamp unreadable')
+        if t.get('ActiveState') == 'active':
+            entered, due = ts(t.get('ActiveEnterTimestamp')), ts(t.get('NextElapseUSecRealtime'))
+            if entered is None or entered > now:
+                return res('unknown', reason='collection timer active-entry timestamp unavailable or in the future')
+            if secs(now - entered) <= 600:
+                if due is None or not entered <= due <= entered + timedelta(seconds=600):
+                    return res('unknown', reason='collection timer initial due timestamp unavailable or outside startup bound')
+                # A restart is not observed scheduling success. skip preserves
+                # open incidents, and the active-entry deadline never slides.
+                return res('skip', mode='awaiting-first-trigger', active_since=t.get('ActiveEnterTimestamp'),
+                           next_due=t.get('NextElapseUSecRealtime'), deadline=iso(entered + timedelta(seconds=600)))
+        elif t.get('ActiveState') not in ('inactive', 'failed', 'deactivating'):
+            return res('unknown', reason='collection timer active state unavailable')
+    return cond('collection-not-scheduled', 'collection timer has not fired since %s (active since %s)'
+                % (t.get('LastTriggerUSec'), t.get('ActiveEnterTimestamp')), P + '-collect', ids=ids)
 def journal_reason(f):
     lines = [x.strip() for x in (f.get('journal') or '').splitlines() if x.strip()]
     hits = [x for x in lines if re.search(r'not admitted|Error|refus|Traceback|failed', x)]
@@ -402,7 +422,7 @@ def transition(st, oid, r, now):
     conds, v, out = st.setdefault('conditions', {}), r['verdict'], []
     mine = {k: c for k, c in conds.items() if c['obligation'] == oid}
     for c in mine.values():
-        c['observation'] = 'present' if c['condition'] == v else v if v in ('held', 'not_activated', 'unknown') else 'absent'
+        c['observation'] = 'present' if c['condition'] == v else v if v in ('held', 'not_activated', 'unknown', 'skip') else 'absent'
     if v == 'ok':  # a fresh verified success resolves everything this obligation has open
         for k, c in mine.items():
             out += [make_intent('resolve', oid, c['condition'], c['target'], 'resolved by a fresh ok evaluation; the last breach reported was: ' + c['text'], c['notified'],

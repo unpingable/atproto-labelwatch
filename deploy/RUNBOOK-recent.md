@@ -60,6 +60,10 @@ The hold marker is shared with the legacy units; removing it never re-enables th
   successful latest attempt and completed scan within 600 seconds. A new scan may be in progress while the previous
   completed scan remains current. Missing, failed or stale discovery, or no recent completed scan, makes aggregate
   coverage unknown: collection of the existing roster does not establish observation of newly discoverable sources.
+  Observed November 3 cycles contained 612 rows across seven accepted pages and took about 14 minutes between
+  completions at the ordinary two-minute cadence. Under the unchanged 600-second rule, intermediate accepted pages
+  after that bound are conservatively not current until the next complete scan. This is an operating limitation;
+  changing discovery cadence or its currentness claim requires a separate decision and supporting evidence.
 - **Acceptance floor**: labels earlier than max(epoch start − 48 h, accepted_at − 48 h) are counted (`pre_epoch_skipped`,
   `late_skipped`), never stored; labels more than 300 s in the future are `future_skipped`.
 - **Per-source failures** stay per-source (`unavailable`, `refused`, `order_unverified`); only lost attempts, maintenance
@@ -115,8 +119,11 @@ The store is a 30-day rolling window with a fresh epoch; it is not backed up and
 from a corrupt or lost store = `recent_init.py` into a new, empty root (new acquisition generation; coverage restarts and
 the public pages say so for 30 days). Init reads the last `$LABELWATCH_RECENT_PUBDIR/overview.json` and, if it names a generation, records that epoch as
 observed, then lost; otherwise continuity is reported as unknown. Override with `--predecessor-receipt <old init receipt,
-overview.json or STATUS.json>`, `--continuity-break` or `--published-overview PATH`; pass `--first-install` only for a genuine first installation. Readers refuse a store directory without `state.sqlite` and leave nothing in it; a
-`reader.lock` left there by an older release must be removed before re-init. Process interruption and host reboot preserve epoch, cursors and gaps (qualified).
+overview.json or STATUS.json>`, `--continuity-break` or `--published-overview PATH`; pass `--first-install` only for a genuine first installation. Ordinary readers and writers refuse an empty store directory without `state.sqlite`
+before creating lock files. Existing state opens cannot create a replacement database; explicit init owns state creation.
+Preserve any files left in a failed root by an older release and use a separate empty recovery destination rather than
+clearing evidence to make init pass. These checks do not authorize concurrent deletion or replacement of an active store.
+Process interruption and host reboot preserve epoch, cursors and gaps (qualified).
 The previous epochs' archives on NFS are custody only, never restorable into this product.
 
 ## Source and release update procedure

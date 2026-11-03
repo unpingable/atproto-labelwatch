@@ -37,7 +37,7 @@ read time, then evaluates the following:
 | Id | Source | Condition → class |
 |---|---|---|
 | L1 | `<store>/STATUS.json` `coverage.observed_through`, `round`; `/health` freshness (corroboration) | `collection-stalled` > 900 s → notice, page when the stall reaches 3600 s; 00:00-00:35 UTC with `store_hold` or maintain `activating` → held |
-| L2 | `systemctl show labelwatch-recent-collect.service` / `.timer` | `collection-failing` (2 consecutive observed failed invocations), `collection-not-scheduled` (timer > 600 s) → notice |
+| L2 | `systemctl show labelwatch-recent-collect.service` / `.timer` | `collection-failing` (2 consecutive observed failed invocations), `collection-not-scheduled` (timer > 600 s) → notice; active initial timer with valid start/due skips at most 600 s from activation |
 | L3 | `systemctl show labelwatch-recent-maintain.service` / `.timer`, maintain journal | judged at 00:35 for UTC day D: `maintenance-failed` → page, `maintenance-overdue` → page, `maintenance-running-late` → notice |
 | L4 | STATUS.json `last_maintenance` (≥ 2 min after a successful exit) | baseline missing → unknown; `window-not-advanced` → notice day 1, page day 2; `expiry-stalled` (recovery_pending on two runs in a row) → page |
 | L5 | STATUS.json `round` reserve refusals, maintain journal `… allocation not admitted`, `statvfs` vs `LABELWATCH_RECENT_RESERVES` | `reserve-refused` → page; `reserve-headroom-low` (free < reserve + 2 GiB, or inodes < floor) → notice |
@@ -149,6 +149,13 @@ as #18 requires for any temporary substitute.
 - L2 and L6 count consecutive invocations as **sampled** every 5 min through `systemctl show`. With
   collection every 2 min, a failure that alternates with successes between samples can go unseen. L1
   still carries the page.
+- L2 distinguishes an active timer awaiting its first trigger from a missed deadline. With no last trigger,
+  active-entry must be at or before evaluation and next-due must lie within 600 seconds of active-entry.
+  The pending evaluation and retained incident observation are `skip`, preserving any open incident. The deadline
+  remains 600 seconds from active-entry even if the advertised next-due moves. Once that age exceeds 600 seconds, no first trigger
+  produces the existing scheduling notice; an inactive timer with no trigger also notifies. Missing or
+  inconsistent initial timestamps are unknown. A real trigger at most 600 seconds old resolves scheduling
+  conditions; restarting alone does not. Two observed failed invocations take priority over initial waiting.
 - The L3/L5 reason comes from the last 50 lines of the maintain journal filtered by the exact
   maintenance InvocationID. Missing or invalid identity makes the journal source unknown.
 - Generic disk health stays with the existing `host-disk` rule. L5 judges only the configured reserve.
